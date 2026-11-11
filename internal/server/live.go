@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"woodpile/internal/model"
+	"github.com/gmccollu/woodpile/internal/model"
 )
 
 // liveDevices keeps each sender's last-heard time and a one-minute rate in

@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"woodpile/internal/config"
-	"woodpile/internal/syslog"
+	"github.com/gmccollu/woodpile/internal/config"
+	"github.com/gmccollu/woodpile/internal/syslog"
 )
 
 type tcpListener struct {

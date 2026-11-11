@@ -16,11 +16,11 @@ import (
 	"strings"
 	"time"
 
-	"woodpile/internal/api"
-	"woodpile/internal/config"
-	"woodpile/internal/index"
-	"woodpile/internal/server"
-	"woodpile/internal/service"
+	"github.com/gmccollu/woodpile/internal/api"
+	"github.com/gmccollu/woodpile/internal/config"
+	"github.com/gmccollu/woodpile/internal/index"
+	"github.com/gmccollu/woodpile/internal/server"
+	"github.com/gmccollu/woodpile/internal/service"
 )
 
 // ---- install / uninstall ----

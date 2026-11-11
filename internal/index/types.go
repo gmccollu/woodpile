@@ -3,7 +3,7 @@ package index
 import (
 	"time"
 
-	"woodpile/internal/store/logfile"
+	"github.com/gmccollu/woodpile/internal/store/logfile"
 )
 
 // Checkpoint is a point in a file's uncompressed stream; see logfile.Checkpoint for

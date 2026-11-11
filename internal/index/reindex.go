@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"woodpile/internal/store/logfile"
+	"github.com/gmccollu/woodpile/internal/store/logfile"
 )
 
 // ReindexResult describes a Reindex or Reconcile run.

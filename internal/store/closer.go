@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 
-	"woodpile/internal/index"
+	"github.com/gmccollu/woodpile/internal/index"
 )
 
 // closeJob is a file that was just closed (rotated): its handle is gone, but its data

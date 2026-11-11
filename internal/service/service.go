@@ -21,7 +21,7 @@ import (
 
 	ksvc "github.com/kardianos/service"
 
-	"woodpile/internal/config"
+	"github.com/gmccollu/woodpile/internal/config"
 )
 
 // Service names (docs/service-contract.md §2). Don't change them: the packages

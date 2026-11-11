@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"woodpile/internal/model"
+	"github.com/gmccollu/woodpile/internal/model"
 )
 
 type fakeClock struct{ ns atomic.Int64 }

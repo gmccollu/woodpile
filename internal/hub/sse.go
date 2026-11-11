@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"time"
 
-	"woodpile/internal/model"
+	"github.com/gmccollu/woodpile/internal/model"
 )
 
 // timeLayout matches the log files' received time (RFC 3339 UTC, milliseconds).

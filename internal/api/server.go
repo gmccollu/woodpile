@@ -15,7 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"woodpile/web"
+	"github.com/gmccollu/woodpile/web"
 )
 
 // DefaultPort is the UI port (SPEC §5).

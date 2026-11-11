@@ -10,9 +10,9 @@ import (
 	"sync"
 	"time"
 
-	"woodpile/internal/index"
-	"woodpile/internal/model"
-	"woodpile/internal/store/logfile"
+	"github.com/gmccollu/woodpile/internal/index"
+	"github.com/gmccollu/woodpile/internal/model"
+	"github.com/gmccollu/woodpile/internal/store/logfile"
 )
 
 // fileState is what is known about the active file's contents.

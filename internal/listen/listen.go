@@ -19,9 +19,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"woodpile/internal/config"
-	"woodpile/internal/model"
-	"woodpile/internal/syslog"
+	"github.com/gmccollu/woodpile/internal/config"
+	"github.com/gmccollu/woodpile/internal/model"
+	"github.com/gmccollu/woodpile/internal/syslog"
 )
 
 // Defaults for Options.

@@ -9,7 +9,7 @@ import (
 	"runtime"
 	"strings"
 
-	"woodpile/internal/config"
+	"github.com/gmccollu/woodpile/internal/config"
 )
 
 // cmdFlags is a subcommand's flag set and help text.

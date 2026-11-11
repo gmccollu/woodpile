@@ -13,12 +13,12 @@ import (
 	"testing"
 	"time"
 
-	"woodpile/internal/api"
-	"woodpile/internal/config"
-	"woodpile/internal/index"
-	"woodpile/internal/server"
-	"woodpile/internal/store"
-	"woodpile/internal/store/logfile"
+	"github.com/gmccollu/woodpile/internal/api"
+	"github.com/gmccollu/woodpile/internal/config"
+	"github.com/gmccollu/woodpile/internal/index"
+	"github.com/gmccollu/woodpile/internal/server"
+	"github.com/gmccollu/woodpile/internal/store"
+	"github.com/gmccollu/woodpile/internal/store/logfile"
 )
 
 func runCLI(args ...string) (code int, stdout, stderr string) {

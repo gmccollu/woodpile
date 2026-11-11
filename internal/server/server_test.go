@@ -16,12 +16,12 @@ import (
 	"testing"
 	"time"
 
-	"woodpile/internal/api"
-	"woodpile/internal/config"
-	"woodpile/internal/index"
-	"woodpile/internal/listen"
-	"woodpile/internal/loadgen"
-	"woodpile/internal/store"
+	"github.com/gmccollu/woodpile/internal/api"
+	"github.com/gmccollu/woodpile/internal/config"
+	"github.com/gmccollu/woodpile/internal/index"
+	"github.com/gmccollu/woodpile/internal/listen"
+	"github.com/gmccollu/woodpile/internal/loadgen"
+	"github.com/gmccollu/woodpile/internal/store"
 )
 
 var quiet = slog.New(slog.NewTextHandler(io.Discard, nil))

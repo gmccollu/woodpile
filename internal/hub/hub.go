@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"woodpile/internal/model"
+	"github.com/gmccollu/woodpile/internal/model"
 )
 
 // Defaults for Options.

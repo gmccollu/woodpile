@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"woodpile/internal/store/logfile"
+	"github.com/gmccollu/woodpile/internal/store/logfile"
 )
 
 var ctx = context.Background()

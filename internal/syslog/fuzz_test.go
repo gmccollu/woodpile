@@ -8,7 +8,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"woodpile/internal/model"
+	"github.com/gmccollu/woodpile/internal/model"
 )
 
 func FuzzParse(f *testing.F) {

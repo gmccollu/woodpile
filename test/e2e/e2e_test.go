@@ -25,9 +25,9 @@ import (
 	"testing"
 	"time"
 
-	"woodpile/internal/config"
-	"woodpile/internal/index"
-	"woodpile/internal/loadgen"
+	"github.com/gmccollu/woodpile/internal/config"
+	"github.com/gmccollu/woodpile/internal/index"
+	"github.com/gmccollu/woodpile/internal/loadgen"
 )
 
 var binary string // built once by TestMain

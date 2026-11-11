@@ -10,8 +10,8 @@ import (
 	"os/signal"
 	"syscall"
 
-	"woodpile/internal/server"
-	"woodpile/internal/service"
+	"github.com/gmccollu/woodpile/internal/server"
+	"github.com/gmccollu/woodpile/internal/service"
 )
 
 func cmdRun(args []string, stdout, stderr io.Writer) int {

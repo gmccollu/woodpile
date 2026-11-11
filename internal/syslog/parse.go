@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"woodpile/internal/model"
+	"github.com/gmccollu/woodpile/internal/model"
 )
 
 const (

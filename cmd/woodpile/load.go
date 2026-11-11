@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"woodpile/internal/loadgen"
+	"github.com/gmccollu/woodpile/internal/loadgen"
 )
 
 func cmdSend(args []string, stdout, stderr io.Writer) int {

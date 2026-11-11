@@ -13,13 +13,13 @@ import (
 	"sync/atomic"
 	"time"
 
-	"woodpile/internal/api"
-	"woodpile/internal/config"
-	"woodpile/internal/hub"
-	"woodpile/internal/index"
-	"woodpile/internal/listen"
-	"woodpile/internal/model"
-	"woodpile/internal/store"
+	"github.com/gmccollu/woodpile/internal/api"
+	"github.com/gmccollu/woodpile/internal/config"
+	"github.com/gmccollu/woodpile/internal/hub"
+	"github.com/gmccollu/woodpile/internal/index"
+	"github.com/gmccollu/woodpile/internal/listen"
+	"github.com/gmccollu/woodpile/internal/model"
+	"github.com/gmccollu/woodpile/internal/store"
 )
 
 // backend implements api.Backend on top of the real packages.

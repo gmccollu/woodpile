@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"woodpile/internal/model"
+	"github.com/gmccollu/woodpile/internal/model"
 )
 
 const unk = model.Unknown

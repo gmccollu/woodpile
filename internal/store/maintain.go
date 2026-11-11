@@ -10,8 +10,8 @@ import (
 	"sync"
 	"time"
 
-	"woodpile/internal/index"
-	"woodpile/internal/store/logfile"
+	"github.com/gmccollu/woodpile/internal/index"
+	"github.com/gmccollu/woodpile/internal/store/logfile"
 )
 
 // catEntry is a closed log file (awaiting compression, or compressed).
