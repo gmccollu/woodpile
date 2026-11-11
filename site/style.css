@@ -304,6 +304,47 @@ details.others summary {
   cursor: pointer;
   font-weight: 600;
 }
+ul.assetlist {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+}
+ul.assetlist li {
+  display: grid;
+  grid-template-columns: minmax(200px, 1.3fr) minmax(0, 2fr) 70px auto;
+  grid-template-areas: 'lab file size btn' 'lab sum sum btn';
+  align-items: center;
+  gap: 2px 14px;
+  padding: 10px 4px;
+  border-bottom: 1px solid var(--divider);
+}
+ul.assetlist .lab {
+  grid-area: lab;
+  font-weight: 600;
+}
+ul.assetlist .file {
+  grid-area: file;
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+ul.assetlist .size {
+  grid-area: size;
+  color: var(--muted);
+  font-size: 14px;
+  text-align: right;
+}
+ul.assetlist .sum {
+  grid-area: sum;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+ul.assetlist .dl {
+  grid-area: btn;
+  padding: 7px 14px;
+  font-size: 14px;
+}
 table.assets {
   width: 100%;
   border-collapse: collapse;
@@ -454,6 +495,27 @@ footer .links {
   }
   table.assets .hide-sm {
     display: none;
+  }
+  /* Phones: each file is a card; the name wraps only at _ . - (see fileName in app.js). */
+  ul.assetlist li {
+    grid-template-columns: 1fr auto;
+    grid-template-areas: 'lab btn' 'size btn' 'file file' 'sum sum';
+    margin-bottom: 10px;
+    padding: 14px 16px;
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    background: var(--glass-strong);
+  }
+  ul.assetlist .size {
+    text-align: left;
+  }
+  ul.assetlist .file {
+    margin-top: 6px;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  ul.assetlist .sum {
+    font-size: 11px;
   }
 }
 

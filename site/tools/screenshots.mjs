@@ -47,9 +47,14 @@ const both = (s) => [
 
 const SHOTS = [
   ...both({ name: 'home-desktop', path: '/', w: 1400, h: 900, client: WIN, api: 'release',
-    check: `document.querySelectorAll('#dl-primary .asset.best').length === 2 && document.querySelector('#dl-primary .asset .n').textContent === 'Windows installer (x64)' && document.querySelectorAll('#dl-others-body tr').length === 10` }),
+    check: `document.querySelectorAll('#dl-primary .asset.best').length === 2 && document.querySelector('#dl-primary .asset .n').textContent === 'Windows installer (x64)' && document.querySelectorAll('#dl-others-body li').length === 10` }),
   ...both({ name: 'home-phone', path: '/', w: 390, h: 844, client: PHONE, api: 'release',
-    check: `document.querySelectorAll('#dl-primary .asset').length === 0 && document.getElementById('dl-others').open && document.querySelectorAll('#dl-others-body tr').length === 12 && document.documentElement.scrollWidth <= innerWidth` }),
+    check: `document.querySelectorAll('#dl-primary .asset').length === 0 && document.getElementById('dl-others').open && document.querySelectorAll('#dl-others-body li').length === 12 && document.documentElement.scrollWidth <= innerWidth
+      && [...document.querySelectorAll('#dl-others-body .file')].every((f) => f.getBoundingClientRect().right <= f.closest('li').getBoundingClientRect().right)
+      && [...document.querySelectorAll('#dl-others-body .dl')].every((b) => b.textContent === 'Download')` }),
+  { name: 'home-desktop-all-downloads-light', mode: 'light', path: '/#download', w: 1400, h: 900, client: WIN, api: 'release',
+    act: `(document.getElementById('dl-others').open = true, true)`,
+    check: `[...document.querySelectorAll('#dl-others-body li')].every((li) => li.getBoundingClientRect().height < 80)` },
   { name: 'home-mac-light', mode: 'light', path: '/#download', w: 1400, h: 900, client: MAC, api: 'release',
     check: `[...document.querySelectorAll('#dl-primary .asset .n')].map((x) => x.textContent).join('|') === 'macOS installer (Intel and Apple silicon)|macOS portable (Intel and Apple silicon)'` },
   { name: 'home-linux-arm-dark', mode: 'dark', path: '/#download', w: 1400, h: 900, client: LINUX_ARM, api: 'release',
@@ -145,6 +150,10 @@ try {
       if (bad.length) {
         failed++;
         console.error(`  ! ${s.name}: ${JSON.stringify(bad[0].params).slice(0, 300)}`);
+      }
+      if (s.act) {
+        await evaluate(s.act);
+        await sleep(300);
       }
       if (s.check && !(await evaluate(s.check))) {
         failed++;

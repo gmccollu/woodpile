@@ -83,17 +83,7 @@
           <div id="dl-primary" class="dl-primary"></div>
           <details id="dl-others" class="others" hidden>
             <summary>Other downloads</summary>
-            <table class="assets">
-              <thead>
-                <tr>
-                  <th scope="col">What</th>
-                  <th scope="col">File</th>
-                  <th scope="col" class="hide-sm">Size</th>
-                  <th scope="col" class="hide-sm">SHA-256</th>
-                </tr>
-              </thead>
-              <tbody id="dl-others-body"></tbody>
-            </table>
+            <ul id="dl-others-body" class="assetlist"></ul>
           </details>
           <p id="dl-sums" class="small muted">
             Every file is on the <a href="https://github.com/gmccollu/woodpile/releases/latest" data-releases>releases page</a>, with
@@ -155,7 +145,7 @@
             <li>Search by text or regular expression, devices, time and severity, with the lines around each hit.</li>
             <li>Export zips with a manifest, SHA-256 checksums and a report of any gaps, so the recipient can trust what they get.</li>
             <li>Name and group devices; an optional sender allowlist.</li>
-            <li>The web page is on this machine only by default; LAN mode adds HTTPS and a password.</li>
+            <li>The web page is on this machine only by default. LAN mode adds HTTPS and a password, and a login needs both a cookie and a session secret, so a stolen cookie alone is useless.</li>
             <li>Windows, macOS and Linux, on x64 and ARM; MIT licensed.</li>
           </ul>
           <p class="small muted">

@@ -17,6 +17,13 @@ const el = (tag, cls, text) => {
 const MB = (n) => `${(n / 1024 / 1024).toFixed(n < 10 * 1024 * 1024 ? 1 : 0)} MB`;
 const OS_NAME = { windows: 'Windows', macos: 'macOS', linux: 'Linux' };
 
+/** A file name that wraps only after "_", "." or "-" (a <wbr> after each), never mid-word. */
+function fileName(name) {
+  const span = el('span', 'file');
+  for (const part of name.split(/(?<=[_.-])/)) span.append(part, document.createElement('wbr'));
+  return span;
+}
+
 function assetCard(a, best) {
   const card = el('a', best ? 'asset best' : 'asset');
   card.href = a.browser_download_url;
@@ -63,16 +70,14 @@ async function downloads() {
   if (others && body) {
     body.replaceChildren(
       ...rest.map((a) => {
-        const tr = el('tr');
-        const link = el('a', '', a.name);
-        link.href = a.browser_download_url;
-        const name = el('td');
-        name.append(link);
+        const li = el('li');
+        const btn = el('a', 'btn ghost dl', 'Download');
+        btn.href = a.browser_download_url;
+        btn.setAttribute('aria-label', `Download ${a.info.label}, ${a.name}`);
         const sum = sha256Of(a);
-        const sumTd = el('td', 'sum hide-sm', sum || '');
-        if (sum) sumTd.title = sum;
-        tr.append(el('td', '', a.info.label), name, el('td', 'hide-sm', MB(a.size || 0)), sumTd);
-        return tr;
+        const sumLine = el('span', 'sum', sum ? `SHA-256 ${sum}` : '');
+        li.append(el('span', 'lab', a.info.label), el('span', 'size', MB(a.size || 0)), btn, fileName(a.name), sumLine);
+        return li;
       }),
     );
     others.hidden = false;
