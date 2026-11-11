@@ -150,3 +150,13 @@ func (e *Engine) Estimate(ctx context.Context, devices []string, f Filter) (Esti
 	})
 	return est, nil
 }
+
+// CheckFilter validates f (its regular expression and time range) without
+// reading anything. It returns a *QueryError for a bad filter.
+func (e *Engine) CheckFilter(f Filter) error {
+	if _, err := e.compile(f); err != nil {
+		return err
+	}
+	_, _, err := e.resolveRange(f)
+	return err
+}
