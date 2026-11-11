@@ -107,7 +107,9 @@ const (
 type Kind string
 
 // Event kinds. The store records rotate, compress (failures), delete, drop, pause,
-// resume and recover; the service and listeners record start, stop and bind.
+// resume and recover; the service and listeners record start, stop and bind; the
+// HTTP layer records ui (UI server start, bind errors, mode changes, certificates)
+// and auth (password changes, login lockouts).
 const (
 	KindStart    Kind = "start"
 	KindStop     Kind = "stop"
@@ -120,6 +122,8 @@ const (
 	KindResume   Kind = "resume"
 	KindRecover  Kind = "recover"
 	KindError    Kind = "error"
+	KindUI       Kind = "ui"
+	KindAuth     Kind = "auth"
 )
 
 // Event is one of the service's own events.
