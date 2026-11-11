@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -220,51 +221,67 @@ func TestLANSessionExpiry(t *testing.T) {
 	wantError(t, do(t, c, "GET", srv.url("/api/status"), ""), 401, "")
 }
 
-func TestLANLockout(t *testing.T) {
+// TestLANBackoff: failures from one address back off exponentially, and the
+// right password works as soon as the wait is over (no hard lockout).
+func TestLANBackoff(t *testing.T) {
 	const pw = "the-real-password"
 	srv := lanServer(t, pw)
 	c := tlsClient(t, srv.dataDir)
-	for i := range lockoutFailures {
-		srv.clock.Add(2 * time.Second) // stay under the burst limiter
+	var waits []string
+	for i := 0; i < lockoutFailures; i++ {
 		r := do(t, c, "POST", srv.url("/api/login"), `{"password":"guess"}`)
+		for r.code == 429 {
+			ra, _ := strconv.Atoi(r.header.Get("Retry-After"))
+			if ra < 1 {
+				t.Fatalf("Retry-After %q", r.header.Get("Retry-After"))
+			}
+			if strings.Contains(string(r.body), "failed attempts") {
+				waits = append(waits, r.header.Get("Retry-After"))
+			}
+			srv.clock.Add(time.Duration(ra) * time.Second)
+			r = do(t, c, "POST", srv.url("/api/login"), `{"password":"guess"}`)
+		}
 		if r.code != 401 {
 			t.Fatalf("attempt %d: %d %s", i+1, r.code, r.body)
 		}
 	}
-	// Locked: even the right password is refused, with Retry-After.
-	srv.clock.Add(2 * time.Second)
-	r := do(t, c, "POST", srv.url("/api/login"), fmt.Sprintf(`{"password": %q}`, pw))
-	wantError(t, r, 429, "Too many failed attempts")
-	if ra := r.header.Get("Retry-After"); ra == "" || ra == "0" {
-		t.Errorf("Retry-After %q", ra)
+	// The waits after failures 5..9 double: 1, 2, 4, 8, 16 s.
+	if strings.Join(waits, ",") != "1,2,4,8,16" {
+		t.Errorf("backoff waits %v", waits)
 	}
+	r := do(t, c, "POST", srv.url("/api/login"), fmt.Sprintf(`{"password": %q}`, pw))
+	wantError(t, r, 429, "Try again in 32 seconds")
 	found := false
 	for _, e := range srv.b.eventTexts() {
-		if strings.HasPrefix(e, "auth/warn") && strings.Contains(e, "locked out for 127.0.0.1") {
+		if strings.HasPrefix(e, "auth/warn") && strings.Contains(e, "from 127.0.0.1 slowed down") {
 			found = true
 		}
 	}
 	if !found {
-		t.Errorf("no lockout event: %v", srv.b.eventTexts())
+		t.Errorf("no backoff event: %v", srv.b.eventTexts())
 	}
-	srv.clock.Add(lockoutFor - time.Minute)
-	wantError(t, do(t, c, "POST", srv.url("/api/login"), fmt.Sprintf(`{"password": %q}`, pw)), 429, "")
-	srv.clock.Add(2 * time.Minute)
-	login(t, srv, c, pw)
+	srv.clock.Add(32 * time.Second)
+	login(t, srv, c, pw) // the right password, once the wait is over
+	// Success clears the backoff.
+	if r := do(t, c, "POST", srv.url("/api/login"), `{"password":"guess"}`); r.code != 401 {
+		t.Errorf("after success: %d", r.code)
+	}
 }
 
 func TestLoginBurstLimit(t *testing.T) {
-	srv := lanServer(t, "the-real-password")
+	const pw = "the-real-password"
+	srv := lanServer(t, pw)
 	c := tlsClient(t, srv.dataDir)
+	// Even right passwords: loginBurst quick attempts, then one per loginRefill.
 	for i := range loginBurst {
-		if r := do(t, c, "POST", srv.url("/api/login"), `{"password":"guess"}`); r.code != 401 {
+		if r := do(t, c, "POST", srv.url("/api/login"), fmt.Sprintf(`{"password": %q}`, pw)); r.code != 200 {
 			t.Fatalf("attempt %d: %d", i+1, r.code)
 		}
 	}
-	r := do(t, c, "POST", srv.url("/api/login"), `{"password":"guess"}`)
+	r := do(t, c, "POST", srv.url("/api/login"), fmt.Sprintf(`{"password": %q}`, pw))
 	wantError(t, r, 429, "Wait a moment")
 	srv.clock.Add(loginRefill)
-	if r := do(t, c, "POST", srv.url("/api/login"), `{"password":"guess"}`); r.code != 401 {
+	if r := do(t, c, "POST", srv.url("/api/login"), fmt.Sprintf(`{"password": %q}`, pw)); r.code != 200 {
 		t.Fatalf("after refill: %d", r.code)
 	}
 }
@@ -524,8 +541,18 @@ func TestLANRedirectsPlainHTTP(t *testing.T) {
 	srv := lanServer(t, "password-123")
 	st := srv.State()
 	r := do(t, httpClient(), "GET", "http://"+st.Addr+"/api/status?x=1", "")
-	if r.code != http.StatusMovedPermanently || r.header.Get("Location") != "https://"+st.Addr+"/api/status?x=1" {
+	if r.code != http.StatusMovedPermanently || r.header.Get("Location") != "https://"+st.Addr+"/api/status" {
 		t.Fatalf("redirect %d %q", r.code, r.header.Get("Location"))
+	}
+	// A Host that isn't this machine is not reflected: the redirect goes to the
+	// machine's own name on the listening port.
+	_, port, _ := net.SplitHostPort(st.Addr)
+	for _, h := range []string{"evil.example", "evil.example:" + port, "[2001:db8::66]:1"} {
+		r := do(t, httpClient(), "GET", "http://"+st.Addr+"/x/../api/status?next=//evil.example", "", "Host: "+h)
+		if loc := r.header.Get("Location"); r.code != 301 || loc != "https://testhost:"+port+"/x/../api/status" &&
+			loc != "https://testhost:"+port+"/api/status" {
+			t.Errorf("Host %s: %d %q", h, r.code, loc)
+		}
 	}
 	checkSecurityHeaders(t, "redirect", r.header)
 	wantError(t, do(t, httpClient(), "POST", "http://"+st.Addr+"/api/login", `{"password":"x"}`), 400, "HTTPS")

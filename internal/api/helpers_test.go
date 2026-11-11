@@ -78,7 +78,7 @@ func newFakeBackend() *fakeBackend {
 			Devices:    DeviceCounts{Total: 3, Online: 1, Quiet: 1, Offline: 1},
 			Disk:       Disk{UsedBytes: 3435973836, CapBytes: 21474836480, FreeBytes: 400000000000, DaysKept: 30},
 		},
-		rejected: []RejectedSender{{IP: "198.51.100.7", Count24h: 120, LastSeen: ts("2026-11-10T20:30:00Z")}},
+		rejected: []RejectedSender{{IP: "198.51.100.7", Count24h: 120, LastSeen: ts("2026-11-10T20:30:00Z"), Reason: "allowlist"}},
 		devices:  map[string]Device{},
 		settings: Settings{
 			Listeners: ListenersSettings{

@@ -369,7 +369,7 @@ func (b *backend) Rejected(ctx context.Context) ([]api.RejectedSender, error) {
 	rs := ln.Rejected()
 	out := make([]api.RejectedSender, len(rs))
 	for i, r := range rs {
-		out[i] = api.RejectedSender{IP: r.IP, Count24h: r.Count24h, LastSeen: r.LastSeen}
+		out[i] = api.RejectedSender{IP: r.IP, Count24h: r.Count24h, LastSeen: r.LastSeen, Reason: r.Reason}
 	}
 	return out, nil
 }

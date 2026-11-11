@@ -62,7 +62,7 @@ func docExamples(t *testing.T) map[string]any {
 	out := map[string]any{}
 	// A route line starting "`GET /api/x`" owns the next ```json block, unless
 	// another route line comes first.
-	heads := regexp.MustCompile("(?m)^`GET (/api/[a-z/]+)`").FindAllStringSubmatchIndex(doc, -1)
+	heads := regexp.MustCompile("(?m)^`GET (/api/[a-z/]+)[`?]").FindAllStringSubmatchIndex(doc, -1)
 	for i, h := range heads {
 		route := doc[h[2]:h[3]]
 		rest := doc[h[1]:]
@@ -215,6 +215,14 @@ func TestRoutesMatchDocExamples(t *testing.T) {
 		if err := json.Unmarshal(r.body, &got); err != nil {
 			t.Fatalf("%s: %v", route, err)
 		}
+		if route == "/api/devices" {
+			// The example shows the devices; the body pages them.
+			page, _ := got.(map[string]any)
+			if _, ok := page["total"].(float64); !ok || len(page) != 2 {
+				t.Errorf("/api/devices: %s", r.body)
+			}
+			got = page["devices"]
+		}
 		// Normalise listener paths for the optional map.
 		opt := map[string]bool{}
 		for k, v := range optional {
@@ -295,7 +303,8 @@ func TestRejectedSortedAndCapped(t *testing.T) {
 	b := newFakeBackend()
 	b.rejected = nil
 	for i := range 250 {
-		b.rejected = append(b.rejected, RejectedSender{IP: fmt.Sprintf("198.51.100.%d", i), Count24h: int64(i % 50), LastSeen: ts("2026-11-10T00:00:00Z").Add(time.Duration(i) * time.Second)})
+		b.rejected = append(b.rejected, RejectedSender{IP: fmt.Sprintf("198.51.100.%d", i), Count24h: int64(i % 50), LastSeen: ts("2026-11-10T00:00:00Z").Add(time.Duration(i) * time.Second),
+			Reason: []string{"allowlist", "per_source"}[i%2]})
 	}
 	srv := startServer(t, b, UIConfig{})
 	r := do(t, httpClient(), "GET", srv.url("/api/rejected"), "")
@@ -312,6 +321,11 @@ func TestRejectedSortedAndCapped(t *testing.T) {
 			t.Fatalf("not sorted at %d: %+v then %+v", i, a, c)
 		}
 	}
+	for _, g := range got {
+		if g.Reason != "allowlist" && g.Reason != "per_source" {
+			t.Fatalf("reason %q not passed through", g.Reason)
+		}
+	}
 	if got[0].Count24h != 49 {
 		t.Errorf("first count %d, want 49", got[0].Count24h)
 	}
@@ -326,13 +340,97 @@ func TestRejectedSortedAndCapped(t *testing.T) {
 
 func TestDevicesListIncludesHidden(t *testing.T) {
 	srv := startServer(t, nil, UIConfig{})
-	var got []Device
+	var got DevicePage
 	r := do(t, httpClient(), "GET", srv.url("/api/devices"), "")
 	if err := json.Unmarshal(r.body, &got); err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 3 || !got[2].Hidden || got[0].MsgsPerMin != 36720 {
+	if got.Total != 3 || len(got.Devices) != 3 || got.Devices[0].MsgsPerMin != 36720 || !got.Devices[2].Hidden {
 		t.Errorf("devices %+v", got)
+	}
+}
+
+func TestDevicesPaging(t *testing.T) {
+	b := newFakeBackend()
+	b.devices, b.order = map[string]Device{}, nil
+	for i := 0; i < 2500; i++ {
+		d := Device{ID: fmt.Sprintf("10.0.%d.%d", i/250, i%250), MsgsPerMin: int64(i % 97), Group: []string{"HQ", "", "lab"}[i%3],
+			Hidden: i%10 == 0, Name: fmt.Sprintf("dev-%04d", 2500-i), LastHeard: ts("2026-11-10T00:00:00Z").Add(time.Duration(i) * time.Second)}
+		d.IP = d.ID
+		b.devices[d.ID] = d
+		b.order = append(b.order, d.ID)
+	}
+	srv := startServer(t, b, UIConfig{})
+	c := httpClient()
+	get := func(q string) DevicePage {
+		t.Helper()
+		var p DevicePage
+		r := do(t, c, "GET", srv.url("/api/devices?"+q), "")
+		if r.code != 200 {
+			t.Fatalf("%s: %d %s", q, r.code, r.body)
+		}
+		json.Unmarshal(r.body, &p)
+		return p
+	}
+	if p := get(""); p.Total != 2500 || len(p.Devices) != 200 || p.Devices[0].MsgsPerMin != 96 {
+		t.Errorf("default: total %d, %d devices, first rate %d", p.Total, len(p.Devices), p.Devices[0].MsgsPerMin)
+	}
+	// The dashboard strip.
+	p := get("sort=rate&limit=30")
+	for i := 1; i < len(p.Devices); i++ {
+		if p.Devices[i].MsgsPerMin > p.Devices[i-1].MsgsPerMin {
+			t.Fatal("not busiest first")
+		}
+	}
+	if len(p.Devices) != 30 {
+		t.Errorf("limit 30: %d", len(p.Devices))
+	}
+	// Pages tile the list with no gaps or repeats.
+	seen := map[string]bool{}
+	for off := 0; ; off += 333 {
+		p := get(fmt.Sprintf("sort=name&limit=333&offset=%d", off))
+		for _, d := range p.Devices {
+			if seen[d.ID] {
+				t.Fatalf("repeat %s", d.ID)
+			}
+			seen[d.ID] = true
+		}
+		if len(p.Devices) < 333 {
+			break
+		}
+	}
+	if len(seen) != 2500 {
+		t.Errorf("paged %d", len(seen))
+	}
+	if p := get("sort=name&limit=1"); p.Devices[0].Name != "dev-0001" {
+		t.Errorf("by name: %s", p.Devices[0].Name)
+	}
+	if p := get("sort=last_heard&limit=1"); p.Devices[0].ID != "10.0.9.249" {
+		t.Errorf("newest heard: %s", p.Devices[0].ID)
+	}
+	if p := get("limit=5000"); len(p.Devices) != 1000 {
+		t.Errorf("limit clamp: %d", len(p.Devices))
+	}
+	if p := get("offset=9999"); len(p.Devices) != 0 || p.Total != 2500 {
+		t.Errorf("past the end: %+v", p.Total)
+	}
+	if p := get("hidden=only"); p.Total != 250 {
+		t.Errorf("hidden=only %d", p.Total)
+	}
+	if p := get("hidden=exclude&group=HQ"); p.Total != 750 {
+		t.Errorf("exclude+HQ %d", p.Total)
+	}
+	if p := get("ungrouped=true"); p.Total != 833 {
+		t.Errorf("ungrouped %d", p.Total)
+	}
+	if p := get("q=DEV-000"); p.Total != 9 {
+		t.Errorf("q by name %d", p.Total)
+	}
+	if p := get("q=10.0.3.1"); p.Total != 111 { // 10.0.3.1, .10-.19, .100-.199
+		t.Errorf("q by ip %d", p.Total)
+	}
+	for _, bad := range []string{"limit=0", "limit=x", "offset=-1", "sort=size", "hidden=yes", "group=HQ&ungrouped=true", "ungrouped=maybe"} {
+		wantError(t, do(t, c, "GET", srv.url("/api/devices?"+bad), ""), 400, "")
 	}
 }
 

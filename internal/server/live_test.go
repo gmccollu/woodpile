@@ -65,9 +65,9 @@ func TestLiveTailHidesHiddenDevices(t *testing.T) {
 	}
 	send(0)
 	waitFor(t, "the device in the index", func() bool {
-		var devs []map[string]any
-		r.do(t, "GET", "/api/devices", nil, &devs)
-		return len(devs) == 1
+		var page struct{ Devices []map[string]any }
+		r.do(t, "GET", "/api/devices", nil, &page)
+		return len(page.Devices) == 1
 	})
 	if code := r.do(t, "PATCH", "/api/devices/127.0.0.1", map[string]any{"hidden": true}, nil); code != 200 {
 		t.Fatalf("hide: %d", code)

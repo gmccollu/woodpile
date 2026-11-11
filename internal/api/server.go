@@ -10,7 +10,10 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
+	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -31,6 +34,9 @@ type UIConfig struct {
 	// CertFile and KeyFile optionally replace the self-signed certificate in
 	// LAN mode. Both or neither.
 	CertFile, KeyFile string
+	// RequireLoginLocal makes localhost mode require the password too (once
+	// one is set). It applies without a restart.
+	RequireLoginLocal bool
 }
 
 // Options configure a Server.
@@ -83,8 +89,9 @@ type Server struct {
 	state   State
 	changed chan struct{} // signalled (without blocking) when state changes
 
-	lan  atomic.Bool  // the running server is in LAN mode
-	port atomic.Int64 // the running server's port
+	lan          atomic.Bool  // the running server is in LAN mode
+	requireLocal atomic.Bool  // ui.require_login_local
+	port         atomic.Int64 // the running server's port
 }
 
 // New prepares a Server. It reads the password hash and the UI files but doesn't
@@ -133,6 +140,7 @@ func New(opts Options) (*Server, error) {
 		changed: make(chan struct{}, 1),
 		want:    opts.UI,
 	}
+	s.requireLocal.Store(opts.UI.RequireLoginLocal)
 	s.auth, err = newAuth(opts.DataDir, opts.argon, opts.now, func(e Event) { s.event(e.Level, e.Kind, e.Text) })
 	if err != nil {
 		return nil, fmt.Errorf("api: %w", err)
@@ -407,7 +415,7 @@ func (s *Server) start(cfg UIConfig) (*instance, error) {
 	inst.url = fmt.Sprintf("https://%s/", net.JoinHostPort(displayHost(s.opts.identity), strconv.Itoa(port)))
 	sp := newSplitListener(ln)
 	serve(newServer(s.handler), tls.NewListener(sp.tls, tlsCfg))
-	serve(newServer(securityHeaders(http.HandlerFunc(redirectToHTTPS))), sp.plain)
+	serve(newServer(securityHeaders(http.HandlerFunc(s.redirectToHTTPS))), sp.plain)
 	return inst, nil
 }
 
@@ -451,16 +459,29 @@ func (inst *instance) stop() {
 	})
 }
 
-func redirectToHTTPS(w http.ResponseWriter, r *http.Request) {
+// redirectToHTTPS sends plain-HTTP requests in LAN mode to https on the
+// listening port, path only (no query). The host is the one the client used
+// when it's one of this machine's names or addresses, and the machine's own
+// name otherwise, so the redirect never points at a host the client made up.
+func (s *Server) redirectToHTTPS(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		writeError(w, http.StatusBadRequest, "This server uses HTTPS in LAN mode.")
 		return
 	}
-	if r.Host == "" {
-		writeError(w, http.StatusBadRequest, "This server uses HTTPS in LAN mode.")
-		return
+	host := displayHost(s.opts.identity)
+	h := r.Host
+	if hh, _, err := net.SplitHostPort(h); err == nil {
+		h = hh
 	}
-	http.Redirect(w, r, "https://"+r.Host+r.URL.RequestURI(), http.StatusMovedPermanently)
+	h = strings.ToLower(strings.TrimSuffix(strings.Trim(h, "[]"), "."))
+	if id, err := s.opts.identity(); err == nil && h != "" {
+		ip, ipErr := netip.ParseAddr(h)
+		if slices.Contains(id.Names, h) || (ipErr == nil && slices.Contains(id.IPs, ip.Unmap().WithZone(""))) {
+			host = h
+		}
+	}
+	target := "https://" + net.JoinHostPort(host, strconv.Itoa(s.boundPort())) + r.URL.EscapedPath()
+	http.Redirect(w, r, target, http.StatusMovedPermanently)
 }
 
 // splitListener sorts accepted connections into TLS and plain by their first

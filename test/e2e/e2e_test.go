@@ -306,7 +306,7 @@ var (
 		"id": "string", "ip": "string", "name": "string", "group": "string", "hidden": "bool", "first_seen": "string",
 		"last_heard": "string", "status": "string", "msgs_per_min": "number", "total_msgs": "number", "bytes_on_disk": "number",
 	}
-	rejectedShape = map[string]string{"ip": "string", "count_24h": "number", "last_seen": "string"}
+	rejectedShape = map[string]string{"ip": "string", "count_24h": "number", "last_seen": "string", "reason": "string"}
 	liveShape     = map[string]string{"received": "string", "device_id": "string", "severity": "null|number", "raw": "string"}
 )
 
@@ -543,7 +543,12 @@ func waitFor(t *testing.T, what string, d time.Duration, ok func() bool) {
 }
 
 func totalMsgs(p *proc) (sum int, devs []any) {
-	p.getJSON("/api/devices", &devs)
+	var page map[string]any
+	p.getJSON("/api/devices?limit=1000", &page)
+	devs = asSlice(page["devices"])
+	if int(num(page["total"])) != len(devs) {
+		p.t.Fatalf("/api/devices total %v, %d devices", page["total"], len(devs))
+	}
 	for _, d := range devs {
 		sum += int(num(d.(map[string]any)["total_msgs"]))
 	}
@@ -694,6 +699,9 @@ func TestEndToEnd(t *testing.T) {
 		return len(rejected) == 1 && num(rejected[0].(map[string]any)["count_24h"]) == 10
 	})
 	shape(t, "rejected[0]", rejected[0].(map[string]any), rejectedShape)
+	if rejected[0].(map[string]any)["reason"] != "allowlist" {
+		t.Errorf("rejected reason %v", rejected[0])
+	}
 	if rejected[0].(map[string]any)["ip"] != "127.0.0.1" {
 		t.Errorf("rejected = %v", rejected)
 	}

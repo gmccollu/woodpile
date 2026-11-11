@@ -220,7 +220,7 @@ func equalFold(a, b string) bool {
 }
 
 func uiConfig(u config.UI) api.UIConfig {
-	return api.UIConfig{LANMode: u.LANMode, Port: u.Port, CertFile: u.CertFile, KeyFile: u.KeyFile}
+	return api.UIConfig{LANMode: u.LANMode, Port: u.Port, CertFile: u.CertFile, KeyFile: u.KeyFile, RequireLoginLocal: u.RequireLoginLocal}
 }
 
 // ConfigPath returns the absolute config path.

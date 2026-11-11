@@ -150,18 +150,7 @@ func (s *Server) apiRoutes() *http.ServeMux {
 	}})
 
 	// Devices.
-	mux.Handle("/api/devices", methods{http.MethodGet: func(w http.ResponseWriter, r *http.Request) {
-		ds, err := b.Devices(r.Context())
-		if err != nil {
-			s.backendError(w, r, err)
-			return
-		}
-		ds = nonNil(ds)
-		for i := range ds {
-			ds[i].normalize()
-		}
-		writeJSON(w, http.StatusOK, ds)
-	}})
+	mux.Handle("/api/devices", methods{http.MethodGet: s.getDevices})
 	mux.Handle("/api/devices/{id}", methods{http.MethodPatch: s.patchDevice})
 
 	// Live tail.
@@ -275,6 +264,13 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	if in.UI.RequireLoginLocal && !s.auth.passwordSet() {
+		writeJSON(w, http.StatusBadRequest, errorBody{
+			Error:  "Some settings need fixing.",
+			Errors: map[string]string{"ui.require_login_local": "Set a password before requiring it on localhost."},
+		})
+		return
+	}
 	saved, err := s.backend.SaveSettings(r.Context(), in)
 	var ve *ValidationError
 	if errors.As(err, &ve) {
@@ -287,6 +283,12 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	saved.normalize()
 	writeJSON(w, http.StatusOK, saved)
+
+	// require_login_local applies at once, without a restart.
+	s.mu.Lock()
+	s.want.RequireLoginLocal = saved.UI.RequireLoginLocal
+	s.mu.Unlock()
+	s.requireLocal.Store(saved.UI.RequireLoginLocal)
 
 	// Apply a UI change after this response: the restart waits for this
 	// request to finish before it closes the listener.

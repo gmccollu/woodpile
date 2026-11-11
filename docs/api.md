@@ -224,9 +224,12 @@ mismatched or unreadable pair is a 400 on `ui.cert_file` and/or `ui.key_file`.
 The UI calls this first: in LAN mode with `authenticated: false` it shows the login form.
 
 `POST /api/login` body `{"password": "..."}` → `200` with the session object above, and a session cookie
-(`__Host-woodpile_session`, `Secure; HttpOnly; SameSite=Strict; Path=/`). `401` for a wrong password, `400` in
-localhost mode. Each IP (each /64 for IPv6) gets 5 quick attempts, then one a second (`429`, `Retry-After`), and
-10 failures within 15 minutes lock it out for 15 minutes (`429` with `Retry-After`, even for the right password).
+(`__Host-woodpile_session`, `Secure; HttpOnly; SameSite=Strict; Path=/`; with `require_login_local` on plain
+localhost, `woodpile_session`, the same without `Secure`). `401` for a wrong password, `400` in localhost mode
+without `require_login_local`. Limits (`429` with `Retry-After`): each IP (each /64 for IPv6) gets 5 quick attempts,
+then one a second; from the 5th failure within 15 minutes, each address (the full address, zone included) waits
+1 s, 2 s, 4 s … up to 15 minutes before its next attempt, after which the right password works; and over 200
+failures a minute across all clients spaces every attempt 5 s apart.
 
 `POST /api/logout` → `204`, ends the session and clears the cookie.
 

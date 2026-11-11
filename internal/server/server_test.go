@@ -171,9 +171,10 @@ func TestServerEndToEndInProcess(t *testing.T) {
 	}
 	var devs []api.Device
 	waitFor(t, "1000 messages in the index", func() bool {
-		devs = nil
-		r.do(t, "GET", "/api/devices", nil, &devs)
-		return len(devs) == 1 && devs[0].TotalMsgs == 1000
+		var page api.DevicePage
+		r.do(t, "GET", "/api/devices", nil, &page)
+		devs = page.Devices
+		return len(devs) == 1 && devs[0].TotalMsgs == 1000 && page.Total == 1
 	})
 	if d := devs[0]; d.ID != "127.0.0.1" || d.Status != "online" || d.MsgsPerMin <= 0 || d.BytesOnDisk <= 0 {
 		t.Errorf("device = %+v", d)

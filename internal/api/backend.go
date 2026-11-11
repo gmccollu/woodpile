@@ -28,7 +28,8 @@ type Backend interface {
 	// Rejected serves GET /api/rejected: senders refused by the allowlist.
 	Rejected(ctx context.Context) ([]RejectedSender, error)
 
-	// Devices serves GET /api/devices, hidden devices included.
+	// Devices serves GET /api/devices: every device, hidden ones included; this
+	// package filters, sorts and pages them (DeviceQuery).
 	Devices(ctx context.Context) ([]Device, error)
 
 	// UpdateDevice serves PATCH /api/devices/{id}. Nil fields in p are left
@@ -200,11 +201,12 @@ type Disk struct {
 
 // ---- GET /api/rejected ----
 
-// RejectedSender is a sender refused by the allowlist.
+// RejectedSender is a refused sender.
 type RejectedSender struct {
 	IP       string    `json:"ip"`
 	Count24h int64     `json:"count_24h"`
 	LastSeen time.Time `json:"last_seen"`
+	Reason   string    `json:"reason"` // the latest refusal's reason: "allowlist" or "per_source"
 }
 
 // ---- /api/devices ----
@@ -265,10 +267,11 @@ type StorageSettings struct {
 
 // UISettings holds the web UI settings.
 type UISettings struct {
-	LANMode  bool   `json:"lan_mode"`
-	Port     int    `json:"port"`
-	CertFile string `json:"cert_file"` // empty: use the self-signed certificate
-	KeyFile  string `json:"key_file"`
+	LANMode           bool   `json:"lan_mode"`
+	Port              int    `json:"port"`
+	CertFile          string `json:"cert_file"` // empty: use the self-signed certificate
+	KeyFile           string `json:"key_file"`
+	RequireLoginLocal bool   `json:"require_login_local"` // localhost mode asks for the password too
 }
 
 // QuietSettings holds the device status thresholds.
