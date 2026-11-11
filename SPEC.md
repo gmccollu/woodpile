@@ -41,6 +41,13 @@ proposal and can change.
 | UI port | 8514 on localhost (§5) **(decided)** |
 | Linux UDP buffer | The deb/rpm raises `net.core.rmem_max` to 32 MiB through a sysctl drop-in (§3.1) **(decided)** |
 | Rotation | Close at 100 MiB or midnight UTC, gzip, keep 30 days / 20 GB (§3.4) **(decided)** |
+| Sizes | "GB" in this spec means GiB (1 GiB guard, 20 GiB cap) |
+| Checkpoints | Every 1 MiB, or every minute once 64 KiB has been written since the last one |
+| Durability | Plain `fsync` on every OS (on macOS that survives process and OS crashes, not necessarily power loss) |
+| Late messages | A message for a day that's already closed goes into the current file with its own timestamp; files never reopen |
+| Hidden devices | Stay hidden if they send again; the Devices page's hidden list shows their last-heard time |
+| Stats | Per-minute buckets for 24 h, hourly buckets for 7 days |
+| File modes | Log files 0640, directories 0750 |
 
 ## 3. Architecture
 
