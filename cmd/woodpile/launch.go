@@ -44,7 +44,6 @@ func classifyLaunch(p launchProbe) launch {
 	return launchTerminal
 }
 
-
 // openBrowser opens url in the default browser without waiting for it.
 func openBrowser(url string) error {
 	name, args := browserCommand(runtime.GOOS, url)

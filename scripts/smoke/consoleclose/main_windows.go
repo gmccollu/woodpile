@@ -5,12 +5,16 @@
 // portable-mode smoke test.
 //
 //	consoleclose <pid>
+//
+// Exit status 3 means the console is a pseudo console (ConPTY), whose window
+// ignores close requests, so a close can't be simulated in this session.
 package main
 
 import (
 	"fmt"
 	"os"
 	"strconv"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
@@ -20,10 +24,16 @@ var (
 	procFreeConsole  = kernel32.NewProc("FreeConsole")
 	procAttach       = kernel32.NewProc("AttachConsole")
 	procConsoleWnd   = kernel32.NewProc("GetConsoleWindow")
-	procPostMessageW = windows.NewLazySystemDLL("user32.dll").NewProc("PostMessageW")
+	user32           = windows.NewLazySystemDLL("user32.dll")
+	procPostMessageW = user32.NewProc("PostMessageW")
+	procClassName    = user32.NewProc("GetClassNameW")
 )
 
-const wmClose = 0x0010
+const (
+	wmClose  = 0x0010
+	wmSysCmd = 0x0112
+	scClose  = 0xF060
+)
 
 func main() {
 	if len(os.Args) != 2 {
@@ -45,10 +55,22 @@ func main() {
 		fmt.Fprintln(os.Stderr, "consoleclose: the console has no window")
 		os.Exit(1)
 	}
+	var cls [256]uint16
+	procClassName.Call(hwnd, uintptr(unsafe.Pointer(&cls[0])), uintptr(len(cls)))
+	class := windows.UTF16ToString(cls[:])
 	// Detach first so the close event doesn't take this process down too.
 	procFreeConsole.Call()
-	if r, _, err := procPostMessageW.Call(hwnd, wmClose, 0, 0); r == 0 {
-		fmt.Fprintln(os.Stderr, "consoleclose: PostMessage:", err)
+	// A pseudo console (ConPTY) window is a stand-in that ignores close requests:
+	// say so, so the caller can tell "couldn't simulate" from "didn't stop".
+	fmt.Printf("window class %s\n", class)
+	if class == "PseudoConsoleWindow" {
+		os.Exit(3)
+	}
+	// The X button sends WM_SYSCOMMAND/SC_CLOSE; WM_CLOSE as well, for good measure.
+	r1, _, err1 := procPostMessageW.Call(hwnd, wmSysCmd, scClose, 0)
+	r2, _, err2 := procPostMessageW.Call(hwnd, wmClose, 0, 0)
+	if r1 == 0 && r2 == 0 {
+		fmt.Fprintln(os.Stderr, "consoleclose: PostMessage:", err1, err2)
 		os.Exit(1)
 	}
 }

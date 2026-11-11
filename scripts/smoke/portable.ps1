@@ -69,9 +69,12 @@ Ok "a new-device line"
 Write-Host "==> close the console window (CTRL_CLOSE_EVENT)"
 Start-Sleep 1
 $t0 = Get-Date
-& (Resolve-Path $ConsoleClose) $p.Id
-if ($LASTEXITCODE -ne 0) { Die "couldn't close the console window" }
-if (-not $p.WaitForExit(10000)) { Die "still running 10 s after the console window closed" }
+$how = & (Resolve-Path $ConsoleClose) $p.Id
+$cc = $LASTEXITCODE
+Write-Host "consoleclose: $how (exit $cc)"
+if ($cc -eq 3) { Die "this session's consoles are pseudo consoles (ConPTY); a console close can't be simulated here" }
+if ($cc -ne 0) { Die "couldn't close the console window" }
+if (-not $p.WaitForExit(10000)) { Die "still running 10 s after the console window closed ($how)" }
 $took = ((Get-Date) - $t0).TotalSeconds
 $final = Get-Content -Raw $out
 Write-Host $final.Substring([Math]::Max(0, $final.Length - 300))
