@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"math/rand"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -20,6 +22,15 @@ import (
 func v6(i int) netip.Addr {
 	b := netip.MustParseAddr("2001:db8:1:2::").As16()
 	b[12], b[13], b[14], b[15] = byte(i>>24), byte(i>>16), byte(i>>8), byte(i)
+	return netip.AddrFrom16(b)
+}
+
+// spread returns distinct senders each in its own /48 (2001:db8:NNNN::1), so the
+// per-network buckets don't apply; only the global bucket and the cap do.
+func spread(i int) netip.Addr {
+	b := netip.MustParseAddr("2001:db8::1").As16()
+	b[4], b[5] = byte(i>>8), byte(i)
+	b[6], b[7] = byte(i>>24), byte(i>>16) // past 65,536: still distinct, other /48s
 	return netip.AddrFrom16(b)
 }
 
@@ -47,14 +58,38 @@ func countLines(t *testing.T, dir string) int {
 	return n
 }
 
-// TestFiftyThousandNewSenders: 50,000 one-message senders with the default limits.
-// The burst admits 5,000; the rest are refused and counted; the heap stays small.
+// TestOneNetworkCyclingAddresses: the review's attack, one IPv6 host cycling its
+// /64 through 50,000 addresses. Its network's bucket admits 256 and refuses the rest.
+func TestOneNetworkCyclingAddresses(t *testing.T) {
+	e := newEnv(t, nil)
+	accepted := 0
+	for i := 0; i < 50000; i++ {
+		if e.s.Write(model.Message{Received: e.clock.Now(), Sender: v6(i), Raw: []byte("x")}) == nil {
+			accepted++
+		}
+	}
+	if accepted != DefaultPrefixBurst {
+		t.Fatalf("one /64 got %d senders in", accepted)
+	}
+	e.maintain()
+	if u := e.s.Usage(); u.DeviceLimitReason != "prefix" || u.RefusedMsgs != 50000-DefaultPrefixBurst {
+		t.Fatalf("usage %+v", u)
+	}
+	evs := eventsOf(t, e.idx, index.KindDeviceLimit)
+	if len(evs) != 1 || !strings.Contains(evs[0].Text, "one network") || !strings.Contains(evs[0].Text, "allowlist") {
+		t.Fatalf("events %+v", evs)
+	}
+}
+
+// TestFiftyThousandNewSenders: 50,000 one-message senders, each in its own network,
+// with the default limits. The global burst admits 5,000; the rest are refused and
+// counted; the heap stays small.
 func TestFiftyThousandNewSenders(t *testing.T) {
 	e := newEnv(t, nil)
 	before := heapInuse()
 	accepted, refused := 0, 0
 	for i := 0; i < 50000; i++ {
-		err := e.s.Write(model.Message{Received: e.clock.Now(), Sender: v6(i), Raw: []byte("<134>spoofed hello")})
+		err := e.s.Write(model.Message{Received: e.clock.Now(), Sender: spread(i), Raw: []byte("<134>spoofed hello")})
 		switch {
 		case err == nil:
 			accepted++
@@ -96,7 +131,7 @@ func TestFiftyThousandNewSenders(t *testing.T) {
 	e.clock.Add(time.Minute)
 	accepted = 0
 	for i := 50000; i < 50500; i++ {
-		if e.s.Write(model.Message{Received: e.clock.Now(), Sender: v6(i), Raw: []byte("later")}) == nil {
+		if e.s.Write(model.Message{Received: e.clock.Now(), Sender: spread(i), Raw: []byte("later")}) == nil {
 			accepted++
 		}
 	}
@@ -121,7 +156,7 @@ func TestAcceptedSendersHeap(t *testing.T) {
 	e := newEnv(t, func(o *Options) { o.MaxDevices = 100000; o.NewDeviceBurst = 100000 })
 	before := heapInuse()
 	for i := 0; i < n; i++ {
-		if err := e.s.Write(model.Message{Received: e.clock.Now(), Sender: v6(i), Raw: []byte("<134>hello")}); err != nil {
+		if err := e.s.Write(model.Message{Received: e.clock.Now(), Sender: spread(i), Raw: []byte("<134>hello")}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -160,7 +195,7 @@ func TestDeviceCapAndKnownSenders(t *testing.T) {
 	e.write(a, "a is known")
 	// The cap: three live devices; a fourth is refused even with tokens.
 	e.s.devMu.Lock()
-	e.s.tokens = 10
+	e.s.global.tokens = 10
 	e.s.devMu.Unlock()
 	e.write(b, "b fits under the cap")
 	if err := e.s.Write(model.Message{Received: e.clock.Now(), Sender: d, Raw: []byte("d")}); !errors.Is(err, ErrDeviceLimit) {
@@ -279,5 +314,64 @@ func TestRetentionFairness(t *testing.T) {
 	hist, _ = e.idx.Deletions(bg, time.Time{}, time.Time{}, 0)
 	if hist[0].Reason != index.ReasonLowDisk || hist[0].DeviceID != "192.0.2.100" {
 		t.Fatalf("low-disk deletion %+v", hist[0])
+	}
+}
+
+// TestOneNetworkCantDrainTheBucket is the review's N5 case: an attacker in one
+// network sending as 240 new addresses a minute (4 a second) for an hour doesn't
+// keep 10 real new devices in other networks out. An IPv4 /24 has only 256
+// addresses, so it's capped at 256 senders anyway; an IPv6 /48 has endless ones, and
+// its bucket holds it to 256 plus 20 a minute. (Random sources across many networks
+// can still drain the global bucket; the sender allowlist is the answer to that.)
+func TestOneNetworkCantDrainTheBucket(t *testing.T) {
+	v4 := func(i int) netip.Addr { return netip.AddrFrom4([4]byte{203, 0, 113, byte(i)}) }
+	v6net := func(i int) netip.Addr {
+		b := netip.MustParseAddr("2001:db8:ffff::").As16()
+		b[8], b[9], b[10], b[11] = byte(i>>24), byte(i>>16), byte(i>>8), byte(i)
+		return netip.AddrFrom16(b)
+	}
+	for _, c := range []struct {
+		name     string
+		attacker func(int) netip.Addr
+	}{{"IPv4 /24", v4}, {"IPv6 /48", v6net}} {
+		t.Run(c.name, func(t *testing.T) {
+			e := newEnv(t, nil)
+			n, real := 0, 0
+			for minute := 0; minute < 60; minute++ {
+				for i := 0; i < 240; i++ {
+					e.clock.Add(250 * time.Millisecond)
+					e.s.Write(model.Message{Received: e.clock.Now(), Sender: c.attacker(n), Raw: []byte("spoof")})
+					n++
+				}
+				if minute%6 == 5 {
+					if err := e.s.Write(model.Message{Received: e.clock.Now(), Sender: spread(1000 + real), Raw: []byte("real")}); err != nil {
+						t.Fatalf("minute %d: real device %d refused: %v", minute, real, err)
+					}
+					real++
+				}
+				e.maintain()
+			}
+			seen := map[netip.Addr]bool{}
+			admitted := 0
+			for i := 0; i < n; i++ {
+				a := c.attacker(i)
+				if seen[a] {
+					continue
+				}
+				seen[a] = true
+				if _, err := os.Stat(filepath.Join(e.dir, "logs", model.DeviceID(a))); err == nil {
+					admitted++
+				}
+			}
+			if max := DefaultPrefixBurst + 60*int(DefaultPrefixPerMinute) + 1; admitted > max {
+				t.Fatalf("attacker got %d senders in, more than %d", admitted, max)
+			}
+			t.Logf("attacker: %d addresses tried, %d admitted; %d real devices admitted", n, admitted, real)
+			if c.name == "IPv6 /48" {
+				if u := e.s.Usage(); u.DeviceLimitReason != "prefix" || u.RefusedMsgs == 0 {
+					t.Fatalf("usage %+v", u)
+				}
+			}
+		})
 	}
 }

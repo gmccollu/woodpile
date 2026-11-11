@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -128,6 +129,7 @@ func (s *Store) maintain() error {
 	if now.Sub(s.lastFloodCheck) >= time.Hour { // after the apply, so it sees this pass's stats
 		s.lastFloodCheck = now
 		s.checkFloods(now)
+		s.pruneDevices(now) // after the apply too, so deleted files are gone from the index
 	}
 	if !s.opts.Manual && s.hasCompressWork(now) {
 		s.kickCompress()
@@ -316,7 +318,7 @@ func (s *Store) enforceRetention(now time.Time) {
 	if !over() {
 		return
 	}
-	s.deleteLargestFirst(now, index.ReasonCap, false, func(uint64) bool { return !over() })
+	s.fairDelete(now, index.ReasonCap, false, func(uint64) bool { return !over() })
 }
 
 // deviceBytes returns each device's bytes on disk: closed files plus its active file.
@@ -335,47 +337,6 @@ func (s *Store) deviceBytes() map[string]int64 {
 		d.mu.Unlock()
 	}
 	return out
-}
-
-// deleteLargestFirst deletes closed files until done reports true (it's given the
-// bytes freed so far), always from the device with the most bytes on disk, oldest
-// file first: compressed files, then (with uncompressed) ones awaiting compression.
-// Active files are never deleted. So a flooding device pays for its own flood
-// instead of pushing out every other device's history.
-func (s *Store) deleteLargestFirst(now time.Time, reason index.Reason, uncompressed bool, done func(freed uint64) bool) {
-	bytes := s.deviceBytes()
-	cands := map[string][]*catEntry{}
-	add := func(list []*catEntry) {
-		for _, e := range list {
-			cands[e.deviceID] = append(cands[e.deviceID], e)
-		}
-	}
-	add(s.sortedClosed(func(e *catEntry) bool { return e.name.Compressed }))
-	if uncompressed {
-		add(s.sortedClosed(func(e *catEntry) bool { return !e.name.Compressed }))
-	}
-	var freed uint64
-	for !done(freed) {
-		best := ""
-		for dev, list := range cands {
-			if len(list) == 0 {
-				continue
-			}
-			if best == "" || bytes[dev] > bytes[best] || (bytes[dev] == bytes[best] && dev < best) {
-				best = dev
-			}
-		}
-		if best == "" {
-			return
-		}
-		e := cands[best][0]
-		cands[best] = cands[best][1:]
-		size := e.size
-		if s.deleteEntry(e, reason, now) {
-			bytes[best] -= size
-			freed += uint64(size)
-		}
-	}
 }
 
 // deleteEntry removes a closed file and records the deletion.
@@ -431,9 +392,9 @@ func (s *Store) checkDisk() (free, total uint64, ok bool) {
 }
 
 // guardDisk keeps free space above the reserve (see minFree): it asks
-// Reclaim (exports) first, then deletes closed files from the largest device first
-// (see deleteLargestFirst: compressed first, then ones still awaiting compression; never
-// an active file), and pauses writing when nothing is left to delete.
+// Reclaim (exports) first, then deletes closed files in fair-share order (see
+// fairDelete), then closes the largest active or parked files as parts so they can be
+// deleted too, and pauses writing only when nothing is left.
 func (s *Store) guardDisk(now time.Time) {
 	free, total, ok := s.checkDisk()
 	if !ok {
@@ -448,21 +409,29 @@ func (s *Store) guardDisk(now time.Time) {
 			thr = s.minFree(total)
 		}
 	}
-	if free < thr {
-		diskOK := true
-		s.deleteLargestFirst(now, index.ReasonLowDisk, true, func(freed uint64) bool {
-			if freed == 0 {
-				return false
-			}
-			if free, total, diskOK = s.checkDisk(); !diskOK {
-				return true
-			}
-			thr = s.minFree(total)
-			return free >= thr
-		})
-		if !diskOK {
-			return
+	diskOK := true
+	enough := func(freed uint64) bool {
+		if freed == 0 {
+			return false
 		}
+		if free, total, diskOK = s.checkDisk(); !diskOK {
+			return true
+		}
+		thr = s.minFree(total)
+		return free >= thr
+	}
+	if free < thr {
+		s.fairDelete(now, index.ReasonLowDisk, true, enough)
+	}
+	// Still short: active and parked files can't be deleted, so close the largest as
+	// parts and delete again, rather than pausing until midnight. Only if that can
+	// reach the reserve: otherwise it would throw away today's logs and pause anyway.
+	canReach := diskOK && free < thr && uint64(s.deletableBytes()) >= thr-free
+	for tried := map[string]bool{}; canReach && diskOK && free < thr && s.closeLargestOpen(tried); {
+		s.fairDelete(now, index.ReasonLowDisk, true, enough)
+	}
+	if !diskOK {
+		return
 	}
 	if free < thr {
 		if !s.paused.Swap(true) {
@@ -581,4 +550,44 @@ func (s *Store) checkFloods(now time.Time) {
 			"%s sent %.0f%% of the last 24 h's bytes (%d of %d); when storage runs short its own oldest logs are deleted first",
 			id, 100*float64(b)/float64(total), b, total))
 	}
+}
+
+// DevicePruneAfter is how long a device with no files, name or group must have been
+// quiet before pruneDevices forgets it.
+const DevicePruneAfter = 24 * time.Hour
+
+// pruneDevices forgets devices that have no files left (retention deleted them all),
+// no name and no group, and weren't heard for DevicePruneAfter: their index row, their
+// empty folder and their known-sender entry (so they count as new again). Named or
+// grouped devices are kept.
+func (s *Store) pruneDevices(now time.Time) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	ids, err := s.idx.PruneDevices(ctx, now.Add(-DevicePruneAfter))
+	if err != nil {
+		s.log.Warn("store: pruning devices failed", "err", err)
+		return
+	}
+	if len(ids) == 0 {
+		return
+	}
+	live := map[string]bool{}
+	for _, d := range s.allDevices() {
+		live[d.id] = true
+	}
+	onDisk := s.deviceBytes()
+	removed := 0
+	for _, id := range ids {
+		if live[id] || onDisk[id] > 0 {
+			continue // heard or written since the query; keep its folder
+		}
+		// os.Remove only deletes an empty directory, so a file that appeared since is kept.
+		if err := os.Remove(filepath.Join(s.logsDir, id)); err == nil || errors.Is(err, fs.ErrNotExist) {
+			s.devMu.Lock()
+			delete(s.known, id)
+			s.devMu.Unlock()
+			removed++
+		}
+	}
+	s.log.Info("store: forgot devices with no logs left", "devices", len(ids), "folders_removed", removed)
 }

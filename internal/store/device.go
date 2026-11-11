@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gmccollu/woodpile/internal/index"
@@ -58,11 +59,12 @@ type device struct {
 	bufAct   []actAcc // counters of the buffered messages
 	act      []actAcc // counters of flushed (or dropped) messages, not yet collected
 
-	renameRetry time.Time // don't retry a failed part rename before this
-	needResync  bool      // re-read the file before the next write
-	evicted     bool      // removed from the store; writers must look the device up again
-	lastHeard   time.Time // received time of the latest message (for idle eviction)
-	lastFlush   int       // bytes in the last flushed buffer (sizes the next one)
+	renameRetry time.Time    // don't retry a failed part rename before this
+	needResync  bool         // re-read the file before the next write
+	evicted     bool         // removed from the store; writers must look the device up again
+	lastHeard   time.Time    // received time of the latest message (for idle eviction)
+	heardMs     atomic.Int64 // the same, readable without mu (for makeRoomLocked)
+	lastFlush   int          // bytes in the last flushed buffer (sizes the next one)
 
 	fileMu    sync.Mutex
 	dirty     bool   // written since the last fsync (fileMu)
@@ -395,14 +397,16 @@ type rotateReason int
 const (
 	rotMidnight rotateReason = iota
 	rotSize
+	rotLowDisk // closed as a part early, so the low-disk guard can delete it
 )
 
 // rotateLocked closes the active file: at a day change, or at the part size, in which
 // case it is renamed to the next numbered part. A failed rename leaves the file
-// active and is retried a minute later.
-func (d *device) rotateLocked(reason rotateReason) {
+// active and is retried a minute later. It returns the closed file's catalog
+// entry, or nil if nothing was closed.
+func (d *device) rotateLocked(reason rotateReason) *catEntry {
 	if d.day == "" {
-		return
+		return nil
 	}
 	if d.needResync {
 		if err := d.resyncLocked(); err != nil {
@@ -416,7 +420,7 @@ func (d *device) rotateLocked(reason rotateReason) {
 	day := d.day
 	reset := func() {
 		d.s.activeBytes.Add(-d.w.size)
-		if reason == rotSize {
+		if reason != rotMidnight {
 			d.startDayLocked(day)
 		} else {
 			d.day = ""
@@ -431,11 +435,11 @@ func (d *device) rotateLocked(reason rotateReason) {
 			os.Remove(d.abs) // nothing was written; don't leave an empty file
 		}
 		reset()
-		return
+		return nil
 	}
 	name := logfile.Name{Day: day}
 	abs, rel := d.abs, d.rel
-	if reason == rotSize {
+	if reason != rotMidnight {
 		nn := logfile.Name{Day: day, Part: nextPart(d.dir, day)}
 		nabs := filepath.Join(d.dir, nn.String())
 		if err := os.Rename(abs, nabs); err != nil {
@@ -445,7 +449,7 @@ func (d *device) rotateLocked(reason rotateReason) {
 			d.renameRetry = d.s.clock().Add(time.Minute)
 			d.s.event(index.LevelWarn, index.KindRotate, d.id,
 				fmt.Sprintf("couldn't close part %s (%v); still writing to it, retrying in a minute", rel, err))
-			return
+			return nil
 		}
 		nrel := d.s.rel(nabs)
 		row := d.fileRow()
@@ -456,13 +460,17 @@ func (d *device) rotateLocked(reason rotateReason) {
 	ce := &catEntry{deviceID: d.id, name: name, abs: abs, rel: rel, first: d.w.first, last: d.w.last,
 		size: d.w.size, rawSize: d.w.size, lines: d.w.lines, syncing: true}
 	d.s.addClosed(ce)
-	d.s.queueClose(closeJob{e: ce, path: abs, dir: d.dir, renamed: reason == rotSize})
+	d.s.queueClose(closeJob{e: ce, path: abs, dir: d.dir, renamed: reason != rotMidnight})
 	why := "end of day"
-	if reason == rotSize {
+	switch reason {
+	case rotSize:
 		why = "part size reached"
+	case rotLowDisk:
+		why = "closed early: low disk space"
 	}
 	d.s.event(index.LevelInfo, index.KindRotate, d.id, fmt.Sprintf("closed %s (%s, %d lines, %d bytes)", rel, why, d.w.lines, d.w.size))
 	reset()
+	return ce
 }
 
 // detachFileLocked closes the active file's handle without fsyncing it and clears the
@@ -586,14 +594,14 @@ func (d *device) idleLocked(now time.Time) bool {
 // (IdleClose): the buffer is written, the handle closed and the file handed to the
 // closer pool to fsync, and the file stays in the catalog as parked with its state,
 // so the device can append to it again. Then IdleEvict can free the device.
-func (d *device) parkLocked() {
+func (d *device) parkLocked() bool {
 	if d.needResync {
 		if err := d.resyncLocked(); err != nil {
-			return // try again next pass
+			return false // try again next pass
 		}
 	}
 	if len(d.buf) > 0 {
-		return // flushLocked failed; try again next pass
+		return false // flushLocked failed; try again next pass
 	}
 	d.detachFileLocked()
 	if d.w.size == 0 {
@@ -611,6 +619,7 @@ func (d *device) parkLocked() {
 	d.w, d.p = fileState{}, fileState{}
 	d.wcp, d.cp = logfile.Checkpointer{}, logfile.Checkpointer{}
 	d.newCPs, d.resetCPs, d.needResync = nil, false, false
+	return true
 }
 
 // adoptLocked makes a parked file the active file again, resuming its line count and

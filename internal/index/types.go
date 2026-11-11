@@ -46,6 +46,7 @@ type Device struct {
 	TotalMsgs   int64 // messages stored, all time
 	TotalBytes  int64 // raw message bytes stored, all time
 	BytesOnDisk int64 // sum of the device's file sizes now
+	RecentMsgs  int64 // messages in DeviceQuery's rate window (QueryDevices only)
 }
 
 // DeviceUpdate changes a device's user-set fields; nil fields are left alone.

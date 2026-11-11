@@ -36,6 +36,13 @@ const (
 // ErrNotFound is returned when a device or file doesn't exist.
 var ErrNotFound = errors.New("index: not found")
 
+// Open refuses to run as root on a data dir owned by another user (ErrRunAsOwner),
+// and refuses index files that are links or not regular files (ErrUnsafeFile).
+var (
+	ErrRunAsOwner = errors.New("index: refusing to open the index as root in a data folder owned by another user")
+	ErrUnsafeFile = errors.New("index: unsafe index file")
+)
+
 // DB is an open index. It is safe for concurrent use.
 type DB struct {
 	db *sql.DB

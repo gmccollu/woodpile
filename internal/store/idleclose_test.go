@@ -12,9 +12,9 @@ import (
 	"github.com/gmccollu/woodpile/internal/model"
 )
 
-// TestCapCountsActiveSenders: 10,000 one-shot spoofed senders fill the cap and lock
-// out a known device; after IdleClose and IdleEvict they hold no slots and the known
-// device is admitted again, appending to its own file for today.
+// TestCapCountsActiveSenders: 10,000 one-shot spoofed senders fill the cap. A known
+// device is still admitted (it takes the least recently heard sender's slot); after
+// IdleClose and IdleEvict the spoofers hold no slots and their memory is freed.
 func TestCapCountsActiveSenders(t *testing.T) {
 	e := newEnv(t, func(o *Options) { o.NewDeviceBurst = 20000 }) // the cap, not the rate, is the limit here
 	known := ip(7)
@@ -26,13 +26,14 @@ func TestCapCountsActiveSenders(t *testing.T) {
 	}
 	before := heapInuse()
 	for i := 0; i < DefaultMaxDevices; i++ {
-		if err := e.s.Write(model.Message{Received: e.clock.Now(), Sender: v6(i), Raw: []byte("spoofed")}); err != nil {
+		if err := e.s.Write(model.Message{Received: e.clock.Now(), Sender: spread(i), Raw: []byte("spoofed")}); err != nil {
 			t.Fatalf("spoofer %d: %v", i, err)
 		}
 	}
-	if err := e.s.Write(model.Message{Received: e.clock.Now(), Sender: known, Raw: []byte("locked out")}); !errors.Is(err, ErrDeviceLimit) {
-		t.Fatalf("known device at the cap: %v", err)
+	if err := e.s.Write(model.Message{Received: e.clock.Now(), Sender: spread(DefaultMaxDevices), Raw: []byte("x")}); !errors.Is(err, ErrDeviceLimit) {
+		t.Fatalf("new sender at the cap: %v", err)
 	}
+	e.write(known, "known, at the cap")
 	if u := e.s.Usage(); u.DeviceLimitReason != "cap" || u.Devices != DefaultMaxDevices {
 		t.Fatalf("usage %+v", u)
 	}
@@ -54,8 +55,46 @@ func TestCapCountsActiveSenders(t *testing.T) {
 	if got := strings.Join(e.files(known), ","); got != "2026-11-10.log" {
 		t.Fatalf("known device files %s", got)
 	}
-	if got := rawStrings(readLines(t, e.dir, "192.0.2.7")); strings.Join(got, "|") != "known, morning|known, afternoon" {
+	if got := rawStrings(readLines(t, e.dir, "192.0.2.7")); strings.Join(got, "|") != "known, morning|known, at the cap|known, afternoon" {
 		t.Fatalf("lines %q", got)
+	}
+	// The spoofer whose slot it took lost nothing: its file was parked, not dropped.
+	if n := countLines(t, e.dir); n != DefaultMaxDevices+3 {
+		t.Fatalf("%d lines on disk", n)
+	}
+}
+
+// TestSpoofersHoldingTheCapForFortyMinutes is the review's N4 scenario: spoofed
+// senders from many networks keep the cap full for 40 minutes; a known device that
+// sends every 15 minutes (so it's idle-closed in between) gets in every time.
+func TestSpoofersHoldingTheCapForFortyMinutes(t *testing.T) {
+	const cap = 200
+	e := newEnv(t, func(o *Options) { o.MaxDevices = cap })
+	known := ip(9)
+	e.write(known, "known 0")
+	n := 0
+	for minute := 1; minute <= 40; minute++ {
+		e.clock.Add(time.Minute)
+		// Enough new spoofers a minute (across networks) to refill every freed slot.
+		for i := 0; i < cap; i++ {
+			e.s.Write(model.Message{Received: e.clock.Now(), Sender: spread(n), Raw: []byte("spoof")})
+			n++
+		}
+		if minute%15 == 0 {
+			if err := e.s.Write(model.Message{Received: e.clock.Now(), Sender: known, Raw: []byte(fmt.Sprintf("known %d", minute))}); err != nil {
+				t.Fatalf("minute %d: known device refused: %v", minute, err)
+			}
+		}
+		e.maintain()
+		if u := e.s.Usage(); u.Devices > cap {
+			t.Fatalf("minute %d: %d live devices over the cap of %d", minute, u.Devices, cap)
+		}
+	}
+	if !e.s.Usage().DeviceLimited {
+		t.Fatal("the cap was never hit")
+	}
+	if got := rawStrings(readLines(t, e.dir, "192.0.2.9")); strings.Join(got, "|") != "known 0|known 15|known 30" {
+		t.Fatalf("known device lines %q", got)
 	}
 }
 

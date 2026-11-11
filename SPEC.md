@@ -43,8 +43,10 @@ proposal and can change.
 | Rotation | Close at 100 MiB or midnight UTC, gzip, keep 30 days / 20 GB (§3.4) **(decided)** |
 | Sizes | "GB" in this spec means GiB (1 GiB guard floor, 20 GiB cap) |
 | Low-disk reserve | max(1 GiB, min(5% of the volume, 10 GiB)): 1 GiB on a 10 GB volume, 5 GiB on 100 GB, 10 GiB on 460 GB and 4 TB (§3.4) **(decided, 2026-11-11)** |
-| Retention fairness | Over the size cap or the low-disk reserve, delete from the device using the most bytes on disk first (its oldest closed file); age retention is per file as before. A device sending over half of the last 24 h's bytes gets a warn event, at most hourly (§3.4) **(decided, 2026-11-11)** |
-| New-sender limits | At most 10,000 *active* senders (`max_devices`): a sender quiet for 10 min has its file closed early (its next message appends to the same file) and its memory freed, so the cap counts senders heard in about the last 10 min. Senders with no logs yet also need a token (burst 5,000, then 200 a minute), so a new install on a 5,000-device network admits everyone at once. All three are live settings. Refused messages count as dropped and raise the `device_limit` banner **(decided, 2026-11-11)** |
+| Retention fairness | Fair shares: over the size cap or under the low-disk reserve, delete first from devices over their share (budget / devices with data), then from devices first seen in the last 24 h, then oldest-first; a device's newest day of closed files is kept unless the low-disk guard has nothing else. Age retention is per file as before. A device sending over half of the last 24 h's bytes gets a warn event, at most hourly (§3.4) **(decided, 2026-11-11, revised after the security re-test)** |
+| Devices cleanup | A device with no files left, no name and no group, quiet for 24 h, is forgotten: index row, folder, and its exemption from the new-sender rate **(decided, 2026-11-11)** |
+| `reindex` as root | Refused when the data folder belongs to another user; run it as that user (`sudo -u woodpile woodpile reindex`). Index files that are links or not regular files are refused **(decided, 2026-11-11)** |
+| New-sender limits | At most 10,000 *active* senders (`max_devices`): a sender quiet for 10 min has its file closed early (its next message appends to the same file) and its memory freed, so the cap counts senders heard in about the last 10 min. Senders with no logs yet also need a token, first from their network's bucket (a /24, or a /48 for IPv6: burst 256, then 20 a minute), then from the global one (burst 5,000, then 200 a minute), so one network can't keep everyone else out and a new install on a 5,000-device network admits everyone at once; random sources spread over many networks can still drain the global bucket, and the sender allowlist is the answer to that. A sender with logs on disk is always admitted: at the cap it takes the least recently heard sender's slot (that sender's file is parked, not lost). The cap and the global bucket are live settings. Refused messages count as dropped and raise the `device_limit` banner **(decided, 2026-11-11)** |
 | Checkpoints | Every 1 MiB, or every minute once 64 KiB has been written since the last one |
 | Durability | Plain `fsync` on every OS (on macOS that survives process and OS crashes, not necessarily power loss) |
 | Late messages | A message for a day that's already closed goes into the current file with its own timestamp; files never reopen |
@@ -136,14 +138,23 @@ frontend install.
   original. Only the active file per device is uncompressed.
 - Retention applies to the compressed files. Defaults: **30 days or 20 GB total on disk, whichever comes first**
   **(decided)**. Age: every compressed file older than 30 days goes. Size: while all logs exceed the cap, delete
-  the oldest closed file of **the device using the most bytes on disk**, so a device flooding at debug level
-  shortens its own history, not everyone's. A device that sent more than half of the last 24 h's bytes is
-  reported with a warn event, at most once an hour.
+  in **fair-share** order. Each device's share is the budget (the cap, or what's on disk if less) divided by the
+  devices with data.
+  1. Devices over their share, the most over first, oldest file first.
+  2. Devices first seen in the last 24 h, oldest file first.
+  3. Everyone, oldest file first.
+
+  Steps 1 and 3 never take a device's newest day of closed files; only the low-disk guard may, and only when
+  nothing else is left. So neither one device flooding at debug level nor a flood spread over many new senders
+  wipes an established device's recent history. Active (and parked) files are never deleted by the size cap. A
+  device that sent more than half of the last 24 h's bytes is reported with a warn event, at most once an hour.
 - Rotated files use gzip (`.log.gz`) rather than `.zip`. gzip streams, so search reads it without unpacking, and
   it's the standard for rotated logs. Exports are `.zip` (§4.1) because that's what people open by
   double-clicking.
 - Low-disk guard: if free space on the data volume falls below the reserve, max(1 GB, min(5% of the volume,
-  10 GB)), delete closed files until it's back above, again from the device using the most bytes first. The 10 GB cap keeps a large disk from reserving tens of
+  10 GB)), delete closed files until it's back above, in the same fair-share order. If that isn't enough, close the
+  largest active files as parts and delete those too, rather than pausing until midnight (only when that can
+  reach the reserve). The 10 GB cap keeps a large disk from reserving tens of
   GB it never needs (on a 460 GB disk, 5% alone paused writes with 24 GB still free). If nothing is left to
   delete, pause writing, count the dropped messages, and show a red banner that states the reserve. Never fill
   the disk.
@@ -310,6 +321,6 @@ product or a SIEM. Each new data type has to fit that rule (decided 2026-11-11).
 ## 10. Open questions
 1. Where the repo lives. The answer given was the internal GHE, which conflicts with "open source on
    github.com" in §2 (see the reply of 2026-11-10).
-2. Retention fairness: decided 2026-11-11 (largest device first, §3.4). An optional per-device cap or minimum
+2. Retention fairness: decided 2026-11-11 (fair shares, §3.4). An optional per-device cap or minimum
    days is still open.
 3. macOS launchd daemon as `_woodpile` and the application-firewall prompt: test in M0 (see §5).

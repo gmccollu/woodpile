@@ -92,6 +92,11 @@ type Options struct {
 	MaxDevices          int
 	NewDeviceBurst      int
 	NewDevicesPerMinute float64
+	// PrefixBurst and PrefixPerMinute size the per-network buckets in front of the
+	// global one (a /24 for IPv4, a /48 for IPv6), so one network can't keep the global
+	// bucket empty. Defaults 256 and 20.
+	PrefixBurst     float64
+	PrefixPerMinute float64
 	// IdleClose closes a quiet sender's file early, before midnight, once nothing was
 	// heard for this long; its next message appends to the same file. IdleEvict then
 	// frees the sender's in-memory state once it has no open file and nothing was
@@ -145,12 +150,12 @@ type Store struct {
 	retentionBytes atomic.Int64
 	partBytes      atomic.Int64
 
-	devices sync.Map // netip.Addr -> *device, for the lock-free lookup in Write
-	devMu   sync.Mutex
-	devSet  map[netip.Addr]*device // the same devices, authoritative (devMu)
-	known   map[string]struct{}    // device IDs with logs on disk or seen since Open (devMu)
-	tokens  float64                // new-device bucket (devMu)
-	tokenAt time.Time
+	devices  sync.Map // netip.Addr -> *device, for the lock-free lookup in Write
+	devMu    sync.Mutex
+	devSet   map[netip.Addr]*device   // the same devices, authoritative (devMu)
+	known    map[string]struct{}      // device IDs with logs on disk or seen since Open (devMu)
+	global   bucket                   // new-sender bucket (devMu)
+	prefixes map[netip.Prefix]*bucket // per-network new-sender buckets (devMu)
 	// The live new-sender limits (devMu); Options holds only the initial values.
 	maxDevices int
 	burst      int
@@ -276,6 +281,8 @@ func Open(opts Options) (*Store, error) {
 	setDefault(&opts.NewDeviceBurst, DefaultNewDeviceBurst)
 	setDefault(&opts.NewDevicesPerMinute, DefaultNewDevicesPerMinute)
 	setDefault(&opts.IdleClose, DefaultIdleClose)
+	setDefault(&opts.PrefixBurst, DefaultPrefixBurst)
+	setDefault(&opts.PrefixPerMinute, DefaultPrefixPerMinute)
 	setDefault(&opts.IdleEvict, DefaultIdleEvict)
 	if opts.Clock == nil {
 		opts.Clock = time.Now
@@ -302,10 +309,11 @@ func Open(opts Options) (*Store, error) {
 		compressCh: make(chan struct{}, 1),
 		syncPath:   syncPath,
 		devSet:     map[netip.Addr]*device{},
+		prefixes:   map[netip.Prefix]*bucket{},
 		known:      map[string]struct{}{},
 		refMinutes: map[int64]int64{},
 	}
-	s.tokens = float64(opts.NewDeviceBurst)
+	s.global.tokens = float64(opts.NewDeviceBurst)
 	s.maxDevices, s.burst, s.perMinute = opts.MaxDevices, opts.NewDeviceBurst, opts.NewDevicesPerMinute
 	s.closeCond = sync.NewCond(&s.closeMu)
 	s.retentionDays.Store(int64(opts.RetentionDays))
@@ -366,11 +374,12 @@ func (s *Store) SetLimits(l Limits) {
 		s.maxDevices = l.MaxDevices
 	}
 	if l.NewDeviceBurst > 0 {
+		s.global.refill(s.clock(), float64(s.burst), s.perMinute)
 		if d := l.NewDeviceBurst - s.burst; d > 0 {
-			s.tokens += float64(d)
+			s.global.tokens += float64(d)
 		}
 		s.burst = l.NewDeviceBurst
-		s.tokens = min(s.tokens, float64(s.burst))
+		s.global.tokens = min(s.global.tokens, float64(s.burst))
 	}
 	if l.NewDevicesPerMinute > 0 {
 		s.perMinute = l.NewDevicesPerMinute
@@ -431,6 +440,7 @@ func (s *Store) writeTo(d *device, rec time.Time, m *model.Message) (err error, 
 		return ErrClosed, false
 	}
 	d.lastHeard = rec
+	d.heardMs.Store(rec.UnixMilli())
 	if s.paused.Load() {
 		d.dropLocked(rec, 1)
 		return ErrPaused, false
@@ -439,8 +449,11 @@ func (s *Store) writeTo(d *device, rec time.Time, m *model.Message) (err error, 
 }
 
 // device returns the state for a sender, creating it on first use. With admit set
-// (messages), a new sender must fit under MaxDevices and, if it has no logs yet, take
-// a new-device token; otherwise ErrDeviceLimit. Recovery creates devices unchecked.
+// (messages), a sender with no logs on disk must fit under MaxDevices and take a
+// token from its network's bucket and from the global bucket; otherwise
+// ErrDeviceLimit. A sender with logs on disk is always admitted: at the cap it takes
+// the slot of the least recently heard sender, whose file is flushed and parked.
+// Recovery creates devices unchecked.
 func (s *Store) device(addr netip.Addr, admit bool) (*device, error) {
 	if v, ok := s.devices.Load(addr); ok {
 		return v.(*device), nil
@@ -451,29 +464,135 @@ func (s *Store) device(addr netip.Addr, admit bool) (*device, error) {
 		return d, nil
 	}
 	id := model.DeviceID(addr)
+	now := s.clock()
 	if admit {
-		if len(s.devSet) >= s.maxDevices {
-			s.setRefuseReason("cap")
-			return nil, ErrDeviceLimit
-		}
-		if _, ok := s.known[id]; !ok {
-			now := s.clock()
-			if !s.tokenAt.IsZero() && now.After(s.tokenAt) {
-				s.tokens = min(float64(s.burst), s.tokens+now.Sub(s.tokenAt).Minutes()*s.perMinute)
+		if _, known := s.known[id]; known {
+			if len(s.devSet) >= s.maxDevices {
+				s.makeRoomLocked()
 			}
-			s.tokenAt = now
-			if s.tokens < 1 {
-				s.setRefuseReason("rate")
+		} else {
+			if len(s.devSet) >= s.maxDevices {
+				s.setRefuseReason("cap")
 				return nil, ErrDeviceLimit
 			}
-			s.tokens--
+			if reason := s.takeTokenLocked(addr, now); reason != "" {
+				s.setRefuseReason(reason)
+				return nil, ErrDeviceLimit
+			}
 		}
 	}
 	d := newDevice(s, addr)
+	d.heardMs.Store(now.UnixMilli())
 	s.devSet[addr] = d
 	s.known[id] = struct{}{}
 	s.devices.Store(addr, d)
 	return d, nil
+}
+
+// Per-network new-sender buckets: one network can't drain the global bucket.
+const (
+	DefaultPrefixBurst     = 256
+	DefaultPrefixPerMinute = 20.0
+	maxPrefixBuckets       = 1 << 16
+)
+
+type bucket struct {
+	tokens float64
+	at     time.Time
+}
+
+func (b *bucket) refill(now time.Time, burst, perMinute float64) {
+	if !b.at.IsZero() && now.After(b.at) {
+		b.tokens = min(burst, b.tokens+now.Sub(b.at).Minutes()*perMinute)
+	}
+	b.at = now
+}
+
+// newSenderPrefix is the network a new-sender bucket covers: /24 for IPv4, /48 for IPv6.
+func newSenderPrefix(a netip.Addr) netip.Prefix {
+	bits := 48
+	if a.Is4() {
+		bits = 24
+	}
+	p, _ := a.Prefix(bits)
+	return p
+}
+
+// takeTokenLocked takes a token from the sender's network bucket and the global
+// bucket, both or neither; it returns "" or the refusal reason ("prefix", "rate").
+func (s *Store) takeTokenLocked(addr netip.Addr, now time.Time) string {
+	pfx := newSenderPrefix(addr)
+	pb := s.prefixes[pfx]
+	if pb == nil {
+		if len(s.prefixes) >= maxPrefixBuckets {
+			s.prunePrefixesLocked(now)
+		}
+		pb = &bucket{tokens: s.opts.PrefixBurst, at: now}
+		s.prefixes[pfx] = pb
+	}
+	pb.refill(now, s.opts.PrefixBurst, s.opts.PrefixPerMinute)
+	s.global.refill(now, float64(s.burst), s.perMinute)
+	if pb.tokens < 1 {
+		return "prefix"
+	}
+	if s.global.tokens < 1 {
+		return "rate"
+	}
+	pb.tokens--
+	s.global.tokens--
+	return ""
+}
+
+// prunePrefixesLocked forgets networks whose bucket has refilled (they're back to
+// a fresh bucket anyway), then, if that wasn't enough, half of the rest.
+func (s *Store) prunePrefixesLocked(now time.Time) {
+	for p, b := range s.prefixes {
+		b.refill(now, s.opts.PrefixBurst, s.opts.PrefixPerMinute)
+		if b.tokens >= s.opts.PrefixBurst {
+			delete(s.prefixes, p)
+		}
+	}
+	for p := range s.prefixes {
+		if len(s.prefixes) < maxPrefixBuckets/2 {
+			break
+		}
+		delete(s.prefixes, p)
+	}
+}
+
+// makeRoomLocked frees one slot for a known sender at the cap: the least recently
+// heard sender whose lock is free is flushed, its file parked, and its state freed.
+// The caller holds devMu; device locks are only tried, so this can't deadlock with
+// a device holding its lock while it takes devMu. If every candidate is busy the
+// cap is exceeded by one instead.
+func (s *Store) makeRoomLocked() {
+	skip := map[*device]bool{}
+	for attempt := 0; attempt < 8; attempt++ {
+		var victim *device
+		for _, d := range s.devSet {
+			if !skip[d] && (victim == nil || d.heardMs.Load() < victim.heardMs.Load()) {
+				victim = d
+			}
+		}
+		if victim == nil {
+			return
+		}
+		skip[victim] = true
+		if !victim.mu.TryLock() {
+			continue
+		}
+		ok := !victim.closed && !victim.evicted && victim.flushLocked() == nil && (victim.day == "" || victim.parkLocked())
+		if ok {
+			victim.collectLocked()
+			victim.evicted = true
+			delete(s.devSet, victim.addr)
+			s.devices.CompareAndDelete(victim.addr, victim)
+		}
+		victim.mu.Unlock()
+		if ok {
+			return
+		}
+	}
 }
 
 // evictLocked frees an idle device's in-memory state; the caller holds d.mu.
@@ -525,11 +644,18 @@ func (s *Store) collectRefused(now time.Time, force bool) {
 	}
 	var text string
 	if s.refPending > 0 && (force || now.Sub(s.lastRefEv) >= time.Minute) {
-		why := fmt.Sprintf("the device cap (%d senders heard recently) was reached", lim.MaxDevices)
-		if s.refReason == "rate" {
+		var why string
+		switch s.refReason {
+		case "prefix":
+			why = fmt.Sprintf("new senders from one network (a /24, or a /48 for IPv6) arrived faster than %g a minute (burst %g)",
+				s.opts.PrefixPerMinute, s.opts.PrefixBurst)
+		case "rate":
 			why = fmt.Sprintf("new senders arrived faster than %g a minute (burst %d)", lim.NewDevicesPerMinute, lim.NewDeviceBurst)
+		default:
+			why = fmt.Sprintf("the device cap (%d senders heard in the last few minutes) was reached", lim.MaxDevices)
 		}
-		text = fmt.Sprintf("refused %d messages from new senders: %s", s.refPending, why)
+		text = fmt.Sprintf("refused %d messages from new senders: %s. If these senders are unexpected (spoofed or "+
+			"misconfigured), set the sender allowlist in Settings; if they're real, raise the limit", s.refPending, why)
 		s.refPending, s.lastRefEv = 0, now
 	}
 	s.refMu.Unlock()
@@ -615,7 +741,7 @@ type Usage struct {
 	RefusedMsgs       int64     // messages from refused new senders since Open (included in Dropped)
 	LastRefused       time.Time // zero if none
 	DeviceLimited     bool      // a new sender was refused in the last DeviceLimitWindow (device_limit banner)
-	DeviceLimitReason string    // "cap" or "rate": why the latest one was refused
+	DeviceLimitReason string    // "cap", "rate" or "prefix": why the latest one was refused
 }
 
 // DeviceLimitWindow is how long Usage.DeviceLimited stays set after a refusal.

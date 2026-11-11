@@ -1,0 +1,174 @@
+package index
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"time"
+)
+
+// DeviceSort orders a device page (docs/api.md: GET /api/devices). Directions are
+// fixed: rate busiest first, name A–Z (unnamed devices by IP), last_heard and
+// first_seen newest first. Ties break by ID.
+type DeviceSort string
+
+// Device sort orders.
+const (
+	SortRate      DeviceSort = "rate"
+	SortName      DeviceSort = "name"
+	SortLastHeard DeviceSort = "last_heard"
+	SortFirstSeen DeviceSort = "first_seen"
+)
+
+// HiddenFilter selects hidden devices in a page.
+type HiddenFilter string
+
+// Hidden filters.
+const (
+	HiddenInclude HiddenFilter = "include"
+	HiddenOnly    HiddenFilter = "only"
+	HiddenExclude HiddenFilter = "exclude"
+)
+
+// DeviceQuery is one page of the device list. Zero values: Limit 200 (capped at
+// 1,000), Offset 0, SortRate, HiddenInclude.
+type DeviceQuery struct {
+	Limit, Offset int
+	Sort          DeviceSort
+	// Q matches the ID, IP or name as a case-insensitive substring (ASCII case
+	// folding, as SQLite's lower()).
+	Q         string
+	Group     string // only this group
+	Ungrouped bool   // only devices without a group (ignored if Group is set)
+	Hidden    HiddenFilter
+	// RateFrom and RateTo bound the stats summed into Device.RecentMsgs, which
+	// SortRate orders by. The API uses the last full minute for msgs_per_min.
+	RateFrom, RateTo time.Time
+}
+
+// DevicePage is a page of devices and the total matching the filters.
+type DevicePage struct {
+	Devices []Device
+	Total   int
+}
+
+// GroupCount is a group and its number of non-hidden devices.
+type GroupCount struct {
+	Name    string
+	Devices int
+}
+
+// QueryDevices returns a page of devices, filtered, sorted and paged in SQL.
+func (d *DB) QueryDevices(ctx context.Context, q DeviceQuery) (DevicePage, error) {
+	if q.Limit <= 0 {
+		q.Limit = 200
+	}
+	q.Limit = min(q.Limit, 1000)
+	q.Offset = max(q.Offset, 0)
+	where := []string{"1=1"}
+	var args []any
+	if q.Q != "" {
+		where = append(where, `(instr(lower(d.id), lower(?)) > 0 OR instr(lower(d.ip), lower(?)) > 0 OR instr(lower(d.name), lower(?)) > 0)`)
+		args = append(args, q.Q, q.Q, q.Q)
+	}
+	switch {
+	case q.Group != "":
+		where = append(where, `d.grp = ?`)
+		args = append(args, q.Group)
+	case q.Ungrouped:
+		where = append(where, `d.grp = ''`)
+	}
+	switch q.Hidden {
+	case HiddenOnly:
+		where = append(where, `d.hidden = 1`)
+	case HiddenExclude:
+		where = append(where, `d.hidden = 0`)
+	case "", HiddenInclude:
+	default:
+		return DevicePage{}, fmt.Errorf("index: unknown hidden filter %q", q.Hidden)
+	}
+	w := strings.Join(where, " AND ")
+	var page DevicePage
+	if err := d.db.QueryRowContext(ctx, `SELECT count(*) FROM devices d WHERE `+w, args...).Scan(&page.Total); err != nil {
+		return page, err
+	}
+	var order string
+	switch q.Sort {
+	case "", SortRate:
+		order = `rate DESC, d.id`
+	case SortName:
+		order = `CASE WHEN d.name = '' THEN d.ip ELSE d.name END COLLATE NOCASE, d.id`
+	case SortLastHeard:
+		order = `d.last_heard DESC, d.id`
+	case SortFirstSeen:
+		order = `d.first_seen DESC, d.id`
+	default:
+		return page, fmt.Errorf("index: unknown device sort %q", q.Sort)
+	}
+	rateTo := int64(1<<62 - 1)
+	if !q.RateTo.IsZero() {
+		rateTo = ms(q.RateTo)
+	}
+	rows, err := d.db.QueryContext(ctx, `SELECT `+deviceCols+`, COALESCE(r.rate, 0) AS rate FROM devices d
+		LEFT JOIN (SELECT device_id, sum(msgs) AS rate FROM stats WHERE minute >= ? AND minute < ? GROUP BY device_id) r
+		ON r.device_id = d.id WHERE `+w+` ORDER BY `+order+` LIMIT ? OFFSET ?`,
+		append(append([]any{ms(q.RateFrom.Truncate(time.Minute)), rateTo}, args...), q.Limit, q.Offset)...)
+	if err != nil {
+		return page, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var dv Device
+		var hidden int
+		var first, last int64
+		if err := rows.Scan(&dv.ID, &dv.IP, &dv.Name, &dv.Group, &hidden, &first, &last, &dv.TotalMsgs, &dv.TotalBytes,
+			&dv.BytesOnDisk, &dv.RecentMsgs); err != nil {
+			return page, err
+		}
+		dv.Hidden = hidden != 0
+		dv.FirstSeen, dv.LastHeard = tm(first), tm(last)
+		page.Devices = append(page.Devices, dv)
+	}
+	return page, rows.Err()
+}
+
+// Groups returns every group with its number of non-hidden devices, sorted by name.
+// Ungrouped devices aren't listed; a group whose devices are all hidden is listed
+// with 0.
+func (d *DB) Groups(ctx context.Context) ([]GroupCount, error) {
+	rows, err := d.db.QueryContext(ctx, `SELECT grp, sum(hidden = 0) FROM devices WHERE grp != '' GROUP BY grp ORDER BY grp`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []GroupCount
+	for rows.Next() {
+		var g GroupCount
+		if err := rows.Scan(&g.Name, &g.Devices); err != nil {
+			return nil, err
+		}
+		out = append(out, g)
+	}
+	return out, rows.Err()
+}
+
+// PruneDevices deletes devices that have no files left, no name and no group, and
+// weren't heard since heardBefore, and returns their IDs (so the store can remove
+// their empty folders). Named or grouped devices are always kept.
+func (d *DB) PruneDevices(ctx context.Context, heardBefore time.Time) ([]string, error) {
+	rows, err := d.db.QueryContext(ctx, `DELETE FROM devices WHERE name = '' AND grp = '' AND last_heard < ?
+		AND NOT EXISTS (SELECT 1 FROM files f WHERE f.device_id = devices.id) RETURNING id`, ms(heardBefore))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
