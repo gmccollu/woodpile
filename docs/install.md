@@ -257,7 +257,7 @@ Or with icacls, which gives the same DACL (`M` is 0x1301bf) but leaves the owner
 | File | What it is |
 |---|---|
 | `logs/<device>/<day>.log`, `.log.gz` | the received messages; plain text, one line each |
-| `index.db` (+ `-wal`, `-shm`) | the SQLite index; `woodpile reindex` rebuilds it from the logs |
+| `index.db` (+ `-wal`, `-shm`) | the SQLite index; `woodpile reindex` rebuilds it from the logs. Stop the service and run it as the service's user: `sudo -u woodpile woodpile reindex` (Linux), `sudo -u _woodpile woodpile reindex` (macOS), an administrator prompt on Windows. As root it refuses, so a link planted in the folder can't steer root |
 | `woodpile.toml` | the config (Linux: `/etc/woodpile/woodpile.toml` instead) |
 | `woodpile.lock` | locked while a Woodpile process uses the folder, so two servers (or a server and `reindex`) never share it. The lock is the OS's and goes away with the process, even after a crash; the file itself stays and holds the last PID |
 | `woodpile.state.json` | written by the running server (PID, version, UI address and any UI error) for `woodpile status`; deleted at a clean stop |

@@ -188,6 +188,16 @@ deb | rpm)
 	refuses "installed by the package" $SUDO "$(command -v woodpile)" uninstall
 	restart_service
 	still_there "$r1" "a restart"
+	say "reindex: refused as root, works as the service's user (re-test N1)"
+	$SUDO systemctl stop woodpile.service
+	refuses "sudo -u woodpile" $SUDO "$(command -v woodpile)" reindex
+	if [ -n "$SUDO" ]; then as_wp="sudo -u woodpile"; else as_wp="runuser -u woodpile --"; fi
+	$as_wp "$(command -v woodpile)" reindex || die "reindex as the woodpile user failed"
+	ok "reindex runs as the woodpile user"
+	$SUDO test ! -O "$DATA/woodpile.lock" || die "the lock file is root's"
+	$SUDO systemctl start woodpile.service
+	wait_up
+	still_there "$r1" "a reindex"
 	if [ "$mode" = deb ]; then
 		say "apt-get remove keeps the data"
 		$SUDO apt-get remove -y woodpile

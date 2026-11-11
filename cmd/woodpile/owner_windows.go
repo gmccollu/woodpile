@@ -38,3 +38,8 @@ func checkOwnedByMe(path string) error {
 			"Use your own copy, or pass --dir with a folder of yours", path, owner)
 	}
 }
+
+// runAsOwnerFirst is Unix only: on Windows reindex runs as an administrator.
+func runAsOwnerFirst(string) error { return nil }
+
+func runAsOwnerHint(string) string { return "Run it from an administrator prompt, with the service stopped." }

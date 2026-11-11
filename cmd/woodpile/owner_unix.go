@@ -6,7 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/user"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"syscall"
 
 	"golang.org/x/sys/unix"
@@ -106,4 +109,47 @@ func checkOwnedByMe(path string) error {
 	}
 	return fmt.Errorf("%s belongs to another user (uid %d); portable mode only uses its own folders. "+
 		"Use your own copy, or pass --dir with a folder of yours", path, st.Uid)
+}
+
+// runAsOwnerFirst refuses, as root, a data folder owned by another user, with the
+// command to run instead (`woodpile reindex` must run as the folder's owner).
+func runAsOwnerFirst(dataDir string) error {
+	if os.Geteuid() != 0 {
+		return nil
+	}
+	fi, err := os.Lstat(dataDir)
+	if err != nil {
+		return err
+	}
+	if st, ok := fi.Sys().(*syscall.Stat_t); ok && st.Uid != 0 {
+		return fmt.Errorf("%s belongs to another user, so reindex doesn't run as root.\n%s", dataDir, runAsOwnerHint(dataDir))
+	}
+	return nil
+}
+
+// runAsOwnerHint is the command that runs reindex as the data folder's owner.
+func runAsOwnerHint(dataDir string) string {
+	name := "woodpile"
+	if runtime.GOOS == "darwin" {
+		name = "_woodpile"
+	}
+	if fi, err := os.Lstat(dataDir); err == nil {
+		if st, ok := fi.Sys().(*syscall.Stat_t); ok {
+			if u, err := user.LookupId(fmt.Sprint(st.Uid)); err == nil {
+				name = u.Username
+			}
+		}
+	}
+	args := ""
+	for _, a := range os.Args[2:] {
+		args += " " + shellQuote(a)
+	}
+	return fmt.Sprintf("Run it as that user, with the service stopped:\n    sudo -u %s %s reindex%s", name, shellQuote(os.Args[0]), args)
+}
+
+func shellQuote(s string) string {
+	if s != "" && !strings.ContainsAny(s, " \t'\"\\$`!*?[]{}()<>|&;#~") {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }

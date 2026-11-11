@@ -328,6 +328,12 @@ data folder.`, stderr)
 	dataDir := cfg.Storage.DataDir
 	// Hold the data dir's lock for the whole rebuild, so the server can't start
 	// in the middle of it.
+	// As root on a folder the service account owns, nothing may be opened or
+	// created there (re-test N1, N10): the index refuses it, so say how first,
+	// before even the lock file is created.
+	if err := runAsOwnerFirst(dataDir); err != nil {
+		return fail(stderr, "reindex", err)
+	}
 	lock, err := server.LockDataDir(dataDir)
 	if errors.Is(err, server.ErrLocked) {
 		return fail(stderr, "reindex", fmt.Errorf("Woodpile is running on %s; stop it first (%s, or Ctrl-C a foreground `woodpile run`), then run reindex again",
@@ -343,6 +349,9 @@ data folder.`, stderr)
 	}
 
 	idx, err := index.Open(filepath.Join(dataDir, index.FileName))
+	if errors.Is(err, index.ErrRunAsOwner) {
+		return fail(stderr, "reindex", fmt.Errorf("%v\n%s", err, runAsOwnerHint(dataDir)))
+	}
 	if err != nil {
 		return fail(stderr, "reindex", adminErr(err))
 	}
