@@ -9,6 +9,15 @@ and versions follow [Semantic Versioning](https://semver.org/). Release notes on
 The first release: a syslog server you can install on Windows, macOS or Linux in a minute, that keeps every message
 as plain files within a disk budget and has a web UI for watching, searching and exporting logs.
 
+### Known issues (release candidates; fixed before 1.0.0)
+- Under a sustained flood spread across many spoofed source addresses, size-based retention can delete the
+  busiest real device's history, including its newest day. Use the sender allowlist on untrusted networks.
+- A flood that cycles through more than 10,000 previously seen source addresses can slow ingest to about 12,000
+  messages a second, and the kernel may then drop UDP messages for every device.
+- Windows, `woodpile run` (not the installers): a data folder that another local user created beforehand is accepted
+  if its permissions name individual users. A race exists while the installer replaces a folder another user created.
+- Hidden devices with no name or group can reappear unhidden after 24 hours without logs.
+
 ### Receiving
 - Listens on UDP and TCP port 514 straight away, on IPv4 and IPv6, with no setup.
 - TCP framing (octet counting or newline) is detected per message. Messages up to 64 KiB; longer ones are
