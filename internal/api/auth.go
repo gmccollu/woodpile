@@ -15,14 +15,21 @@ import (
 	"time"
 )
 
-// Session cookies and CSRF header. In LAN mode (HTTPS) the __Host- prefix makes
-// the browser insist on Secure, Path=/ and no Domain. With require_login_local
-// the UI is plain http://localhost, where browsers don't all keep Secure
-// cookies, so that cookie is HttpOnly and SameSite=Strict but not Secure.
+// A session is two secrets (docs/api.md, "Session secret"): a cookie, and a
+// secret the page keeps in localStorage and sends as SessionHeader. Every
+// authenticated request needs both. The cookie isn't port-scoped, so another
+// server on the same host (another local user's) could receive it; localStorage
+// is scoped to the exact origin, and a custom header can't be sent cross-site,
+// so the header also does a CSRF token's job.
+//
+// In LAN mode (HTTPS) the cookie's __Host- prefix makes the browser insist on
+// Secure, Path=/ and no Domain. With require_login_local the UI is plain
+// http://localhost, where browsers don't all keep Secure cookies, so that
+// cookie is HttpOnly and SameSite=Strict but not Secure.
 const (
 	SessionCookie      = "__Host-woodpile_session"
 	LocalSessionCookie = "woodpile_session"
-	CSRFHeader         = "X-CSRF-Token"
+	SessionHeader      = "X-Woodpile-Session"
 )
 
 // Session lifetimes and limits.
@@ -60,7 +67,7 @@ const (
 )
 
 type session struct {
-	csrf     string
+	secret   [32]byte // SHA-256 of the session secret (the header); the secret itself isn't kept
 	created  time.Time
 	lastSeen time.Time
 }
@@ -132,9 +139,28 @@ func randomToken() string {
 
 func tokenKey(tok string) [32]byte { return sha256.Sum256([]byte(tok)) }
 
-// lookup returns the request's live session and its key. Sessions from either
-// cookie are valid in either mode: they're the same table, and a session
-// can't be had without the password.
+// authenticate returns the request's session when it carries both the session
+// cookie and the matching SessionHeader; either alone is no session.
+func (a *auth) authenticate(r *http.Request) (*session, [32]byte, bool) {
+	sess, k, ok := a.lookup(r)
+	if !ok {
+		return nil, k, false
+	}
+	h := r.Header.Get(SessionHeader)
+	if h == "" || len(h) > 128 {
+		return nil, k, false
+	}
+	got := tokenKey(h)
+	if subtle.ConstantTimeCompare(got[:], sess.secret[:]) != 1 {
+		return nil, k, false
+	}
+	return sess, k, true
+}
+
+// lookup returns the session the request's cookie names (the cookie alone:
+// use authenticate for access). Sessions from either cookie are valid in
+// either mode: they're the same table, and a session can't be had without the
+// password.
 func (a *auth) lookup(r *http.Request) (*session, [32]byte, bool) {
 	c, err := r.Cookie(SessionCookie)
 	if err != nil || c.Value == "" {
@@ -159,17 +185,19 @@ func (a *auth) lookup(r *http.Request) (*session, [32]byte, bool) {
 	return s, k, true
 }
 
-func (a *auth) newSession() (token string, s *session) {
-	token = randomToken()
+// newSession makes a session and returns its cookie token and its secret
+// (for the SessionHeader). Only hashes of both are kept.
+func (a *auth) newSession() (token, secret string) {
+	token, secret = randomToken(), randomToken()
 	now := a.now()
-	s = &session{csrf: randomToken(), created: now, lastSeen: now}
+	s := &session{secret: tokenKey(secret), created: now, lastSeen: now}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if len(a.sessions) >= maxSessions {
 		a.evictSessionsLocked(now)
 	}
 	a.sessions[tokenKey(token)] = s
-	return token, s
+	return token, secret
 }
 
 // evictSessionsLocked drops expired sessions and, if still full, the least
@@ -379,15 +407,6 @@ func (a *auth) setPassword(pw string) error {
 
 // ---- middleware ----
 
-// isStateChanging reports whether a method can change state.
-func isStateChanging(m string) bool {
-	switch m {
-	case http.MethodGet, http.MethodHead, http.MethodOptions:
-		return false
-	}
-	return true
-}
-
 // publicInLAN reports whether a path is reachable without a session in LAN mode:
 // login, logout (it only clears the cookie), session, the health check and the
 // static UI (everything outside /api/). Every other API route needs a session.
@@ -405,31 +424,18 @@ func (s *Server) authActive() bool {
 	return s.lanActive() || (s.requireLocal.Load() && s.auth.passwordSet())
 }
 
-// requireSession enforces auth when authActive: a session for every non-public
-// route, and the session's CSRF token on every state-changing request that has
-// one. Login carries no session yet; it relies on the cross-origin check and
-// the SameSite=Strict cookie.
+// requireSession enforces auth when authActive: every non-public route needs
+// the session cookie and its secret header (authenticate). This also stands
+// in for a CSRF token: a cross-site request can't set the header.
 func (s *Server) requireSession(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !s.authActive() {
+		if !s.authActive() || publicInLAN(r.URL.Path) {
 			next.ServeHTTP(w, r)
 			return
 		}
-		sess, _, ok := s.auth.lookup(r)
-		if !ok {
-			if publicInLAN(r.URL.Path) {
-				next.ServeHTTP(w, r)
-				return
-			}
-			writeError(w, http.StatusUnauthorized, "Log in first.")
+		if _, _, ok := s.auth.authenticate(r); !ok {
+			writeError(w, http.StatusUnauthorized, "Log in first (send the session cookie and the "+SessionHeader+" header).")
 			return
-		}
-		if isStateChanging(r.Method) && r.URL.Path != "/api/login" {
-			got := r.Header.Get(CSRFHeader)
-			if got == "" || subtle.ConstantTimeCompare([]byte(got), []byte(sess.csrf)) != 1 {
-				writeError(w, http.StatusForbidden, "Missing or invalid CSRF token (send the "+CSRFHeader+" header from GET /api/session).")
-				return
-			}
 		}
 		next.ServeHTTP(w, r)
 	})
@@ -443,7 +449,9 @@ type SessionInfo struct {
 	AuthRequired  bool   `json:"auth_required"` // true in LAN mode, and on localhost with require_login_local
 	Authenticated bool   `json:"authenticated"` // always true when no login is required
 	PasswordSet   bool   `json:"password_set"`
-	CSRFToken     string `json:"csrf_token"` // send as X-CSRF-Token on state-changing requests; "" when not needed
+	// SessionSecret is set only in POST /api/login's response: the value of the
+	// X-Woodpile-Session header for this session. Never returned again.
+	SessionSecret string `json:"session_secret,omitempty"`
 }
 
 func (s *Server) sessionInfo(r *http.Request) SessionInfo {
@@ -453,8 +461,8 @@ func (s *Server) sessionInfo(r *http.Request) SessionInfo {
 	}
 	if s.authActive() {
 		info.AuthRequired, info.Authenticated = true, false
-		if sess, _, ok := s.auth.lookup(r); ok {
-			info.Authenticated, info.CSRFToken = true, sess.csrf
+		if _, _, ok := s.auth.authenticate(r); ok {
+			info.Authenticated = true
 		}
 	}
 	return info
@@ -555,15 +563,17 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	if _, k, ok := s.auth.lookup(r); ok {
 		s.auth.endSession(k)
 	}
-	tok, sess := s.auth.newSession()
+	tok, secret := s.auth.newSession()
 	s.setSessionCookie(w, tok)
 	info := s.sessionInfo(r)
-	info.Authenticated, info.CSRFToken = true, sess.csrf
+	info.Authenticated, info.SessionSecret = true, secret
 	writeJSON(w, http.StatusOK, info)
 }
 
+// logout ends the session when the request proves it (cookie and header; a
+// cookie alone, perhaps a stolen one, can't end it) and clears the cookie.
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
-	if _, k, ok := s.auth.lookup(r); ok {
+	if _, k, ok := s.auth.authenticate(r); ok {
 		s.auth.endSession(k)
 	}
 	s.clearSessionCookie(w)
@@ -608,7 +618,7 @@ func (s *Server) putPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if had {
-		_, k, _ := s.auth.lookup(r)
+		_, k, _ := s.auth.authenticate(r)
 		s.auth.endOtherSessions(k)
 		s.event(LevelInfo, EventKindAuth, "UI password changed.")
 	} else {

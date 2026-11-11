@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -59,7 +60,45 @@ func login(t *testing.T, srv *testServer, c *http.Client, pw string) SessionInfo
 	if err := json.Unmarshal(r.body, &info); err != nil {
 		t.Fatal(err)
 	}
+	if info.SessionSecret == "" {
+		t.Fatalf("login gave no session secret: %s", r.body)
+	}
+	withSecret(c, info.SessionSecret)
 	return info
+}
+
+// headerTransport adds the session secret header to every request, as the UI
+// does from localStorage.
+type headerTransport struct {
+	base   http.RoundTripper
+	secret string
+}
+
+func (h headerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	r = r.Clone(r.Context())
+	r.Header.Set(SessionHeader, h.secret)
+	return h.base.RoundTrip(r)
+}
+
+// withSecret makes c send secret in SessionHeader (replacing an earlier one).
+func withSecret(c *http.Client, secret string) {
+	base := c.Transport
+	if h, ok := base.(headerTransport); ok {
+		base = h.base
+	}
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	c.Transport = headerTransport{base: base, secret: secret}
+}
+
+// withoutSecret is c's transport without the session header.
+func withoutSecret(c *http.Client) *http.Client {
+	cc := *c
+	if h, ok := c.Transport.(headerTransport); ok {
+		cc.Transport = h.base
+	}
+	return &cc
 }
 
 func TestLANRefusesWithoutPassword(t *testing.T) {
@@ -123,14 +162,17 @@ func TestLANLoginLogoutSession(t *testing.T) {
 		}
 	}
 	m := do(t, c, "GET", srv.url("/api/session"), "").json(t)
-	if m["mode"] != "lan" || m["auth_required"] != true || m["authenticated"] != false || m["csrf_token"] != "" || m["password_set"] != true {
+	if m["mode"] != "lan" || m["auth_required"] != true || m["authenticated"] != false || m["password_set"] != true {
 		t.Fatalf("session before login: %v", m)
+	}
+	if _, ok := m["csrf_token"]; ok {
+		t.Error("csrf_token is gone from the contract")
 	}
 
 	// A wrong password.
 	wantError(t, do(t, c, "POST", srv.url("/api/login"), `{"password":"nope"}`), 401, "Wrong password")
 
-	// Login sets a strict cookie and returns the CSRF token.
+	// Login sets a strict cookie and returns the session secret, once.
 	r := do(t, c, "POST", srv.url("/api/login"), fmt.Sprintf(`{"password": %q}`, pw))
 	if r.code != 200 {
 		t.Fatalf("login %d %s", r.code, r.body)
@@ -150,55 +192,97 @@ func TestLANLoginLogoutSession(t *testing.T) {
 	}
 	var info SessionInfo
 	_ = json.Unmarshal(r.body, &info)
-	if !info.Authenticated || len(info.CSRFToken) < 32 {
+	if !info.Authenticated || len(info.SessionSecret) < 32 {
 		t.Fatalf("login body %s", r.body)
 	}
-	if strings.Contains(cookie, info.CSRFToken) {
-		t.Error("CSRF token equals the cookie")
+	cookieVal := strings.SplitN(strings.TrimPrefix(cookie, SessionCookie+"="), ";", 2)[0]
+	if cookieVal == info.SessionSecret || strings.Contains(cookie, info.SessionSecret) {
+		t.Error("the secret is the cookie")
 	}
+	secretHdr := SessionHeader + ": " + info.SessionSecret
 
-	// Now the API works; GETs need no CSRF token.
-	if r := do(t, c, "GET", srv.url("/api/status"), ""); r.code != 200 {
-		t.Fatalf("status after login: %d", r.code)
-	}
-	again := do(t, c, "GET", srv.url("/api/session"), "").json(t)
-	if again["authenticated"] != true || again["csrf_token"] != info.CSRFToken {
-		t.Errorf("session after login: %v", again)
-	}
-
-	// State-changing requests need the token.
+	// Cookie alone: 401, for reads and writes alike (a cookie caught by another
+	// server on this host is useless). Header alone: 401. Both: 200.
 	u := srv.url("/api/devices/10.1.0.1")
-	wantError(t, do(t, c, "PATCH", u, `{"name":"x"}`), 403, "CSRF")
-	wantError(t, do(t, c, "PATCH", u, `{"name":"x"}`, CSRFHeader+": wrong"), 403, "CSRF")
-	wantError(t, do(t, c, "POST", srv.url("/api/listeners/retry"), ""), 403, "CSRF")
-	wantError(t, do(t, c, "POST", srv.url("/api/logout"), ""), 403, "CSRF")
-	if r := do(t, c, "PATCH", u, `{"name":"x"}`, CSRFHeader+": "+info.CSRFToken); r.code != 200 {
-		t.Errorf("PATCH with CSRF: %d %s", r.code, r.body)
-	}
-	if r := do(t, c, "POST", srv.url("/api/listeners/retry"), "", CSRFHeader+": "+info.CSRFToken); r.code != 204 {
-		t.Errorf("retry with CSRF: %d", r.code)
-	}
-	// Cross-origin is still refused with a valid token.
-	wantError(t, do(t, c, "PATCH", u, `{"name":"y"}`, CSRFHeader+": "+info.CSRFToken, "Sec-Fetch-Site: cross-site"), 403, "Cross-origin")
-
-	// A second login gets a new session; the old cookie stops working.
-	oldCookie := strings.SplitN(strings.TrimPrefix(cookie, SessionCookie+"="), ";", 2)[0]
-	info2 := login(t, srv, c, pw)
-	if info2.CSRFToken == info.CSRFToken {
-		t.Error("CSRF token reused across logins")
-	}
 	plain := tlsClient(t, srv.dataDir)
 	plain.Jar = nil
-	wantError(t, do(t, plain, "GET", srv.url("/api/status"), "", "Cookie: "+SessionCookie+"="+oldCookie), 401, "")
+	cookieHdr := "Cookie: " + SessionCookie + "=" + cookieVal
+	wantError(t, do(t, plain, "GET", srv.url("/api/status"), "", cookieHdr), 401, "")
+	wantError(t, do(t, plain, "GET", srv.url("/api/live"), "", cookieHdr), 401, "")
+	wantError(t, do(t, plain, "PATCH", u, `{"name":"x"}`, cookieHdr), 401, "")
+	wantError(t, do(t, plain, "GET", srv.url("/api/status"), "", secretHdr), 401, "")
+	wantError(t, do(t, plain, "GET", srv.url("/api/status"), "", cookieHdr, SessionHeader+": wrong"), 401, "")
+	if r := do(t, plain, "GET", srv.url("/api/status"), "", cookieHdr, secretHdr); r.code != 200 {
+		t.Fatalf("cookie and header: %d %s", r.code, r.body)
+	}
+	if m := do(t, plain, "GET", srv.url("/api/session"), "", cookieHdr).json(t); m["authenticated"] != false {
+		t.Errorf("session with the cookie only: %v", m)
+	}
+	if m := do(t, plain, "GET", srv.url("/api/session"), "", cookieHdr, secretHdr).json(t); m["authenticated"] != true {
+		t.Errorf("session with both: %v", m)
+	}
+	withSecret(c, info.SessionSecret)
+	// The live tail takes the header too (the UI streams it with fetch()).
+	{
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		req, _ := http.NewRequestWithContext(ctx, "GET", srv.url("/api/live"), nil)
+		resp, err := c.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.StatusCode != 200 || !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
+			t.Errorf("live with both: %d %s", resp.StatusCode, resp.Header.Get("Content-Type"))
+		}
+		resp.Body.Close()
+		cancel()
+	}
+	if r := do(t, c, "PATCH", u, `{"name":"x"}`); r.code != 200 {
+		t.Errorf("PATCH with both: %d %s", r.code, r.body)
+	}
+	if r := do(t, c, "POST", srv.url("/api/listeners/retry"), ""); r.code != 204 {
+		t.Errorf("retry with both: %d", r.code)
+	}
+	// The secret is never sent back.
+	for _, p := range []string{"/api/session", "/api/status", "/api/settings", "/api/devices", "/api/stats", "/api/exports"} {
+		if r := do(t, c, "GET", srv.url(p), ""); strings.Contains(string(r.body), info.SessionSecret) {
+			t.Errorf("%s returns the secret", p)
+		}
+	}
+	// Cross-origin is still refused with a valid session.
+	wantError(t, do(t, c, "PATCH", u, `{"name":"y"}`, "Sec-Fetch-Site: cross-site"), 403, "Cross-origin")
 
-	// Logout ends the session and clears the cookie.
-	r = do(t, c, "POST", srv.url("/api/logout"), "", CSRFHeader+": "+info2.CSRFToken)
+	// A second login gets a new session: the old cookie and secret stop working.
+	info2 := login(t, srv, c, pw)
+	if info2.SessionSecret == info.SessionSecret {
+		t.Error("secret reused across logins")
+	}
+	wantError(t, do(t, plain, "GET", srv.url("/api/status"), "", cookieHdr, secretHdr), 401, "")
+
+	// A cookie alone (a stolen one) can't end the session.
+	var cookie2 string
+	for _, ck := range c.Jar.Cookies(mustURL(t, srv.url("/"))) {
+		if ck.Name == SessionCookie {
+			cookie2 = ck.Value
+		}
+	}
+	both2 := []string{"Cookie: " + SessionCookie + "=" + cookie2, SessionHeader + ": " + info2.SessionSecret}
+	if r := do(t, plain, "POST", srv.url("/api/logout"), "", both2[0]); r.code != 204 {
+		t.Fatalf("cookie-only logout: %d", r.code)
+	}
+	if r := do(t, plain, "GET", srv.url("/api/status"), "", both2...); r.code != 200 {
+		t.Fatalf("a cookie-only logout ended the session: %d", r.code)
+	}
+
+	// Logout with both ends the session and clears the cookie; neither the
+	// cookie nor the secret works afterwards.
+	r = do(t, c, "POST", srv.url("/api/logout"), "")
 	if r.code != 204 {
 		t.Fatalf("logout %d %s", r.code, r.body)
 	}
 	if sc := r.header.Get("Set-Cookie"); !strings.Contains(sc, "Max-Age=0") {
 		t.Errorf("logout cookie %q", sc)
 	}
+	wantError(t, do(t, plain, "GET", srv.url("/api/status"), "", both2...), 401, "")
 	wantError(t, do(t, c, "GET", srv.url("/api/status"), ""), 401, "")
 	if m := do(t, c, "GET", srv.url("/api/session"), "").json(t); m["authenticated"] != false {
 		t.Errorf("session after logout: %v", m)
@@ -307,13 +391,13 @@ func TestPasswordChange(t *testing.T) {
 	other := tlsClient(t, srv.dataDir)
 	login(t, srv, other, "first-password")
 
-	csrf := CSRFHeader + ": " + info.CSRFToken
-	wantError(t, do(t, c, "PUT", srv.url("/api/password"), `{"current":"wrong","new":"second-password"}`, csrf), 403, "Wrong password")
-	r := do(t, c, "PUT", srv.url("/api/password"), `{"current":"first-password","new":"short"}`, csrf)
+	withSecret(c, info.SessionSecret) // other's login replaced nothing on c, but be explicit
+	wantError(t, do(t, c, "PUT", srv.url("/api/password"), `{"current":"wrong","new":"second-password"}`), 403, "Wrong password")
+	r := do(t, c, "PUT", srv.url("/api/password"), `{"current":"first-password","new":"short"}`)
 	if r.code != 400 || !strings.Contains(string(r.body), `"new"`) {
 		t.Fatalf("short password: %d %s", r.code, r.body)
 	}
-	if r := do(t, c, "PUT", srv.url("/api/password"), `{"current":"first-password","new":"second-password"}`, csrf); r.code != 204 {
+	if r := do(t, c, "PUT", srv.url("/api/password"), `{"current":"first-password","new":"second-password"}`); r.code != 204 {
 		t.Fatalf("change: %d %s", r.code, r.body)
 	}
 	// This session continues; the other one ended.
@@ -577,7 +661,7 @@ func TestLANNoHostCheck(t *testing.T) {
 func TestModeSwitchRestarts(t *testing.T) {
 	srv := lanServer(t, "password-123")
 	c := tlsClient(t, srv.dataDir)
-	info := login(t, srv, c, "password-123")
+	login(t, srv, c, "password-123")
 	lanState := srv.State()
 
 	// Back to localhost mode through the settings PUT.
@@ -586,7 +670,7 @@ func TestModeSwitchRestarts(t *testing.T) {
 	srv.b.mu.Unlock()
 	s.UI.LANMode = false
 	body, _ := json.Marshal(s)
-	r := do(t, c, "PUT", srv.url("/api/settings"), string(body), CSRFHeader+": "+info.CSRFToken)
+	r := do(t, c, "PUT", srv.url("/api/settings"), string(body))
 	if r.code != 200 {
 		t.Fatalf("PUT: %d %s", r.code, r.body)
 	}
@@ -653,4 +737,13 @@ func TestBindFailureRetries(t *testing.T) {
 	if n != 1 {
 		t.Errorf("%d bind-error events, want 1 (no repeats): %v", n, b.eventTexts())
 	}
+}
+
+func mustURL(t *testing.T, raw string) *url.URL {
+	t.Helper()
+	u, err := url.Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return u
 }

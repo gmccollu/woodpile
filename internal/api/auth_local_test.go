@@ -84,7 +84,7 @@ func TestRequireLoginLocal(t *testing.T) {
 		t.Errorf("static UI %d", r.code)
 	}
 
-	// Log in: the localhost cookie, then the same session and CSRF rules as LAN mode.
+	// Log in: the localhost cookie, then the same session rules as LAN mode.
 	wantError(t, do(t, c, "POST", srv.url("/api/login"), `{"password": "nope"}`), 401, "Wrong")
 	r = do(t, c, "POST", srv.url("/api/login"), `{"password": "local secret pw"}`)
 	if r.code != 200 {
@@ -96,15 +96,26 @@ func TestRequireLoginLocal(t *testing.T) {
 		t.Errorf("cookie %q", ck)
 	}
 	json.Unmarshal(r.body, &info)
-	if !info.Authenticated || info.CSRFToken == "" {
+	if !info.Authenticated || info.SessionSecret == "" {
 		t.Fatalf("login info %+v", info)
 	}
-	if r := do(t, c, "GET", srv.url("/api/status"), ""); r.code != 200 {
-		t.Fatalf("status with a session: %d", r.code)
+	// The cookie alone is useless: another local user's server on another
+	// localhost port receives this cookie, but never the secret (localStorage
+	// is per origin). Replay it the way such a server would.
+	stolen := "Cookie: " + LocalSessionCookie + "=" + strings.SplitN(strings.TrimPrefix(ck, LocalSessionCookie+"="), ";", 2)[0]
+	wantError(t, do(t, anon, "GET", srv.url("/api/status"), "", stolen), 401, "")
+	wantError(t, do(t, anon, "GET", srv.url("/api/search?q=x"), "", stolen), 401, "")
+	wantError(t, do(t, anon, "POST", srv.url("/api/exports"), `{}`, stolen), 401, "")
+	wantError(t, do(t, anon, "PUT", srv.url("/api/password"), `{"current":"x","new":"taken over!"}`, stolen), 401, "")
+	if m := do(t, anon, "GET", srv.url("/api/session"), "", stolen).json(t); m["authenticated"] != false {
+		t.Errorf("session with a stolen cookie: %v", m)
 	}
-	wantError(t, do(t, c, "POST", srv.url("/api/listeners/retry"), ""), 403, "CSRF")
-	if r := do(t, c, "POST", srv.url("/api/listeners/retry"), "", CSRFHeader+": "+info.CSRFToken); r.code != 204 {
-		t.Errorf("retry with CSRF: %d %s", r.code, r.body)
+	withSecret(c, info.SessionSecret)
+	if r := do(t, c, "GET", srv.url("/api/status"), ""); r.code != 200 {
+		t.Fatalf("status with cookie and secret: %d", r.code)
+	}
+	if r := do(t, c, "POST", srv.url("/api/listeners/retry"), ""); r.code != 204 {
+		t.Errorf("retry with cookie and secret: %d %s", r.code, r.body)
 	}
 	// Turning it off again needs that session too, then localhost is open.
 	srv.b.mu.Lock()
@@ -112,7 +123,7 @@ func TestRequireLoginLocal(t *testing.T) {
 	srv.b.mu.Unlock()
 	s.UI.RequireLoginLocal = false
 	body, _ := json.Marshal(s)
-	if r := do(t, c, "PUT", srv.url("/api/settings"), string(body), CSRFHeader+": "+info.CSRFToken); r.code != 200 {
+	if r := do(t, c, "PUT", srv.url("/api/settings"), string(body)); r.code != 200 {
 		t.Fatalf("disable: %d %s", r.code, r.body)
 	}
 	if r := do(t, anon, "GET", srv.url("/api/status"), ""); r.code != 200 {
