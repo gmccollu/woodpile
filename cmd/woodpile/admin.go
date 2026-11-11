@@ -161,9 +161,6 @@ reached.`, stderr)
 			w.row(label, describeListener(l))
 		}
 		w.row("UI", uiURL(cfg))
-		if status.UICertFingerprint != "" {
-			w.row("TLS cert", "SHA-256 "+status.UICertFingerprint)
-		}
 		w.row("Data", status.DataDir)
 		for i, b := range status.Banners {
 			label := ""
@@ -174,12 +171,9 @@ reached.`, stderr)
 		}
 		return 0
 	case errors.Is(apiErr, errNeedsLogin):
-		w.row("Server", "running; the UI needs a login")
+		w.row("Server", "running in LAN mode")
 		w.row("Listeners", "log in to the UI to see them")
 		w.row("UI", uiURL(cfg))
-		if rs, err := server.ReadState(cfg.Storage.DataDir); err == nil && rs.UI.CertFingerprint != "" {
-			w.row("TLS cert", "SHA-256 "+rs.UI.CertFingerprint)
-		}
 		return 0
 	}
 
@@ -218,7 +212,7 @@ func describeListener(l api.Listener) string {
 	return s
 }
 
-var errNeedsLogin = errors.New("the API needs a login (LAN mode, or require_login_local)")
+var errNeedsLogin = errors.New("LAN mode: the API needs a login")
 
 // fetchStatus reads /api/status from the local server.
 func fetchStatus(cfg config.Config) (api.Status, error) {
