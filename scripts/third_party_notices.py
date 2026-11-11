@@ -214,12 +214,12 @@ def render(go, std, npm):
     w("Go modules compiled into the woodpile program (all platforms):")
     w("")
     for c in [std] + go:
-        w(f"  {c['name']:<44} {c['version']:<38} {c['license']}".rstrip())
+        w(f"  {c['name']:<44} {c['version']:<40} {c['license']}".rstrip())
     w("")
     w("Packages bundled into the web UI:")
     w("")
     for c in npm:
-        w(f"  {c['name']:<44} {c['version']:<38} {c['license']}".rstrip())
+        w(f"  {c['name']:<44} {c['version']:<40} {c['license']}".rstrip())
     w("")
     for c in [std] + go + npm:
         w(RULE)
