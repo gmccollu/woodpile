@@ -48,6 +48,10 @@ done
 [ -n "$host" ] && [ -n "$run" ] && [ "$count" -gt 0 ] || { echo "wl-send: --host, --run and --count are required" >&2; exit 2; }
 case "$proto" in udp | tcp) ;; *) echo "wl-send: --proto udp|tcp" >&2; exit 2 ;; esac
 [[ "$run" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "wl-send: bad --run" >&2; exit 2; }
+# optional allowlist of target addresses (root-owned, one per line): refuse any other --host
+if [ -f "$LAB/targets.allow" ] && ! grep -qxF -- "$host" "$LAB/targets.allow"; then
+	echo "wl-send: --host $host is not in $LAB/targets.allow" >&2; exit 2
+fi
 [ -z "$DRY" ] && [ -z "${WL_TEST_NO_NETNS:-}" ] && [ "$(id -u)" != 0 ] && { echo "wl-send: run as root" >&2; exit 2; }
 
 # shellcheck source=/dev/null
