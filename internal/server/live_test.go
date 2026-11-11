@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/netip"
 	"strings"
 	"testing"
 	"time"
@@ -94,5 +95,30 @@ func TestLiveTailHidesHiddenDevices(t *testing.T) {
 	m2 := send(2)
 	if !gotWithin(all, m2, 5*time.Second) {
 		t.Error("after un-hiding, the default stream didn't get the device's message")
+	}
+}
+
+func TestLiveDevicesEvictIdleSenders(t *testing.T) {
+	l := newLiveDevices()
+	t0 := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
+	for i := 0; i < 50000; i++ {
+		l.add(netip.AddrFrom4([4]byte{10, byte(i >> 16), byte(i >> 8), byte(i)}), t0.Add(time.Duration(i)*time.Microsecond))
+	}
+	if n := l.len(); n != 50000 {
+		t.Fatalf("%d tracked", n)
+	}
+	keep := netip.MustParseAddr("192.0.2.1")
+	// Nine minutes on, one sender is still talking: nothing is old enough yet.
+	l.add(keep, t0.Add(9*time.Minute))
+	if n := l.len(); n != 50001 {
+		t.Fatalf("evicted early: %d", n)
+	}
+	// Eleven minutes on, the 50,000 silent senders go; the talking one stays.
+	l.add(keep, t0.Add(11*time.Minute))
+	if n := l.len(); n != 1 {
+		t.Fatalf("%d tracked after the sweep, want 1", n)
+	}
+	if st, ok := l.snapshot(t0.Add(11 * time.Minute))["192.0.2.1"]; !ok || st.MsgsPerMin == 0 {
+		t.Errorf("survivor %+v %v", st, ok)
 	}
 }

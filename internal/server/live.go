@@ -14,12 +14,19 @@ import (
 // from it shows an active device as heard seconds ago and a rate diluted by the
 // partial minute. These counters reset at restart; the index is the fallback.
 type liveDevices struct {
-	mu   sync.RWMutex
-	devs map[netip.Addr]*liveDevice
+	mu        sync.RWMutex
+	devs      map[netip.Addr]*liveDevice
+	lastSweep int64 // unix ms of the last eviction pass
 }
 
 // rateSeconds is the window of the live rate.
 const rateSeconds = 60
+
+// liveIdle is how long a sender may be silent before its entry (about 1 KiB)
+// is dropped (security review H1: entries used to be kept forever, so a stream
+// of spoofed source addresses grew memory without bound). The device list then
+// uses the index's last-heard time and rate, as after a restart.
+const liveIdle = 10 * time.Minute
 
 type liveDevice struct {
 	mu    sync.Mutex
@@ -32,20 +39,26 @@ type liveDevice struct {
 
 func newLiveDevices() *liveDevices { return &liveDevices{devs: map[netip.Addr]*liveDevice{}} }
 
-// add counts one message from addr received at t.
+// add counts one message from addr received at t. At most once a minute (of
+// received time) it also drops senders idle for over liveIdle.
 func (l *liveDevices) add(addr netip.Addr, t time.Time) {
+	ms := t.UnixMilli()
 	l.mu.RLock()
 	d := l.devs[addr]
+	sweep := ms-l.lastSweep >= time.Minute.Milliseconds()
 	l.mu.RUnlock()
-	if d == nil {
+	if d == nil || sweep {
 		l.mu.Lock()
+		if ms-l.lastSweep >= time.Minute.Milliseconds() {
+			l.lastSweep = ms
+			l.evictLocked(ms)
+		}
 		if d = l.devs[addr]; d == nil {
 			d = &liveDevice{}
 			l.devs[addr] = d
 		}
 		l.mu.Unlock()
 	}
-	ms := t.UnixMilli()
 	sec := t.Unix()
 	i := int(sec % rateSeconds)
 	d.mu.Lock()
@@ -64,6 +77,26 @@ func (l *liveDevices) add(addr netip.Addr, t time.Time) {
 	// sec < d.sec[i]: a message received over a minute before a newer one
 	// (out-of-order clock reads); it's outside the window anyway.
 	d.mu.Unlock()
+}
+
+// evictLocked drops every sender last heard more than liveIdle before nowMs.
+func (l *liveDevices) evictLocked(nowMs int64) {
+	cutoff := nowMs - liveIdle.Milliseconds()
+	for a, d := range l.devs {
+		d.mu.Lock()
+		last := d.last
+		d.mu.Unlock()
+		if last < cutoff {
+			delete(l.devs, a)
+		}
+	}
+}
+
+// len is the number of senders tracked.
+func (l *liveDevices) len() int {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return len(l.devs)
 }
 
 // liveStat is one device's live numbers.
