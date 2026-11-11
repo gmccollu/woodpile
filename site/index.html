@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; img-src 'self' data:; connect-src https://api.github.com; script-src 'self'; style-src 'self'"
+    />
+    <meta name="referrer" content="no-referrer" />
+    <meta name="color-scheme" content="light dark" />
+    <title>Woodpile: a syslog server you can install anywhere in a minute</title>
+    <meta
+      name="description"
+      content="Woodpile is a free, open-source syslog server for Windows, macOS and Linux. It keeps every message as plain files within a disk budget, with a web UI to watch, search and export logs."
+    />
+    <link rel="icon" type="image/svg+xml" href="favicon.svg" />
+    <link rel="stylesheet" href="style.css" />
+    <!-- Open Graph needs absolute URLs: update them if the site moves to its own domain. -->
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="Woodpile: a syslog server you can install anywhere in a minute" />
+    <meta
+      property="og:description"
+      content="Keeps every message as plain files within a disk budget. Watch, search and export logs for support. Windows, macOS and Linux; MIT licensed."
+    />
+    <meta property="og:url" content="https://gmccollu.github.io/woodpile/" />
+    <meta property="og:image" content="https://gmccollu.github.io/woodpile/img/og.jpg" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="The Woodpile dashboard: message rate, devices and a live tail of log lines" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <script type="module" src="app.js"></script>
+  </head>
+  <body>
+    <a class="skip" href="#main">Skip to content</a>
+    <div class="wrap">
+      <header class="top">
+        <a class="brand" href="./" aria-label="Woodpile home">
+          <span class="logo"><img src="favicon.svg" width="28" height="28" alt="" /></span>
+          <b>Woodpile</b>
+        </a>
+        <nav aria-label="Site">
+          <a href="#download">Download</a>
+          <a href="install.html">Install guide</a>
+          <a href="https://github.com/gmccollu/woodpile/blob/main/FAQ.md" data-gh="/blob/main/FAQ.md">FAQ</a>
+          <a href="https://github.com/gmccollu/woodpile" data-gh="">GitHub</a>
+        </nav>
+      </header>
+
+      <main id="main">
+        <section class="hero" aria-labelledby="title">
+          <h1 id="title">Woodpile: a syslog server you can install anywhere in a minute.</h1>
+          <p class="lede">
+            It keeps every message your devices send as plain text files, within a disk budget, and gives you a clean web page
+            to watch them live, search them, and export a zip for support.
+          </p>
+          <div class="cta">
+            <a class="btn" href="#download">Download</a>
+            <a class="btn ghost" href="install.html">How to install</a>
+          </div>
+          <div class="shot">
+            <picture>
+              <source srcset="img/dashboard-dark.webp" type="image/webp" media="(prefers-color-scheme: dark)" />
+              <source srcset="img/dashboard-light.webp" type="image/webp" />
+              <img
+                src="img/dashboard-light.png"
+                width="1200"
+                height="771"
+                alt="The Woodpile dashboard: messages per second, devices online, disk used, a strip of devices and a live tail of log lines"
+              />
+            </picture>
+          </div>
+        </section>
+
+        <section id="download" class="card" aria-labelledby="dl-title">
+          <h2 id="dl-title">Download</h2>
+          <p id="dl-status" class="muted">
+            Finding the latest release…
+          </p>
+          <noscript>
+            <p>All downloads are on the <a href="https://github.com/gmccollu/woodpile/releases/latest">releases page</a>.</p>
+          </noscript>
+          <div id="dl-primary" class="dl-primary"></div>
+          <details id="dl-others" class="others" hidden>
+            <summary>Other downloads</summary>
+            <table class="assets">
+              <thead>
+                <tr>
+                  <th scope="col">What</th>
+                  <th scope="col">File</th>
+                  <th scope="col" class="hide-sm">Size</th>
+                  <th scope="col" class="hide-sm">SHA-256</th>
+                </tr>
+              </thead>
+              <tbody id="dl-others-body"></tbody>
+            </table>
+          </details>
+          <p id="dl-sums" class="small muted">
+            Every file is on the <a href="https://github.com/gmccollu/woodpile/releases/latest" data-releases>releases page</a>, with
+            <code>checksums.txt</code>.
+          </p>
+        </section>
+
+        <section aria-labelledby="which-title">
+          <h2 id="which-title">Portable or installer?</h2>
+          <div class="grid2">
+            <div class="card">
+              <h3>Just need it for a case?</h3>
+              <p>
+                Download the <b>portable</b> archive, unpack it and double-click <code>woodpile</code>. Nothing is installed. It runs while its
+                window is open, keeps the logs in a <code>woodpile-data</code> folder next to it, and opens the web page for you.
+              </p>
+              <p class="small muted">Good for a laptop on site, or a quick look at what a device sends.</p>
+            </div>
+            <div class="card">
+              <h3>Always-on server?</h3>
+              <p>
+                Use the <b>installer</b>: MSI on Windows, <code>.pkg</code> on macOS, <code>.deb</code> or <code>.rpm</code> on Linux. Woodpile
+                runs in the background as a service, starts with the computer, and keeps its logs across upgrades.
+              </p>
+              <p class="small muted">The service runs as its own restricted account, and uninstalling keeps your logs unless you ask.</p>
+            </div>
+          </div>
+        </section>
+
+        <section aria-labelledby="steps-title">
+          <h2 id="steps-title">Three steps</h2>
+          <div class="grid3">
+            <div class="card step">
+              <span class="num" aria-hidden="true">1</span>
+              <h3>Install</h3>
+              <p>Run the installer or the portable download. Then open <code>http://localhost:8514/</code>; its Setup page shows this machine's addresses.</p>
+            </div>
+            <div class="card step">
+              <span class="num" aria-hidden="true">2</span>
+              <h3>Point your device at it</h3>
+              <p>In the device's syslog settings, enter this machine's IP address, <b>port 514</b>, UDP (or TCP). The Setup page says when the first message arrives.</p>
+            </div>
+            <div class="card step">
+              <span class="num" aria-hidden="true">3</span>
+              <h3>Search and export</h3>
+              <p>Watch the live tail, search by text, device and time, and build a zip of exactly what support needs, with checksums.</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="card" aria-labelledby="features-title">
+          <h2 id="features-title">What you get</h2>
+          <ul class="features">
+            <li>Listens on UDP and TCP port 514 straight away, IPv4 and IPv6, with no setup.</li>
+            <li>Lenient parsing of RFC 5424, RFC 3164 and the usual odd formats; the raw message is always kept exactly as received.</li>
+            <li>Plain text files, one folder per device and one file per day, compressed once the day is over.</li>
+            <li>Keeps 30 days or 20 GB by default, and never fills the disk.</li>
+            <li>A dashboard with message rates, devices that went quiet, and a live tail.</li>
+            <li>Search by text or regular expression, devices, time and severity, with the lines around each hit.</li>
+            <li>Export zips with a manifest, SHA-256 checksums and a report of any gaps, so the recipient can trust what they get.</li>
+            <li>Name and group devices; an optional sender allowlist.</li>
+            <li>The web page is on this machine only by default; LAN mode adds HTTPS and a password.</li>
+            <li>Windows, macOS and Linux, on x64 and ARM; MIT licensed.</li>
+          </ul>
+          <p class="small muted">
+            The full list is in the
+            <a href="https://github.com/gmccollu/woodpile/blob/main/CHANGELOG.md" data-gh="/blob/main/CHANGELOG.md">changelog</a>.
+          </p>
+        </section>
+
+        <!-- UNSIGNED: delete this section once the installers are code-signed. -->
+        <section id="unsigned" class="card" aria-labelledby="unsigned-title">
+          <h2 id="unsigned-title">The first time you open it</h2>
+          <p>
+            Woodpile's downloads aren't code-signed yet, so your computer asks once before running them. That's expected; you can check
+            any download against <code>checksums.txt</code> on the release page.
+          </p>
+          <div class="grid2">
+            <div>
+              <h3>Windows</h3>
+              <p>
+                If the browser says the file "isn't commonly downloaded", choose <b>Keep</b>. When "Windows protected your PC" appears,
+                click <b>More info</b>, then <b>Run anyway</b>.
+              </p>
+            </div>
+            <div>
+              <h3>macOS</h3>
+              <p>
+                If it says the file "can't be opened", click <b>Done</b>, open <b>System Settings → Privacy &amp; Security</b>, scroll down
+                to the message about Woodpile and click <b>Open Anyway</b>.
+              </p>
+            </div>
+          </div>
+        </section>
+        <!-- /UNSIGNED -->
+
+        <section class="card" aria-labelledby="privacy-title">
+          <h2 id="privacy-title">Privacy</h2>
+          <p>
+            <b>Woodpile never connects out.</b> No telemetry, no update checks: your logs stay on your machine. The About page shows the
+            version, with a link to the releases page if you want to look for a newer one yourself.
+          </p>
+        </section>
+      </main>
+
+      <footer>
+        <div class="links">
+          <a href="https://github.com/gmccollu/woodpile" data-gh="">GitHub</a>
+          <a href="https://github.com/gmccollu/woodpile/blob/main/docs/user-guide.md" data-gh="/blob/main/docs/user-guide.md">User guide</a>
+          <a href="https://github.com/gmccollu/woodpile/blob/main/docs/install.md" data-gh="/blob/main/docs/install.md">Install docs</a>
+          <a href="https://github.com/gmccollu/woodpile/blob/main/FAQ.md" data-gh="/blob/main/FAQ.md">FAQ</a>
+          <a href="https://github.com/gmccollu/woodpile/blob/main/SECURITY.md" data-gh="/blob/main/SECURITY.md">Security</a>
+          <a href="https://github.com/gmccollu/woodpile/blob/main/CHANGELOG.md" data-gh="/blob/main/CHANGELOG.md">Changelog</a>
+        </div>
+        <p class="muted">
+          Woodpile is free software under the
+          <a href="https://github.com/gmccollu/woodpile/blob/main/LICENSE" data-gh="/blob/main/LICENSE">MIT license</a>.
+        </p>
+        <p class="muted small">
+          This site has no analytics, no cookies, no external fonts and no third-party scripts. The only request it makes to another
+          site is one call to the GitHub API, to list the latest downloads.
+        </p>
+      </footer>
+    </div>
+  </body>
+</html>
