@@ -26,7 +26,16 @@ installers and [docs/api.md](docs/api.md) for the UI's API.
 - **One binary, one service:** the UI is embedded. Installers for Windows (MSI), macOS (pkg) and Linux (deb,
   rpm) set it up as a system service.
 
-## Quick start (from source)
+## Quick start
+
+**Portable, nothing installed:** download the archive for your system, unpack it and double-click `woodpile` (or run
+`./woodpile`). It listens on UDP and TCP 514, keeps its logs in `woodpile-data/` next to it, and opens the UI. On Linux,
+port 514 needs `sudo ./woodpile` (or `sudo setcap cap_net_bind_service=+ep ./woodpile` once). See
+[Portable mode](docs/install.md#portable-mode-no-install).
+
+**As a service:** use the installer for your system ([docs/install.md](docs/install.md)).
+
+## Building from source
 
 You need Go (see `go.mod`) and Node.js with npm for the UI.
 
@@ -72,6 +81,7 @@ everything to disk first.
 
 | Command | What it does |
 |---|---|
+| `woodpile` / `woodpile portable [--dir DIR]` | Portable mode: run here with nothing installed, data in `woodpile-data/` |
 | `woodpile run [--config FILE]` | Run the server in the foreground |
 | `woodpile install` / `uninstall` | Install or remove the system service where no installer package was used (needs administrator rights) |
 | `woodpile status` | The service's state, the listeners and the UI address |

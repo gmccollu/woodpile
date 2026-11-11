@@ -4,6 +4,43 @@ Woodpile is one program that runs as a background service. Every installer sets 
 leaves it listening for syslog on **UDP and TCP port 514**. The web UI is at **http://127.0.0.1:8514/** on the same
 machine (localhost only until you turn on LAN mode in Settings).
 
+## Portable mode: no install
+
+To spin up a syslog server on the spot (for a case, a lab, a laptop), download the program for your system (the
+`.zip`/`.tar.gz` archive), unpack it and **double-click `woodpile`** (`woodpile.exe` on Windows), or run `./woodpile`
+in a terminal. Nothing is installed. A window shows:
+
+```
+Woodpile 1.0.0, portable mode
+  Data folder:  /home/me/Downloads/woodpile/woodpile-data
+  Listening on UDP 514 and TCP 514
+  Send logs to: 192.0.2.10, 2001:db8::10
+  Web UI:       http://localhost:8514/
+
+Press Ctrl-C or close this window to stop. Your logs stay in /home/me/Downloads/woodpile/woodpile-data
+```
+
+and the UI opens in your browser. Point devices at one of the addresses shown; each new device gets a line in the
+window. Ctrl-C, closing the window, logging off or shutting down all save everything first.
+
+- **Data:** `woodpile-data/` next to the program. If that folder can't be written (read-only media, Program Files,
+  macOS running a downloaded copy from a temporary location), it uses `~/Woodpile` (`%USERPROFILE%\Woodpile`) and
+  says so. Move or zip the folder to hand the logs to someone; it works wherever it ends up.
+- **Port 514 on Linux** needs rights: run `sudo ./woodpile`, or once `sudo setcap cap_net_bind_service=+ep ./woodpile`
+  and then `./woodpile` as yourself. macOS and Windows need nothing. If another syslog server already has the port,
+  the window and the UI say which program; stop it and press **Retry** in the UI. The syslog port never moves on its
+  own.
+- **The UI port:** if 8514 is taken (for example by an installed Woodpile), it uses the next free one up to 8530 and
+  prints it.
+- **Windows firewall:** the first time, Windows asks whether to allow Woodpile; choose **Allow** so devices can reach
+  it (it may need an administrator). The window prints the `netsh` command for an administrator if no rule allows it.
+- **Options:** `woodpile portable --dir FOLDER` keeps the data elsewhere; `--port`, `--listen`, `--ui-port` and
+  `--no-browser` are there too (`woodpile portable --help`). Running a second copy on the same folder is refused,
+  with the address of the one already running.
+- **For always-on use, install the service** (below).
+
+## Installers
+
 Download the installer for your system from the project's releases page. Replace `X.Y.Z` below with the version.
 
 | System | File |
