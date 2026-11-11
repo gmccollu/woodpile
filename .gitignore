@@ -1,0 +1,8 @@
+/dist/
+/bin/
+/web/node_modules/
+/web/dist/*
+!/web/dist/.keep
+*.test
+/tmp/
+.DS_Store
