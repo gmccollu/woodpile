@@ -93,16 +93,18 @@ An invalid value (not 0–7 or `unknown`) is a `400 {"error": ...}`.
  "partial": false}
 ```
 - `q`: substring by default (case-insensitive unless `case=true`). With `regex=true` it's an RE2 regular expression;
-  an invalid one is a `400` with the parse error. Empty `q` matches every line, so it's a filtered browse.
+  an invalid one is a `400` with the parse error. `case` applies to both. Empty `q` matches every line, so it's a
+  filtered browse.
 - `q` is matched against the raw message as received (unescaped), not the stored line prefix.
-- `from` / `to`: RFC 3339. Default `to` = now and `from` = to − 24 h. `from` must be before `to`.
+- `from` / `to`: RFC 3339, on the received time: `from` ≤ received < `to`. Default `to` = now and `from` = to − 24 h.
+  `from` must be before `to`.
 - `devices`, `group` / `ungrouped`: as for `/api/live`. Hidden devices are searched only when named in `devices`.
 - `order`: `desc` (newest first, the default) or `asc`.
 - `limit`: default 500, max 5,000.
 - `cursor`: from the previous page's `next_cursor`; the other parameters must be the same as on the first page, or
   the server returns `400`. `limit` is the exception: it may change from page to page.
-- Each request has a time budget of 10 s. If the budget runs out before `limit` results, the response has what it
-  found, `partial: true` and a `next_cursor` that resumes where the scan stopped. The UI keeps asking while
+- Each request has a time budget of 10 s. If the budget runs out before `limit` results (or the page reaches 8 MiB of
+  messages), the response has what it found, `partial: true` and a `next_cursor` that resumes where the scan stopped. The UI keeps asking while
   `partial` is true and the user hasn't cancelled.
 - `next_cursor` is empty when the range is exhausted.
 - `scanned_bytes`, `scanned_files` and `elapsed_ms` are for this request only; the UI adds them up across pages.
@@ -118,7 +120,7 @@ An invalid value (not 0–7 or `unknown`) is a `400 {"error": ...}`.
 
 `POST /api/exports` body `{"devices": ["10.1.0.1"], "group": "", "ungrouped": false, "from": "...", "to": "...",
 "severities": [0, 1, "unknown"], "q": "", "regex": false, "case": false}` → `202 {"id": "exp_..."}`
-- Pick devices with `devices`, `group` or `ungrouped` (at least one must select a device). `severities`, `q`, `regex`
+- `from` and `to` are required. Pick devices with `devices`, `group` or `ungrouped` (at least one must select a device). `severities`, `q`, `regex`
   and `case` are optional filters with exactly the same meaning as search, so "Export these results" exports what
   the search showed. Without them every line in range is exported.
 - One export builds at a time; a second `POST` while one is building is queued.
@@ -143,7 +145,8 @@ them first), but not against the log retention cap.
 
 **Zip contents** (SPEC §4.1):
 - `logs/<device-id>/<YYYY-MM-DD>.log`: the matching lines, unescaped, one message per line, in received order. Each
-  line keeps the stored prefix (`<received> <sender> `) so it's self-describing.
+  line keeps the stored prefix (`<received> <sender> `) so it's self-describing. A message that itself held CR or LF
+  continues on the next line(s); only a message's first line starts with the prefix.
 - `manifest.json`: Woodpile version, export time, the request (devices with names and groups, range, filters), and
   per-file line count and SHA-256. Also `gaps`: periods inside the range when Woodpile wasn't running or a listener
   was down, from the event log.
