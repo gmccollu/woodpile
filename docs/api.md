@@ -46,6 +46,9 @@ Change this file first if the contract changes.
 `devices` counts exclude hidden devices.
 
 `GET /api/rejected` → `[{"ip": "198.51.100.7", "count_24h": 120, "last_seen": "..."}]` (senders refused by the allowlist)
+Sorted by `count_24h` descending, at most 200 entries. The server tracks at most 10,000 refused IPs and evicts the
+least recently seen.
+`banners` in `/api/status` are sent in priority order: errors first, then warnings.
 
 ## Devices
 
@@ -90,7 +93,8 @@ Hidden devices are included, with `"hidden": true`.
 
 `GET /api/settings` / `PUT /api/settings` (whole object; the server validates and returns the saved object, or `400` with
 `{"errors": {"listeners.udp.port": "message", "listeners.allowlist[2]": "message"}}`). Error keys are dotted JSON paths,
-with `[i]` for list items. `storage.data_dir` is read-only in v1: a PUT that changes it gets a `400` on that key.
+with `[i]` for list items. `[i]` indexes the list exactly as the client sent it: the server validates before any
+normalising (dedupe, sort). `listeners.allowlist` entries may be a bare IP or a CIDR. `storage.data_dir` is read-only in v1: a PUT that changes it gets a `400` on that key.
 ```json
 {
   "listeners": {"udp": {"enabled": true, "addr": "0.0.0.0", "port": 514},
