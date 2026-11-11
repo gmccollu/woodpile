@@ -248,6 +248,16 @@ configurable.
 5. **M4 Installers:** MSI, pkg, deb/rpm, service install, upgrade and uninstall, install smoke tests in CI.
 6. **v1.0:** soak test, docs (README, install per OS, FAQ), first tagged release.
 
+### 8.1 Open items carried into M4 (from the M1–M2 build, 2026-11-11)
+- `woodpile install` (no package) must match the packages: run as the same least-privilege account (Windows
+  `NT SERVICE\Woodpile`, Linux a dynamic or `woodpile` user with `CAP_NET_BIND_SERVICE`, macOS `_woodpile`) and log
+  to the same paths. Today it runs as root/LocalSystem.
+- UI shutdown can wait ~5 s on a connection that never sent a request; close idle connections at shutdown.
+- First runs on real Windows, launchd and systemd: service start, logging, install/uninstall, upgrade, the MSI.
+- Linux-only paths: kernel UDP drop counter, `/proc` port-holder lookup, multi-IP e2e senders.
+- Data-dir lock (`woodpile.lock`) and run-state file (`woodpile.state.json`) were added during integration; keep them
+  documented in docs/install.md.
+
 ## 9. Roadmap (after v1)
 - TLS syslog (RFC 5425, port 6514)
 - Alerts: device quiet, disk filling, drops (email and webhook)
