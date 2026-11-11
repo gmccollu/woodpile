@@ -112,6 +112,8 @@ jobs:
           GOOS=windows GOARCH=arm64 go build -o out-arm64/verifyseq.exe ./scripts/verifyseq
           GOOS=windows GOARCH=arm64 go build -o out-arm64/consoleclose.exe ./scripts/smoke/consoleclose
           GOOS=windows GOARCH=arm64 go build -trimpath -o out-arm64/woodpile-aclfix.exe ./packaging/windows/aclfix
+          # The upgrade test needs a second version (the snapshot's web/dist is embedded).
+          GOOS=windows GOARCH=arm64 go build -trimpath -ldflags "-X main.version=0.0.2" -o out-arm64/woodpile-0.0.2.exe ./cmd/woodpile
           ls -la out-arm64
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -363,16 +365,15 @@ jobs:
       - name: Install WiX
         shell: pwsh
         run: dotnet tool install --global wix --version $env:WIX_VERSION
-      - name: Build v0.0.1 and v0.0.2 arm64 MSIs around the release zip's woodpile.exe
+      - name: Build v0.0.1 (the release zip's woodpile.exe) and v0.0.2 arm64 MSIs
         shell: pwsh
         run: |
           Expand-Archive (Resolve-Path dist/*_windows_arm64.zip) -DestinationPath dist/zip
           $exe = (Get-ChildItem dist/zip -Recurse -Filter woodpile.exe).FullName
           Get-ChildItem (Split-Path $exe)
           & $exe version
-          foreach ($v in "0.0.1", "0.0.2") {
-            ./packaging/windows/build-msi.ps1 -Version $v -Arch arm64 -Binary $exe -AclFix dist/woodpile-aclfix.exe -OutDir "dist/v$v"
-          }
+          ./packaging/windows/build-msi.ps1 -Version 0.0.1 -Arch arm64 -Binary $exe -AclFix dist/woodpile-aclfix.exe -OutDir dist/v0.0.1
+          ./packaging/windows/build-msi.ps1 -Version 0.0.2 -Arch arm64 -Binary dist/woodpile-0.0.2.exe -AclFix dist/woodpile-aclfix.exe -OutDir dist/v0.0.2
           Copy-Item $exe dist/woodpile.exe
       - name: MSI hardening checks (ACL reset over a hostile folder, required privileges)
         shell: pwsh
