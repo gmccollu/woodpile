@@ -49,7 +49,7 @@ if ($banner -notmatch [regex]::Escape("Data folder:  $data")) { Die "the data fo
 if ($banner -notmatch "Listening on UDP 514 and TCP 514") { Die "not listening on UDP and TCP 514" }
 if ($banner -notmatch [regex]::Escape("http://localhost:8514/")) { Die "the UI isn't on 8514" }
 if ($banner -notmatch "Choose Allow so devices can") { Die "no firewall note" }
-if ($banner -notmatch "netsh advfirewall firewall add rule") { Die "no netsh command for the missing rule" }
+if ($banner -notmatch "netsh advfirewall firewall add rule" -and $banner -notmatch "A firewall rule already lets devices reach") { Die "neither the netsh command nor an existing allow rule" }
 Ok "banner: data next to the exe, UDP and TCP 514, UI on 8514, the firewall note and command"
 $h = Invoke-RestMethod "http://127.0.0.1:8514/healthz"
 if (-not $h.ok) { Die "the UI doesn't answer" }

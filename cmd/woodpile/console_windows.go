@@ -21,8 +21,10 @@ func consoleProcessCount() int {
 	return int(n)
 }
 
-// windowsFirewallNotes explains the first-run firewall dialog and, when no
-// inbound rule allows this program, gives the command an administrator can run.
+// windowsFirewallNotes explains the first-run firewall dialog and, unless an
+// enabled inbound rule allows this program, gives the command an administrator
+// can run. (Windows adds a block rule when the dialog is dismissed, or shown
+// where nobody can answer it.)
 func windowsFirewallNotes() string {
 	var s strings.Builder
 	s.WriteString("\n  Windows may ask whether to allow Woodpile through the firewall. Choose Allow so devices can\n")
@@ -32,14 +34,23 @@ func windowsFirewallNotes() string {
 		return s.String()
 	}
 	out, err := exec.Command("netsh", "advfirewall", "firewall", "show", "rule", "name=all", "dir=in", "verbose").Output()
-	if err == nil && strings.Contains(strings.ToLower(string(out)), strings.ToLower(exe)) {
-		return s.String()
+	state := ruleUnknown
+	if err == nil {
+		state = firewallRuleState(string(out), exe)
 	}
-	admin := windows.GetCurrentProcessToken().IsElevated()
-	if admin {
-		s.WriteString("  No firewall rule lets devices reach this copy yet. To add one now:\n")
+	switch state {
+	case ruleAllows:
+		s.WriteString("  A firewall rule already lets devices reach this copy.\n")
+		return s.String()
+	case ruleBlocks:
+		s.WriteString("  A firewall rule blocks this copy (the dialog was dismissed, or couldn't be shown).\n")
+	default:
+		s.WriteString("  No firewall rule lets devices reach this copy yet.\n")
+	}
+	if windows.GetCurrentProcessToken().IsElevated() {
+		s.WriteString("  To allow it now:\n")
 	} else {
-		s.WriteString("  No firewall rule lets devices reach this copy yet. If they can't, run this in an\n  administrator prompt:\n")
+		s.WriteString("  If devices can't reach it, run this in an administrator prompt:\n")
 	}
 	fmt.Fprintf(&s, "      netsh advfirewall firewall add rule name=\"Woodpile (portable)\" dir=in action=allow program=\"%s\" enable=yes\n", exe)
 	return s.String()

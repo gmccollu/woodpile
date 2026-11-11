@@ -194,3 +194,27 @@ func lockForTest(dir string) (func(), error) {
 	}
 	return func() { l.Unlock() }, nil
 }
+
+func TestFirewallRuleState(t *testing.T) {
+	exe := `C:\Users\me\Downloads\woodpile.exe`
+	rule := func(name, enabled, action, program string) string {
+		return "Rule Name:                            " + name + "\r\n----------------------------------------------------------------------\r\n" +
+			"Enabled:                              " + enabled + "\r\nDirection:                            In\r\n" +
+			"Action:                               " + action + "\r\nProgram:                              " + program + "\r\n"
+	}
+	other := rule("Core Networking", "Yes", "Allow", `C:\Windows\system32\svchost.exe`)
+	for name, c := range map[string]struct {
+		out  string
+		want ruleState
+	}{
+		"none":            {other, ruleUnknown},
+		"allowed":         {other + "\r\n" + rule("woodpile.exe", "Yes", "Allow", exe), ruleAllows},
+		"blocked":         {other + "\r\n" + rule("woodpile.exe", "Yes", "Block", exe), ruleBlocks},
+		"disabled allow":  {rule("woodpile.exe", "No", "Allow", exe), ruleBlocks},
+		"block and allow": {rule("woodpile.exe", "Yes", "Block", exe) + "\r\n" + rule("Woodpile (portable)", "Yes", "Allow", strings.ToUpper(exe)), ruleAllows},
+	} {
+		if got := firewallRuleState(c.out, exe); got != c.want {
+			t.Errorf("%s: %v, want %v", name, got, c.want)
+		}
+	}
+}
