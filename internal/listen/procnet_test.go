@@ -2,8 +2,11 @@ package listen
 
 import (
 	"encoding/binary"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 const procUDP = `  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode ref pointer drops
@@ -119,5 +122,99 @@ func TestWinTables(t *testing.T) {
 	}
 	if _, ok := winTablePID(nil, 12, 4, 8, -1, 514); ok {
 		t.Error("nil buffer")
+	}
+}
+
+// fakeProc builds a proc tree under a temp dir: the socket tables under
+// self/net, and pid directories with fd links.
+func fakeProc(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	write := func(rel, content string) {
+		p := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	link := func(rel, target string) {
+		p := filepath.Join(root, rel)
+		os.MkdirAll(filepath.Dir(p), 0o755)
+		if err := os.Symlink(target, p); err != nil {
+			t.Skipf("can't make symlinks here: %v", err)
+		}
+	}
+	write("self/net/udp", procUDP)
+	write("self/net/udp6", procUDP6)
+	write("self/net/tcp", procTCP)
+	write("net/udp", "must not be read\n") // /proc/net is what ProcSubset=pid hides
+	write("100/comm", "syslogd\n")
+	link("100/fd/0", "/dev/null")
+	link("100/fd/7", "socket:[18111]") // udp 514 (v4)
+	write("200/comm", "otherd\n")
+	link("200/fd/3", "socket:[4242]") // tcp 514 LISTEN
+	write("self/comm", "not a pid dir\n")
+	return root
+}
+
+func TestProcSelfNet(t *testing.T) {
+	if got := procNetFile("/proc", "udp6"); got != filepath.Join("/proc", "self", "net", "udp6") {
+		t.Errorf("path %q", got)
+	}
+	root := fakeProc(t)
+	if v, ok := procSocketDrops(root, 99887); !ok || v != 1234 {
+		t.Errorf("udp drops %d %v", v, ok)
+	}
+	if v, ok := procSocketDrops(root, 55501); !ok || v != 77 {
+		t.Errorf("udp6 drops %d %v", v, ok)
+	}
+	if _, ok := procSocketDrops(root, 0); ok {
+		t.Error("inode 0")
+	}
+	soon := time.Now().Add(time.Minute)
+	if h := procPortHolder(root, "udp", 514, soon); h != "syslogd (pid 100)" {
+		t.Errorf("udp holder %q", h)
+	}
+	if h := procPortHolder(root, "tcp", 514, soon); h != "otherd (pid 200)" {
+		t.Errorf("tcp holder %q", h)
+	}
+	if h := procPortHolder(root, "udp", 5546, soon); h != "" {
+		t.Errorf("socket with no visible owner: %q", h)
+	}
+}
+
+// What ProcSubset=pid and ProtectProc=invisible can take away: the answer is
+// empty, never an error or a panic.
+func TestProcHolderDegrades(t *testing.T) {
+	soon := time.Now().Add(time.Minute)
+	// No socket tables at all.
+	if h := procPortHolder(t.TempDir(), "udp", 514, soon); h != "" {
+		t.Errorf("empty root: %q", h)
+	}
+	if _, ok := procSocketDrops(t.TempDir(), 99887); ok {
+		t.Error("drops from an empty root")
+	}
+	// The holder's pid directory isn't visible (ProtectProc=invisible).
+	root := fakeProc(t)
+	os.RemoveAll(filepath.Join(root, "100"))
+	if h := procPortHolder(root, "udp", 514, soon); h != "" {
+		t.Errorf("hidden pid: %q", h)
+	}
+	// Its fd directory isn't readable (another user's process).
+	root = fakeProc(t)
+	fd := filepath.Join(root, "200", "fd")
+	if err := os.Chmod(fd, 0); err == nil {
+		defer os.Chmod(fd, 0o755)
+		if _, err := os.ReadDir(fd); err != nil { // root can read it anyway
+			if h := procPortHolder(root, "tcp", 514, soon); h != "" {
+				t.Errorf("unreadable fd dir: %q", h)
+			}
+		}
+	}
+	// Past the deadline it gives up.
+	if h := procPortHolder(fakeProc(t), "udp", 514, time.Now().Add(-time.Second)); h != "" {
+		t.Errorf("past deadline: %q", h)
 	}
 }

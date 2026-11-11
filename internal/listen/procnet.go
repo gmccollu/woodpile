@@ -6,14 +6,97 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Parsers for the OS tables the holder lookup and the kernel drop counter read.
 // They're kept free of build tags so every parser is tested on every OS.
 
-// procNetUDPDrops finds the row for inode in a /proc/net/udp or udp6 table and
+// procRoot is where Linux's proc file system is mounted.
+const procRoot = "/proc"
+
+// procNetFile is a socket table of our own network namespace. It's read through
+// /proc/self/net, not /proc/net: systemd's ProcSubset=pid (in our unit) makes
+// /proc/net unreadable while /proc/self/net stays readable.
+func procNetFile(root, name string) string { return filepath.Join(root, "self", "net", name) }
+
+// procSocketDrops returns the drops counter of the UDP socket with inode, from
+// <root>/self/net/udp6 or udp (a dual-stack socket is listed in udp6).
+func procSocketDrops(root string, inode uint64) (int64, bool) {
+	if inode == 0 {
+		return 0, false
+	}
+	for _, name := range []string{"udp6", "udp"} {
+		f, err := os.Open(procNetFile(root, name))
+		if err != nil {
+			continue
+		}
+		v, ok := procNetUDPDrops(f, inode)
+		f.Close()
+		if ok {
+			return v, true
+		}
+	}
+	return 0, false
+}
+
+// procPortHolder finds the process holding proto port: the socket inodes bound to
+// the port from <root>/self/net/<proto>{,6}, then a scan of <root>/<pid>/fd for a
+// link to one of them. Best effort, and it never fails: any table or directory
+// it can't read is skipped, and the answer is then "". Under systemd's
+// ProtectProc=invisible, /proc lists only our own processes, so a holder that is
+// another service isn't found (the banner then just omits it). It gives up at
+// deadline.
+func procPortHolder(root, proto string, port int, deadline time.Time) string {
+	inodes := map[uint64]bool{}
+	for _, suffix := range []string{"", "6"} {
+		f, err := os.Open(procNetFile(root, proto+suffix))
+		if err != nil {
+			continue
+		}
+		for _, ino := range procNetInodes(f, port, proto == "tcp") {
+			inodes[ino] = true
+		}
+		f.Close()
+	}
+	if len(inodes) == 0 {
+		return ""
+	}
+	procs, err := os.ReadDir(root)
+	if err != nil {
+		return ""
+	}
+	for _, p := range procs {
+		pid := p.Name()
+		if _, err := strconv.Atoi(pid); err != nil {
+			continue
+		}
+		if time.Now().After(deadline) {
+			return ""
+		}
+		fds, err := os.ReadDir(filepath.Join(root, pid, "fd"))
+		if err != nil {
+			continue // another user's process, unless we're privileged
+		}
+		for _, fd := range fds {
+			target, err := os.Readlink(filepath.Join(root, pid, "fd", fd.Name()))
+			if err != nil {
+				continue
+			}
+			if ino, ok := parseSocketLink(target); ok && inodes[ino] {
+				comm, _ := os.ReadFile(filepath.Join(root, pid, "comm"))
+				return holderText(strings.TrimSpace(string(comm)), pid)
+			}
+		}
+	}
+	return ""
+}
+
+// procNetUDPDrops finds the row for inode in a /proc/self/net/udp or udp6 table and
 // returns its drops column (the last one).
 func procNetUDPDrops(r io.Reader, inode uint64) (int64, bool) {
 	sc := bufio.NewScanner(r)
@@ -35,7 +118,7 @@ func procNetUDPDrops(r io.Reader, inode uint64) (int64, bool) {
 }
 
 // procNetInodes returns the inodes of the sockets bound to port in a
-// /proc/net/{tcp,tcp6,udp,udp6} table. With listenOnly, only TCP sockets in the
+// /proc/self/net/{tcp,tcp6,udp,udp6} table. With listenOnly, only TCP sockets in the
 // LISTEN state (0A) count.
 func procNetInodes(r io.Reader, port int, listenOnly bool) []uint64 {
 	sc := bufio.NewScanner(r)

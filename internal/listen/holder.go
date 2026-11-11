@@ -10,7 +10,7 @@ const holderTimeout = 2 * time.Second
 // process of another user when we aren't privileged). It never fails.
 //
 //   - macOS: lsof.
-//   - Linux: /proc/net/{tcp,udp}{,6} for the socket inode, then /proc/*/fd.
+//   - Linux: /proc/self/net/{tcp,udp}{,6} for the socket inode, then /proc/*/fd.
 //   - Windows: GetExtendedTcpTable / GetExtendedUdpTable for the PID, then the
 //     process image name.
 func PortHolder(proto string, port int) string {
