@@ -64,8 +64,10 @@ func dataDirExposure(dir string) ([]string, error) {
 		return sid.String()
 	}
 	broad := map[string]bool{"S-1-1-0": true, "S-1-5-32-545": true, "S-1-5-11": true, "S-1-5-4": true}
+	seen := map[string]bool{}
 	if owner, _, err := sd.Owner(); err == nil && owner != nil && !trusted(owner) {
 		out = append(out, "its owner "+name(owner))
+		seen[owner.String()] = true // not listed twice when an entry names the owner too
 	}
 	dacl, _, err := sd.DACL()
 	if err != nil {
@@ -74,7 +76,6 @@ func dataDirExposure(dir string) ([]string, error) {
 	if dacl == nil {
 		return append(out, "everyone (no access control list)"), nil
 	}
-	seen := map[string]bool{}
 	for i := uint32(0); i < uint32(dacl.AceCount); i++ {
 		var ace *windows.ACCESS_ALLOWED_ACE
 		if err := windows.GetAce(dacl, i, &ace); err != nil {
