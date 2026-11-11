@@ -183,7 +183,10 @@ New-LocalUser -Name "wpother" -NoPassword -Description "Woodpile smoke test" | O
 $foreign = "C:\wp-foreign"
 Write-TestConfig $foreign
 icacls $foreign /setowner wpother /T | Out-Null
-icacls $foreign /inheritance:r /grant:r "wpother:(OI)(CI)F" "${env:USERNAME}:(OI)(CI)F" "*S-1-5-18:(OI)(CI)F" /T | Out-Null
+# On the folder only: its inheritable entries then propagate to the config file
+# ((OI)(CI) on a file itself is invalid and would leave it with no entries).
+icacls $foreign /inheritance:r /grant:r "wpother:(OI)(CI)F" "${env:USERNAME}:(OI)(CI)F" "*S-1-5-18:(OI)(CI)F" | Out-Null
+icacls (Join-Path $foreign "woodpile.toml") /reset | Out-Null
 $before = (Get-Acl $foreign).Sddl
 Write-Host "  $foreign ACL: $before"
 if (Broad $foreign) { Die "the test ACL names a broad group" }
