@@ -30,7 +30,8 @@ $ErrorActionPreference = "Stop"
 New-Item -ItemType Directory -Force $Logs | Out-Null
 $Msi = (Resolve-Path $Msi).Path
 $Data = "C:\ProgramData\Woodpile"
-$Outside = Join-Path $env:RUNNER_TEMP "woodpile-outside"
+# On the same volume as C:\ProgramData: a hard link can't cross drives (RUNNER_TEMP is D: on some runners).
+$Outside = Join-Path $env:SystemDrive "woodpile-hardening-outside"
 $ServiceSid = "S-1-5-80-276366627-2944175572-1807786847-528126453-1705305312"
 $WantDacl = "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1301bf;;;$ServiceSid)"  # "D:PAI(" counts too
 $passes = 0
@@ -137,4 +138,5 @@ if (@(Get-ChildItem C:\ProgramData -Directory -Filter "Woodpile.untrusted-*").Co
 Ok "fresh install: the data folder is owned by Administrators with the protected DACL, nothing set aside"
 Msiexec @("/x", "`"$Msi`"", "DELETE_LOGS=1") (Join-Path $Logs "hardening-uninstall-fresh.log")
 
+Remove-Item -Recurse -Force $Outside -ErrorAction SilentlyContinue
 Write-Host "`n$passes checks passed"

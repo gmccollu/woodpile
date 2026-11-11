@@ -34,7 +34,9 @@ import sys
 import tempfile
 from pathlib import Path
 
-GO_LICENSES = os.environ.get("GO_LICENSES", "go run github.com/google/go-licenses@v1.6.0").split()
+# A prebuilt go-licenses to use instead of building github.com/google/go-licenses@v1.6.0.
+GO_LICENSES = os.environ.get("GO_LICENSES", "").split()
+GO_LICENSES_MODULE = "github.com/google/go-licenses@v1.6.0"
 LICENSE_CHECKER = ["npx", "--yes", "license-checker-rseidelsohn@5.0.1"]
 
 TARGETS = [(os_, arch) for os_ in ("linux", "windows", "darwin") for arch in ("amd64", "arm64")]
@@ -66,8 +68,10 @@ RULE = "=" * 78
 SUBRULE = "-" * 78
 
 
-def run(cmd, cwd=ROOT, env=None, capture=True):
+def run(cmd, cwd=ROOT, env=None, capture=True, unset=()):
     e = dict(os.environ)
+    for k in unset:
+        e.pop(k, None)
     if env:
         e.update(env)
     r = subprocess.run(cmd, cwd=cwd, env=e, text=True,
@@ -95,18 +99,39 @@ def license_files(directory: Path):
     return [(p.name, clean_text(p.read_bytes())) for p in files]
 
 
+def go_licenses_tool(tmp: Path):
+    """go-licenses built for this machine. The scan sets GOOS/GOARCH per target, and
+    `go run` would build the tool itself for that target (exec format error)."""
+    if GO_LICENSES:
+        return GO_LICENSES
+    gobin = tmp / "bin"
+    run(["go", "install", GO_LICENSES_MODULE], env={"GOBIN": str(gobin)},
+        unset=("GOOS", "GOARCH", "CGO_ENABLED", "GOFLAGS"))
+    exe = gobin / ("go-licenses.exe" if os.name == "nt" else "go-licenses")
+    return [str(exe)]
+
+
 def go_components():
-    fmt = ("{{with .Module}}{{if not .Main}}{{.Path}}\t{{.Version}}\t"
-           "{{if .Replace}}{{.Replace.Dir}}{{else}}{{.Dir}}{{end}}{{end}}{{end}}")
     mods = {}
     names = {}
+    tmp = Path(tempfile.mkdtemp(prefix="woodpile-go-licenses-"))
+    try:
+        tool = go_licenses_tool(tmp)
+        return _go_components(tool, mods, names)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _go_components(tool, mods, names):
+    fmt = ("{{with .Module}}{{if not .Main}}{{.Path}}\t{{.Version}}\t"
+           "{{if .Replace}}{{.Replace.Dir}}{{else}}{{.Dir}}{{end}}{{end}}{{end}}")
     for goos, goarch in TARGETS:
         env = {"GOOS": goos, "GOARCH": goarch, "CGO_ENABLED": "0", "GOFLAGS": "-mod=readonly"}
         for line in run(["go", "list", "-deps", "-f", fmt, "./cmd/woodpile"], env=env).splitlines():
             if line.strip():
                 path, version, directory = line.split("\t")
                 mods[path] = (version, Path(directory))
-        for line in run(GO_LICENSES + ["report", "./cmd/woodpile"], env=env).splitlines():
+        for line in run(tool + ["report", "./cmd/woodpile"], env=env).splitlines():
             parts = line.strip().split(",")
             if len(parts) == 3:
                 names[parts[0]] = parts[2]
