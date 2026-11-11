@@ -61,6 +61,39 @@ type Backend interface {
 	// r.Context() is done: that is how a UI restart ends open streams.
 	LiveHandler() http.Handler
 
+	// Search serves GET /api/search: one page. The request is already parsed
+	// and checked; what only the backend can check (the regular expression,
+	// the cursor, the resolved range) comes back as a *RequestError.
+	Search(ctx context.Context, r SearchRequest) (SearchPage, error)
+
+	// Context serves GET /api/context: before and after are 0-500. An invalid
+	// ref is a *RequestError, a ref whose file is gone ErrNotFound.
+	Context(ctx context.Context, ref string, before, after int) (ContextPage, error)
+
+	// CreateExport serves POST /api/exports: it queues an export and returns
+	// its entry. A selection with no devices, or a bad regular expression, is a
+	// *RequestError.
+	CreateExport(ctx context.Context, r ExportRequest) (ExportInfo, error)
+
+	// EstimateExport serves POST /api/exports/estimate: an upper bound from the
+	// index alone. Errors as for CreateExport.
+	EstimateExport(ctx context.Context, r ExportRequest) (ExportEstimate, error)
+
+	// Exports serves GET /api/exports, newest first.
+	Exports(ctx context.Context) ([]ExportInfo, error)
+
+	// Export serves GET /api/exports/{id}: ErrNotFound for an unknown id.
+	Export(ctx context.Context, id string) (ExportInfo, error)
+
+	// OpenExport opens a ready export's zip for GET /api/exports/{id}/download:
+	// ErrNotFound for an unknown or expired one, ErrNotReady for one that isn't
+	// ready. The caller closes the file.
+	OpenExport(ctx context.Context, id string) (ExportDownload, error)
+
+	// DeleteExport serves DELETE /api/exports/{id}: it cancels a queued or
+	// building export, or deletes a ready one. ErrNotFound for an unknown id.
+	DeleteExport(ctx context.Context, id string) error
+
 	// RecordEvent adds one of the HTTP layer's own events to the service event
 	// log (the one exported as woodpile-events.log): UI start and bind errors,
 	// mode changes, password changes, certificate generation and login
@@ -68,7 +101,8 @@ type Backend interface {
 	RecordEvent(ctx context.Context, e Event) error
 }
 
-// ErrNotFound is returned (possibly wrapped) by UpdateDevice for an unknown id.
+// ErrNotFound is returned (possibly wrapped) by UpdateDevice, Context and the
+// export methods for an unknown id.
 var ErrNotFound = errors.New("not found")
 
 // ValidationError is returned by SaveSettings for an invalid object. Fields maps

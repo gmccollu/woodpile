@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -45,6 +46,14 @@ type fakeBackend struct {
 	patches   []DevicePatch
 	events    []Event
 	live      http.Handler
+
+	searches   []SearchRequest
+	searchErr  error
+	contextErr error
+	exportReqs []ExportRequest
+	exportErr  error
+	exports    map[string]ExportInfo
+	zip        []byte // the content of every ready export
 }
 
 func newFakeBackend() *fakeBackend {
@@ -186,6 +195,98 @@ func (b *fakeBackend) RecordEvent(ctx context.Context, e Event) error {
 	b.events = append(b.events, e)
 	return nil
 }
+
+func (b *fakeBackend) Search(ctx context.Context, r SearchRequest) (SearchPage, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.searches = append(b.searches, r)
+	if b.searchErr != nil {
+		return SearchPage{}, b.searchErr
+	}
+	return SearchPage{
+		Results: []SearchLine{{Received: ts("2026-11-10T20:41:07Z").Add(112 * time.Millisecond), DeviceID: "10.1.0.1", Severity: 6,
+			Raw: []byte("<134>conn opened \xff"), Ref: "ref1"},
+			{Received: ts("2026-11-10T20:41:06Z"), DeviceID: "10.1.0.2", Severity: Unknown, Raw: []byte("no pri \xff"), Ref: "ref2"}},
+		NextCursor: "next", ScannedBytes: 123456, ScannedFiles: 12, ElapsedMS: 840,
+	}, nil
+}
+func (b *fakeBackend) Context(ctx context.Context, ref string, before, after int) (ContextPage, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.contextErr != nil {
+		return ContextPage{}, b.contextErr
+	}
+	return ContextPage{Lines: []SearchLine{{Received: ts("2026-11-10T20:41:07Z"), DeviceID: "10.1.0.1", Severity: 3,
+		Raw: []byte(fmt.Sprintf("%s %d %d", ref, before, after)), Ref: ref}}, HitIndex: 0, AtStart: true}, nil
+}
+func (b *fakeBackend) CreateExport(ctx context.Context, r ExportRequest) (ExportInfo, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.exportReqs = append(b.exportReqs, r)
+	if b.exportErr != nil {
+		return ExportInfo{}, b.exportErr
+	}
+	if b.exports == nil {
+		b.exports = map[string]ExportInfo{}
+	}
+	id := fmt.Sprintf("exp_%016x", len(b.exports)+1)
+	e := ExportInfo{ID: id, Created: ts("2026-11-10T21:00:00Z"), Devices: r.Devices, From: r.From, To: r.To, State: "queued",
+		Filters: ExportFilters{Group: r.Group, Ungrouped: r.Ungrouped, Severities: r.Severities, Q: r.Q, Regex: r.Regex, Case: r.Case}}
+	b.exports[id] = e
+	return e, nil
+}
+func (b *fakeBackend) EstimateExport(ctx context.Context, r ExportRequest) (ExportEstimate, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.exportReqs = append(b.exportReqs, r)
+	if b.exportErr != nil {
+		return ExportEstimate{}, b.exportErr
+	}
+	return ExportEstimate{Lines: 123456, Bytes: 45678901, Files: 12}, nil
+}
+func (b *fakeBackend) Exports(ctx context.Context) ([]ExportInfo, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	var out []ExportInfo
+	for _, e := range b.exports {
+		out = append(out, e)
+	}
+	return out, nil
+}
+func (b *fakeBackend) Export(ctx context.Context, id string) (ExportInfo, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	e, ok := b.exports[id]
+	if !ok {
+		return ExportInfo{}, ErrNotFound
+	}
+	return e, nil
+}
+func (b *fakeBackend) OpenExport(ctx context.Context, id string) (ExportDownload, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	e, ok := b.exports[id]
+	switch {
+	case !ok || e.State == "expired":
+		return ExportDownload{}, ErrNotFound
+	case e.State != "ready":
+		return ExportDownload{}, ErrNotReady
+	}
+	return ExportDownload{File: nopCloser{bytes.NewReader(b.zip)}, ModTime: ts("2026-11-10T21:00:05Z")}, nil
+}
+func (b *fakeBackend) DeleteExport(ctx context.Context, id string) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if _, ok := b.exports[id]; !ok {
+		return ErrNotFound
+	}
+	delete(b.exports, id)
+	return nil
+}
+
+type nopCloser struct{ *bytes.Reader }
+
+func (nopCloser) Close() error { return nil }
 
 func (b *fakeBackend) eventTexts() []string {
 	b.mu.Lock()

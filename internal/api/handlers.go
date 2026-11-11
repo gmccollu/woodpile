@@ -168,14 +168,13 @@ func (s *Server) apiRoutes() *http.ServeMux {
 	live := b.LiveHandler()
 	mux.Handle("/api/live", methods{http.MethodGet: live.ServeHTTP})
 
-	// Search and exports (M3).
-	m3 := func(w http.ResponseWriter, r *http.Request) {
-		writeError(w, http.StatusNotImplemented, "coming in M3")
-	}
-	mux.Handle("/api/search", methods{http.MethodGet: m3})
-	mux.Handle("/api/context", methods{http.MethodGet: m3})
-	mux.Handle("/api/exports", methods{http.MethodGet: m3, http.MethodPost: m3})
-	mux.Handle("/api/exports/{id}/download", methods{http.MethodGet: m3})
+	// Search and exports.
+	mux.Handle("/api/search", methods{http.MethodGet: s.getSearch})
+	mux.Handle("/api/context", methods{http.MethodGet: s.getContext})
+	mux.Handle("/api/exports", methods{http.MethodGet: s.listExports, http.MethodPost: s.postExport})
+	mux.Handle("/api/exports/estimate", methods{http.MethodPost: s.postEstimate})
+	mux.Handle("/api/exports/{id}", methods{http.MethodGet: s.getExport, http.MethodDelete: s.deleteExport})
+	mux.Handle("/api/exports/{id}/download", methods{http.MethodGet: s.downloadExport})
 
 	// Settings.
 	mux.Handle("/api/settings", methods{

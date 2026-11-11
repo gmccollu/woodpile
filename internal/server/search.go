@@ -1,0 +1,156 @@
+package server
+
+import (
+	"context"
+	"errors"
+	"time"
+
+	"github.com/gmccollu/woodpile/internal/api"
+	"github.com/gmccollu/woodpile/internal/export"
+	"github.com/gmccollu/woodpile/internal/hub"
+	"github.com/gmccollu/woodpile/internal/search"
+)
+
+// Search, context and exports: the api.Backend methods on top of
+// internal/search and internal/export.
+
+func toSeveritySet(s api.Severities) hub.SeveritySet {
+	if s.None {
+		return hub.SeverityNone
+	}
+	var set hub.SeveritySet
+	for _, v := range s.Values {
+		set = set.With(v)
+	}
+	if set == hub.AllSeverities {
+		return 0
+	}
+	return set
+}
+
+func fromSeveritySet(set hub.SeveritySet) api.Severities {
+	switch set {
+	case 0:
+		return api.Severities{}
+	case hub.SeverityNone:
+		return api.Severities{None: true}
+	}
+	var s api.Severities
+	for i := 0; i < 8; i++ {
+		if set.Has(i) {
+			s.Values = append(s.Values, i)
+		}
+	}
+	if set.Has(api.Unknown) {
+		s.Values = append(s.Values, api.Unknown)
+	}
+	return s
+}
+
+// requestError turns the engines' "bad request" errors into the api's.
+func requestError(err error) error {
+	var qe *search.QueryError
+	var re *export.RequestError
+	switch {
+	case errors.As(err, &qe):
+		return &api.RequestError{Msg: qe.Msg}
+	case errors.As(err, &re):
+		return &api.RequestError{Msg: re.Msg}
+	case errors.Is(err, search.ErrNotFound), errors.Is(err, export.ErrNotFound):
+		return api.ErrNotFound
+	case errors.Is(err, export.ErrNotReady):
+		return api.ErrNotReady
+	}
+	return err
+}
+
+func toAPILines(ls []search.Line) []api.SearchLine {
+	out := make([]api.SearchLine, len(ls))
+	for i, l := range ls {
+		out[i] = api.SearchLine{Received: l.Received, DeviceID: l.DeviceID, Severity: l.Severity, Raw: l.Raw, Ref: l.Ref}
+	}
+	return out
+}
+
+func (b *backend) Search(ctx context.Context, r api.SearchRequest) (api.SearchPage, error) {
+	p, err := b.search.Search(ctx, search.Query{
+		Filter:  search.Filter{Q: r.Q, Regex: r.Regex, Case: r.Case, Severities: toSeveritySet(r.Severities), From: r.From, To: r.To},
+		Devices: r.Devices, Group: r.Group, Ungrouped: r.Ungrouped, Asc: r.Asc, Limit: r.Limit, Cursor: r.Cursor,
+	})
+	if err != nil {
+		return api.SearchPage{}, requestError(err)
+	}
+	return api.SearchPage{Results: toAPILines(p.Results), NextCursor: p.NextCursor, ScannedBytes: p.ScannedBytes,
+		ScannedFiles: p.ScannedFiles, ElapsedMS: p.Elapsed.Milliseconds(), Partial: p.Partial}, nil
+}
+
+func (b *backend) Context(ctx context.Context, ref string, before, after int) (api.ContextPage, error) {
+	p, err := b.search.Context(ctx, ref, before, after)
+	if err != nil {
+		return api.ContextPage{}, requestError(err)
+	}
+	return api.ContextPage{Lines: toAPILines(p.Lines), HitIndex: p.HitIndex, AtStart: p.AtStart, AtEnd: p.AtEnd}, nil
+}
+
+func toExportRequest(r api.ExportRequest) export.Request {
+	return export.Request{Devices: r.Devices, From: r.From, To: r.To, Filters: export.Filters{
+		Group: r.Group, Ungrouped: r.Ungrouped, Severities: toSeveritySet(r.Severities), Q: r.Q, Regex: r.Regex, Case: r.Case}}
+}
+
+func toAPIExport(e export.Info) api.ExportInfo {
+	return api.ExportInfo{
+		ID: e.ID, Created: e.Created, Devices: e.Devices, From: e.From, To: e.To, State: string(e.State),
+		Progress: e.Progress, Lines: e.Lines, SizeBytes: e.SizeBytes, Error: e.Error, ReadyAt: e.ReadyAt, ExpiresAt: e.ExpiresAt,
+		Filters: api.ExportFilters{Group: e.Filters.Group, Ungrouped: e.Filters.Ungrouped,
+			Severities: fromSeveritySet(e.Filters.Severities), Q: e.Filters.Q, Regex: e.Filters.Regex, Case: e.Filters.Case},
+	}
+}
+
+func (b *backend) CreateExport(ctx context.Context, r api.ExportRequest) (api.ExportInfo, error) {
+	e, err := b.exports.Create(ctx, toExportRequest(r))
+	if err != nil {
+		return api.ExportInfo{}, requestError(err)
+	}
+	return toAPIExport(e), nil
+}
+
+func (b *backend) EstimateExport(ctx context.Context, r api.ExportRequest) (api.ExportEstimate, error) {
+	est, err := b.exports.Estimate(ctx, toExportRequest(r))
+	if err != nil {
+		return api.ExportEstimate{}, requestError(err)
+	}
+	return api.ExportEstimate{Lines: est.Lines, Bytes: est.Bytes, Files: est.Files}, nil
+}
+
+func (b *backend) Exports(ctx context.Context) ([]api.ExportInfo, error) {
+	es := b.exports.List()
+	out := make([]api.ExportInfo, len(es))
+	for i, e := range es {
+		out[i] = toAPIExport(e)
+	}
+	return out, nil
+}
+
+func (b *backend) Export(ctx context.Context, id string) (api.ExportInfo, error) {
+	e, err := b.exports.Get(id)
+	if err != nil {
+		return api.ExportInfo{}, requestError(err)
+	}
+	return toAPIExport(e), nil
+}
+
+func (b *backend) OpenExport(ctx context.Context, id string) (api.ExportDownload, error) {
+	f, info, err := b.exports.Download(id)
+	if err != nil {
+		return api.ExportDownload{}, requestError(err)
+	}
+	mod := time.Time{}
+	if info.ReadyAt != nil {
+		mod = *info.ReadyAt
+	}
+	return api.ExportDownload{File: f, ModTime: mod}, nil
+}
+
+func (b *backend) DeleteExport(ctx context.Context, id string) error {
+	return requestError(b.exports.Delete(id))
+}

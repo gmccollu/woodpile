@@ -15,10 +15,12 @@ import (
 
 	"github.com/gmccollu/woodpile/internal/api"
 	"github.com/gmccollu/woodpile/internal/config"
+	"github.com/gmccollu/woodpile/internal/export"
 	"github.com/gmccollu/woodpile/internal/hub"
 	"github.com/gmccollu/woodpile/internal/index"
 	"github.com/gmccollu/woodpile/internal/listen"
 	"github.com/gmccollu/woodpile/internal/model"
+	"github.com/gmccollu/woodpile/internal/search"
 	"github.com/gmccollu/woodpile/internal/store"
 )
 
@@ -28,6 +30,8 @@ type backend struct {
 	idx     *index.DB
 	store   *store.Store
 	hub     *hub.Hub
+	search  *search.Engine
+	exports *export.Manager
 	log     *slog.Logger
 	version string
 	commit  string
@@ -72,6 +76,8 @@ type backendDeps struct {
 	store                    *store.Store
 	log                      *slog.Logger
 	version, commit, release string
+	search                   *search.Engine
+	exports                  *export.Manager
 }
 
 func newBackend(d backendDeps) *backend {
@@ -84,6 +90,8 @@ func newBackend(d backendDeps) *backend {
 		version: d.version,
 		commit:  d.commit,
 		release: d.release,
+		search:  d.search,
+		exports: d.exports,
 		now:     time.Now,
 		live:    newLiveDevices(),
 	}

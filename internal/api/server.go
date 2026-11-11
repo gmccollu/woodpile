@@ -284,9 +284,46 @@ type instance struct {
 	url      string
 	ln       net.Listener
 	servers  []*http.Server
+	conns    connTracker
 	cancel   context.CancelFunc
 	done     chan error
 	stopOnce sync.Once
+}
+
+// connTracker follows the servers' connections, so stop can close the ones
+// with no request in flight at once. http.Server.Shutdown closes idle
+// keep-alive connections itself, but treats a new connection that hasn't sent
+// a request yet (a browser's preconnect) as busy for its first 5 s, which held
+// every shutdown and UI restart that long.
+type connTracker struct {
+	mu    sync.Mutex
+	conns map[net.Conn]http.ConnState
+}
+
+func (t *connTracker) hook(c net.Conn, st http.ConnState) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	switch st {
+	case http.StateHijacked, http.StateClosed:
+		delete(t.conns, c)
+	default:
+		if t.conns == nil {
+			t.conns = map[net.Conn]http.ConnState{}
+		}
+		t.conns[c] = st
+	}
+}
+
+// closeQuiet closes every connection that is new (no request yet) or idle.
+func (t *connTracker) closeQuiet() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for c, st := range t.conns {
+		if st == http.StateNew || st == http.StateIdle {
+			c.Close()
+			delete(t.conns, c)
+		}
+	}
 }
 
 // start binds and serves cfg.
@@ -336,6 +373,7 @@ func (s *Server) start(cfg UIConfig) (*instance, error) {
 			IdleTimeout:       2 * time.Minute,
 			MaxHeaderBytes:    64 << 10,
 			BaseContext:       func(net.Listener) context.Context { return baseCtx },
+			ConnState:         inst.conns.hook,
 			ErrorLog:          slog.NewLogLogger(s.log.Handler(), slog.LevelDebug),
 		}
 	}
@@ -375,10 +413,16 @@ func displayHost(identity func() (hostIdentity, error)) string {
 }
 
 // stop closes the listener, cancels every request context (ending live tails),
-// and waits briefly for handlers to finish.
+// closes connections with no request in flight, and waits briefly for handlers
+// to finish.
 func (inst *instance) stop() {
 	inst.stopOnce.Do(func() {
 		inst.cancel()
+		for _, srv := range inst.servers {
+			srv.SetKeepAlivesEnabled(false) // active connections close after their response
+		}
+		_ = inst.ln.Close() // no new connections
+		inst.conns.closeQuiet()
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		var wg sync.WaitGroup
@@ -412,16 +456,34 @@ func redirectToHTTPS(w http.ResponseWriter, r *http.Request) {
 // byte (0x16 starts a TLS handshake).
 type splitListener struct {
 	tls, plain *chanListener
+
+	mu      sync.Mutex
+	pending map[net.Conn]bool // accepted, first byte not seen yet
+	closed  bool
 }
 
 func newSplitListener(ln net.Listener) *splitListener {
 	closed := make(chan struct{})
 	sp := &splitListener{
-		tls:   &chanListener{addr: ln.Addr(), conns: make(chan net.Conn), closed: closed, parent: ln},
-		plain: &chanListener{addr: ln.Addr(), conns: make(chan net.Conn), closed: closed, parent: ln},
+		tls:     &chanListener{addr: ln.Addr(), conns: make(chan net.Conn), closed: closed, parent: ln},
+		plain:   &chanListener{addr: ln.Addr(), conns: make(chan net.Conn), closed: closed, parent: ln},
+		pending: map[net.Conn]bool{},
 	}
 	var once sync.Once
-	sp.tls.closeAll = func() { once.Do(func() { close(closed) }) }
+	sp.tls.closeAll = func() {
+		once.Do(func() {
+			close(closed)
+			// Connections still waiting for their first byte belong to no server
+			// yet, so no Shutdown would close them.
+			sp.mu.Lock()
+			sp.closed = true
+			for c := range sp.pending {
+				c.Close()
+			}
+			sp.pending = nil
+			sp.mu.Unlock()
+		})
+	}
 	sp.plain.closeAll = sp.tls.closeAll
 	go func() {
 		defer sp.tls.closeAll()
@@ -442,9 +504,21 @@ func newSplitListener(ln net.Listener) *splitListener {
 }
 
 func (sp *splitListener) route(c net.Conn) {
+	sp.mu.Lock()
+	if sp.closed {
+		sp.mu.Unlock()
+		c.Close()
+		return
+	}
+	sp.pending[c] = true
+	sp.mu.Unlock()
 	_ = c.SetReadDeadline(time.Now().Add(10 * time.Second))
 	var b [1]byte
-	if _, err := io.ReadFull(c, b[:]); err != nil {
+	_, err := io.ReadFull(c, b[:])
+	sp.mu.Lock()
+	delete(sp.pending, c)
+	sp.mu.Unlock()
+	if err != nil {
 		c.Close()
 		return
 	}

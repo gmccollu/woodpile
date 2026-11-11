@@ -499,24 +499,6 @@ func TestBackendErrorIs500(t *testing.T) {
 	wantError(t, do(t, httpClient(), "GET", srv.url("/api/status"), ""), 500, "index closed")
 }
 
-func TestM3Routes(t *testing.T) {
-	srv := startServer(t, nil, UIConfig{})
-	c := httpClient()
-	for _, rt := range []struct{ method, path, body string }{
-		{"GET", "/api/search?q=x", ""},
-		{"GET", "/api/context?ref=r", ""},
-		{"GET", "/api/exports", ""},
-		{"POST", "/api/exports", `{"devices":["10.1.0.1"],"from":"","to":""}`},
-		{"GET", "/api/exports/exp_1/download", ""},
-	} {
-		r := do(t, c, rt.method, srv.url(rt.path), rt.body)
-		wantError(t, r, 501, "")
-		if m := r.json(t); m["error"] != "coming in M3" {
-			t.Errorf("%s %s: %s", rt.method, rt.path, r.body)
-		}
-	}
-}
-
 func TestUnknownRoutesAndMethods(t *testing.T) {
 	srv := startServer(t, nil, UIConfig{})
 	c := httpClient()

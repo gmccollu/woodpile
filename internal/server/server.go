@@ -24,9 +24,11 @@ import (
 
 	"github.com/gmccollu/woodpile/internal/api"
 	"github.com/gmccollu/woodpile/internal/config"
+	"github.com/gmccollu/woodpile/internal/export"
 	"github.com/gmccollu/woodpile/internal/hub"
 	"github.com/gmccollu/woodpile/internal/index"
 	"github.com/gmccollu/woodpile/internal/listen"
+	"github.com/gmccollu/woodpile/internal/search"
 	"github.com/gmccollu/woodpile/internal/store"
 )
 
@@ -51,12 +53,14 @@ type Server struct {
 	cfgPath string
 	created bool // Open created the config file
 
-	lock  *DirLock
-	idx   *index.DB
-	store *store.Store
-	hub   *hub.Hub
-	api   *api.Server
-	be    *backend
+	lock    *DirLock
+	idx     *index.DB
+	store   *store.Store
+	search  *search.Engine
+	exports *export.Manager
+	hub     *hub.Hub
+	api     *api.Server
+	be      *backend
 
 	ran bool
 }
@@ -115,6 +119,13 @@ func Open(cfgPath string, opts Options) (*Server, error) {
 	if s.idx, err = index.Open(filepath.Join(dataDir, index.FileName)); err != nil {
 		return nil, fmt.Errorf("open the index: %w", err)
 	}
+	// Search and exports read the files through the index. The export queue
+	// opens before the store so the store's low-disk guard can delete exports
+	// before any log.
+	s.search = search.New(search.Options{DataDir: dataDir, Index: s.idx, Logger: log})
+	if s.exports, err = export.Open(export.Options{DataDir: dataDir, Index: s.idx, Search: s.search, Version: opts.Version, Logger: log}); err != nil {
+		return nil, fmt.Errorf("open the exports folder: %w", err)
+	}
 	// store.Open repairs the data dir after a crash and reconciles the index with
 	// the files on disk.
 	t0 := time.Now()
@@ -124,6 +135,7 @@ func Open(cfgPath string, opts Options) (*Server, error) {
 		PartBytes:      cfg.Storage.PartBytes,
 		RetentionDays:  cfg.Storage.RetentionDays,
 		RetentionBytes: cfg.Storage.RetentionBytes,
+		Reclaim:        s.exports.Reclaim,
 		Logger:         log,
 	}); err != nil {
 		return nil, fmt.Errorf("open the log store: %w", err)
@@ -139,6 +151,8 @@ func Open(cfgPath string, opts Options) (*Server, error) {
 		version: opts.Version,
 		commit:  opts.Commit,
 		release: opts.ReleasesURL,
+		search:  s.search,
+		exports: s.exports,
 	})
 	s.hub = hub.New(hub.Options{GroupOf: s.be.groupOf})
 	s.be.hub = s.hub
@@ -245,6 +259,7 @@ func (s *Server) Run(ctx context.Context) error {
 		return fmt.Errorf("start the listeners: %w", err)
 	}
 	s.be.setListeners(ln)
+	s.exports.Start()
 	// The listeners log what they bound and the UDP buffer the OS granted.
 	for _, l := range ln.Status().Listeners {
 		if !l.OK {
@@ -312,6 +327,8 @@ func (s *Server) shutdown(ln *listen.Server, apiCancel context.CancelFunc, apiDo
 			apiCancel()
 			<-apiDone
 		}
+		setStep("stopping the export queue")
+		s.exports.Close() // a build in progress is cancelled (marked failed)
 		setStep("flushing and closing the store")
 		before := s.store.Usage().Written
 		if err := s.store.Close(); err != nil {
@@ -359,6 +376,9 @@ func (s *Server) shutdown(ln *listen.Server, apiCancel context.CancelFunc, apiDo
 func (s *Server) closeOpened() {
 	if s.store != nil {
 		_ = s.store.Close()
+	}
+	if s.exports != nil {
+		s.exports.Close()
 	}
 	if s.hub != nil {
 		s.hub.Close()
