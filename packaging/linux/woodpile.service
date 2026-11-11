@@ -44,9 +44,9 @@ RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 SystemCallFilter=@system-service
 SystemCallErrorNumber=EPERM
 ProtectProc=invisible
-# Not ProcSubset=pid yet: it hides /proc/net, and the kernel UDP drop counter and the
-# "who holds port 514" lookup read /proc/net/udp and /proc/net/tcp. Turn it on once they
-# read /proc/self/net/* (visible under ProcSubset=pid).
+# Only the process directories in /proc. /proc/net is hidden, so the socket tables (kernel
+# UDP drops, who holds port 514) are read from /proc/self/net/*, which stays visible.
+ProcSubset=pid
 
 [Install]
 WantedBy=multi-user.target
