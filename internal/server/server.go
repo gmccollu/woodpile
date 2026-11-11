@@ -154,7 +154,7 @@ func Open(cfgPath string, opts Options) (*Server, error) {
 		search:  s.search,
 		exports: s.exports,
 	})
-	s.hub = hub.New(hub.Options{GroupOf: s.be.groupOf})
+	s.hub = hub.New(hub.Options{GroupOf: s.be.groupOf, HiddenOf: s.be.hiddenOf})
 	s.be.hub = s.hub
 	if err := s.be.refreshGroups(context.Background()); err != nil {
 		return nil, fmt.Errorf("read devices from the index: %w", err)

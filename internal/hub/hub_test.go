@@ -627,3 +627,58 @@ func BenchmarkPublishOneSubscriber(b *testing.B) {
 		h.Publish(m)
 	}
 }
+
+func TestHiddenDevicesOnlyWhenNamed(t *testing.T) {
+	var mu sync.Mutex
+	hidden := map[string]bool{"192.0.2.9": true}
+	h := New(Options{HiddenOf: func(id string) bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return hidden[id]
+	}})
+	defer h.Close()
+	h.Publish(msg("192.0.2.9", 6, "hidden one"))
+	h.Publish(msg("192.0.2.1", 6, "visible one"))
+	all := h.Subscribe(Filter{})
+	named := h.Subscribe(Filter{Devices: []string{"192.0.2.9"}})
+	grouped := h.Subscribe(Filter{Ungrouped: true, Q: "e"})
+	defer all.Close()
+	defer named.Close()
+	defer grouped.Close()
+	raws := func(es []Entry) string {
+		var out []string
+		for _, e := range es {
+			out = append(out, string(e.Raw))
+		}
+		return strings.Join(out, "|")
+	}
+	if got := raws(all.Replay); got != "visible one" {
+		t.Errorf("default replay %q", got)
+	}
+	if got := raws(grouped.Replay); got != "visible one" {
+		t.Errorf("ungrouped replay %q", got)
+	}
+	if got := raws(named.Replay); got != "hidden one" {
+		t.Errorf("named replay %q", got)
+	}
+	h.Publish(msg("192.0.2.9", 6, "hidden two"))
+	// Un-hiding takes effect for open subscriptions.
+	mu.Lock()
+	delete(hidden, "192.0.2.9")
+	mu.Unlock()
+	h.Publish(msg("192.0.2.9", 6, "unhidden three"))
+	time.Sleep(10 * time.Millisecond)
+	for name, c := range map[string]struct {
+		s    *Subscription
+		want string
+	}{
+		"default": {all, "unhidden three"},
+		"named":   {named, "hidden two|unhidden three"},
+		"grouped": {grouped, "unhidden three"},
+	} {
+		got, _ := drain(c.s)
+		if raws(got) != c.want {
+			t.Errorf("%s live: %q, want %q", name, raws(got), c.want)
+		}
+	}
+}

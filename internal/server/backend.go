@@ -52,6 +52,9 @@ type backend struct {
 	// groups maps device ID to group for the hub's GroupOf (a lock-free read on
 	// the ingest path). Refreshed at start and after every PATCH.
 	groups atomic.Pointer[map[string]string]
+	// hidden holds the hidden devices, for the hub's HiddenOf; refreshed with
+	// groups.
+	hidden atomic.Pointer[map[string]bool]
 
 	// firstMsg is the receive time of the first message since start (unix ms; 0
 	// until then), for first_message_at before the store's first index update.
@@ -97,6 +100,8 @@ func newBackend(d backendDeps) *backend {
 	}
 	empty := map[string]string{}
 	b.groups.Store(&empty)
+	none := map[string]bool{}
+	b.hidden.Store(&none)
 	return b
 }
 
@@ -152,14 +157,22 @@ func (b *backend) refreshGroups(ctx context.Context) error {
 		return err
 	}
 	m := make(map[string]string, len(ds))
+	hid := map[string]bool{}
 	for _, d := range ds {
 		if d.Group != "" {
 			m[d.ID] = d.Group
 		}
+		if d.Hidden {
+			hid[d.ID] = true
+		}
 	}
 	b.groups.Store(&m)
+	b.hidden.Store(&hid)
 	return nil
 }
+
+// hiddenOf is the hub's HiddenOf: a map lookup, no locks.
+func (b *backend) hiddenOf(id string) bool { return (*b.hidden.Load())[id] }
 
 // ---- api.Backend ----
 
@@ -471,7 +484,7 @@ func (b *backend) UpdateDevice(ctx context.Context, id string, p api.DevicePatch
 		return api.Device{}, err
 	}
 	if err := b.refreshGroups(ctx); err != nil {
-		b.log.Warn("couldn't refresh device groups for the live tail", "err", err)
+		b.log.Warn("couldn't refresh device groups and hidden devices for the live tail", "err", err)
 	}
 	now := b.now()
 	rs, err := b.deviceRates(ctx, now)

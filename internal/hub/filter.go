@@ -14,7 +14,7 @@ import (
 
 // Filter selects the messages a subscriber gets. Zero fields match everything.
 type Filter struct {
-	Devices   []string // device IDs; empty means every device
+	Devices   []string // device IDs; empty means every device not hidden (Options.HiddenOf)
 	Group     string   // only devices in this group
 	Ungrouped bool     // only devices with no group (an alternative to Group)
 	// MinSeverity is the numeric severity ceiling (0 emerg … 7 debug): messages with
@@ -162,6 +162,9 @@ func (c *compiled) match(e *Entry, g *groupLookup) bool {
 	if c.devices != nil && !c.devices[e.DeviceID] {
 		return false
 	}
+	if c.devices == nil && g.hidden() {
+		return false // hidden devices only when named
+	}
 	if c.maxSev >= 0 && e.Severity != model.Unknown && e.Severity > c.maxSev {
 		return false
 	}
@@ -183,7 +186,8 @@ func (c *compiled) match(e *Entry, g *groupLookup) bool {
 	return true
 }
 
-// Match reports whether the filter selects e, with group giving a device's group.
+// Match reports whether the filter selects e, with group giving a device's group
+// (no device is hidden; see Options.HiddenOf).
 func (f Filter) Match(e Entry, group func(deviceID string) string) bool {
 	if group == nil {
 		group = func(string) string { return "" }

@@ -42,6 +42,11 @@ type Options struct {
 	// message, so it must be fast (a map lookup) and must not call the Hub. Nil
 	// means every device is ungrouped.
 	GroupOf func(deviceID string) string
+	// HiddenOf reports whether a device is hidden: a hidden device's messages
+	// reach only subscribers that name it in Filter.Devices (docs/api.md, the
+	// same rule as search). Same constraints as GroupOf; it's read per message,
+	// so un-hiding takes effect without resubscribing. Nil means none is hidden.
+	HiddenOf func(deviceID string) bool
 	// Clock is the time source for sampling and the rate (default time.Now).
 	Clock func() time.Time
 }
@@ -122,6 +127,9 @@ func New(opts Options) *Hub {
 	if opts.GroupOf == nil {
 		opts.GroupOf = func(string) string { return "" }
 	}
+	if opts.HiddenOf == nil {
+		opts.HiddenOf = func(string) bool { return false }
+	}
 	return &Hub{
 		opts:    opts,
 		ring:    make([]Entry, opts.RingSize),
@@ -147,7 +155,7 @@ func (h *Hub) Publish(m model.Message) {
 	if len(h.subs) == 0 {
 		return
 	}
-	g := groupLookup{f: h.opts.GroupOf, id: e.DeviceID}
+	g := groupLookup{f: h.opts.GroupOf, hf: h.opts.HiddenOf, id: e.DeviceID}
 	ep := &e // shared by every subscriber, never modified (ring slots are reused)
 	for s := range h.subs {
 		if s.filter.match(ep, &g) {
@@ -224,10 +232,10 @@ func (h *Hub) Subscribe(f Filter) *Subscription {
 	}
 	// Newest first, then reversed.
 	var rev []Entry
-	g := groupLookup{f: h.opts.GroupOf}
+	g := groupLookup{f: h.opts.GroupOf, hf: h.opts.HiddenOf}
 	for i := h.n - 1; i >= 0 && len(rev) < h.opts.Replay; i-- {
 		e := &h.ring[(h.head+i)%len(h.ring)]
-		g.id, g.done = e.DeviceID, false
+		g.id, g.done, g.hdone = e.DeviceID, false, false
 		if cf.match(e, &g) {
 			rev = append(rev, *e)
 		}
@@ -357,12 +365,23 @@ func (s *Subscription) send(h *Hub, it Item) bool {
 	}
 }
 
-// groupLookup calls GroupOf at most once per message, and only if a filter needs it.
+// groupLookup calls GroupOf and HiddenOf at most once per message each, and
+// only if a filter needs them.
 type groupLookup struct {
-	f    func(string) string
-	id   string
-	g    string
-	done bool
+	f     func(string) string
+	hf    func(string) bool
+	id    string
+	g     string
+	done  bool
+	h     bool
+	hdone bool
+}
+
+func (g *groupLookup) hidden() bool {
+	if !g.hdone {
+		g.h, g.hdone = g.hf != nil && g.hf(g.id), true
+	}
+	return g.h
 }
 
 func (g *groupLookup) get() string {
