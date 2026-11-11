@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"net/netip"
 	"os"
@@ -99,6 +100,8 @@ func TestHelpNeverRunsTheCommand(t *testing.T) {
 		{"status", "--help"},
 		{"reindex", "--help"},
 		{"reset-password", "--help"},
+		{"portable", "--help"},
+		{"portable", "--port", port, "--no-browser", "-h"},
 		{"version", "--help"},
 	} {
 		code, out, errOut := runCLI(args...)
@@ -120,8 +123,16 @@ func TestTopLevel(t *testing.T) {
 	if code, _, errOut := runCLI("frobnicate"); code != 2 || !strings.Contains(errOut, `unknown command "frobnicate"`) {
 		t.Errorf("unknown: %d %q", code, errOut)
 	}
-	if code, _, errOut := runCLI(); code != 2 || !strings.Contains(errOut, "usage:") {
-		t.Errorf("no args: %d %q", code, errOut)
+	// No arguments starts portable mode (stubbed here: it would bind 514).
+	called := false
+	orig := startPortable
+	startPortable = func(stdout, stderr io.Writer) int { called = true; return 0 }
+	defer func() { startPortable = orig }()
+	if code, _, _ := runCLI(); code != 0 || !called {
+		t.Errorf("no args didn't start portable mode: %d", code)
+	}
+	if code, out, _ := runCLI("help"); code != 0 || !strings.Contains(out, "portable") {
+		t.Errorf("help: %d %q", code, out)
 	}
 	if code, out, _ := runCLI("version"); code != 0 || !strings.HasPrefix(out, "woodpile "+version) {
 		t.Errorf("version: %d %q", code, out)

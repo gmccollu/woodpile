@@ -16,10 +16,14 @@ var (
 	releasesURL = ""
 )
 
-const usage = `usage: woodpile <command> [flags]
+const usage = `usage: woodpile [<command> [flags]]
+
+With no command (or a double-click), Woodpile runs in portable mode: right
+here, with nothing installed, keeping its logs in woodpile-data next to it.
 
 commands:
-  run             run the server in the foreground
+  portable        run in portable mode (the default with no command)
+  run             run the server in the foreground with a given config
   install         install and start the system service
   uninstall       stop and remove the system service (keeps logs)
   status          show service and listener status
@@ -42,6 +46,7 @@ var commands []command
 
 func init() {
 	commands = []command{
+		{"portable", cmdPortable},
 		{"run", cmdRun},
 		{"install", cmdInstall},
 		{"uninstall", cmdUninstall},
@@ -60,8 +65,7 @@ func main() {
 
 func realMain(args []string, stdout, stderr io.Writer) int {
 	if len(args) < 1 {
-		fmt.Fprint(stderr, usage)
-		return 2
+		return startPortable(stdout, stderr)
 	}
 	name := args[0]
 	switch name {
