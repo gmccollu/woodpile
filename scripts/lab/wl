@@ -15,11 +15,12 @@
 #                                every sender IP reaches UDP and TCP 514 and shows up as its own device
 #   wl correctness TARGET        LAB_CORRECT_N messages (UDP, TCP-LF, TCP-octet) on disk exactly once
 #   wl stress TARGET             UDP and TCP rate steps: loss, CPU, RSS per step, and the knee
+#   wl export TARGET             search the correctness run; export one device-day; zip vs manifest; the reboot in gaps
 #   wl reboot TARGET             reboot with a stream running: the service returns, data intact, sending resumes
 #   wl portable TARGET           the tarball/zip binary run by hand, reached from the senders
 #   wl soak TARGET start|status|stop|verify   LAB_SOAK_HOURS at LAB_SOAK_RATE from all senders, sampled on the VM
 #   wl collect TARGET            pull back the VM's logs and samples
-#   wl all TARGET                install check correctness stress reboot portable collect
+#   wl all TARGET                install check correctness stress reboot export portable collect
 #
 # Results: LAB_RESULTS/<target>/<UTC time>-<step>/ (log, JSON, CSV) and a PASS/FAIL line per check in
 # LAB_RESULTS/<target>/results.log. Exit status 0 when the step's checks all pass.
@@ -91,11 +92,17 @@ runid() { python3 -c "import secrets; print(secrets.token_hex(4))"; }
 jget() { python3 -c "import json,sys; d=json.loads(sys.stdin.read() or '{}'); print(eval(sys.argv[1], {}, {'d': d}))" "$1"; }
 
 # ---- remote execution ----
-vm() { # vm <action> [args...]: the VM-side script
+vm() { # vm <action> [args...]: the VM-side script; every argument is quoted for the remote shell
+	local a="" x
 	if [ "$(tv OS)" = windows ]; then
-		"${SSH[@]}" "$(tv SSH)" "powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File C:/woodpile-lab/win-lab.ps1 $*"
+		for x in "$@"; do
+			case "$x" in *'"'*) die "vm: double quote in an argument for Windows: $x" ;; esac
+			a="$a \"$x\""                 # cmd.exe: & | < > are literal inside double quotes
+		done
+		"${SSH[@]}" "$(tv SSH)" "powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File C:/woodpile-lab/win-lab.ps1$a"
 	else
-		"${SSH[@]}" "$(tv SSH)" "/opt/woodpile-lab/linux-lab.sh $*"
+		for x in "$@"; do a="$a $(printf '%q' "$x")"; done
+		"${SSH[@]}" "$(tv SSH)" "/opt/woodpile-lab/linux-lab.sh$a"
 	fi
 }
 vm_put() { # vm_put <local> <remote path>
@@ -134,8 +141,17 @@ pkg_for() {
 cmd_fetch() {
 	local tag=${1:?tag} repo=${LAB_GH_REPO:?LAB_GH_REPO}
 	mkdir -p "$LAB_ASSETS"
-	GH_HOST=${LAB_GH_HOST:-github.com} gh release download "$tag" -R "$repo" -D "$LAB_ASSETS" --clobber \
-		-p 'checksums.txt' -p '*_amd64.deb' -p '*.x86_64.rpm' -p '*_windows_amd64.msi' -p '*_linux_amd64.tar.gz' -p '*_windows_amd64.zip'
+	if command -v gh >/dev/null 2>&1; then
+		GH_HOST=${LAB_GH_HOST:-github.com} gh release download "$tag" -R "$repo" -D "$LAB_ASSETS" --clobber \
+			-p 'checksums.txt' -p '*_amd64.deb' -p '*.x86_64.rpm' -p '*_windows_amd64.msi' -p '*_linux_amd64.tar.gz' -p '*_windows_amd64.zip'
+	else # no gh here: the public release URLs, names taken from checksums.txt
+		local base="https://${LAB_GH_HOST:-github.com}/$repo/releases/download/$tag" f
+		curl -fsSL --retry 2 -o "$LAB_ASSETS/checksums.txt" "$base/checksums.txt"
+		for f in $(awk '{print $2}' "$LAB_ASSETS/checksums.txt" | grep -E '(_amd64\.deb|\.x86_64\.rpm|_windows_amd64\.msi|_linux_amd64\.tar\.gz|_windows_amd64\.zip)$'); do
+			[[ "$f" =~ ^[A-Za-z0-9._+-]+$ ]] || die "odd asset name $f"
+			curl -fsSL --retry 2 -o "$LAB_ASSETS/$f" "$base/$f"
+		done
+	fi
 	(cd "$LAB_ASSETS" && if command -v sha256sum >/dev/null; then sha256sum -c --ignore-missing checksums.txt; else shasum -a 256 -c --ignore-missing checksums.txt; fi)
 	echo "$tag" >"$LAB_ASSETS/TAG"
 	ls -l "$LAB_ASSETS"
@@ -189,7 +205,7 @@ cmd_stage() {
 		vm_put "$t/verifyseq-windows-amd64.exe" C:/woodpile-lab/verifyseq.exe
 		vm_put "$pkg" "C:/woodpile-lab/$(basename "$pkg")"
 		tmp=$(mktemp -d)
-		unzip -q -o "$(asset 'woodpile_*_windows_amd64.zip')" -d "$tmp"
+		python3 -c "import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])" "$(asset 'woodpile_*_windows_amd64.zip')" "$tmp"
 		vm_put "$(find "$tmp" -name woodpile.exe | head -1)" C:/woodpile-lab/portable/woodpile.exe
 		rm -rf "$tmp"
 	else
@@ -304,6 +320,14 @@ cmd_correctness() {
 	log "verify: $v"
 	check "$n messages on disk exactly once (0 missing, 0 duplicates)" has "$v" '"ok":true'
 	echo "$r $n" >"$LAB_RESULTS/$target/correctness.run"
+	local devs
+	devs=$(vm api GET "/api/devices?limit=1000" | tr -d '\r' | tee "$step_dir/devices.json")
+	check "the API (and so the UI) lists all $(echo $LAB_SENDER_IPS | wc -w | tr -d " ") sender IPs as devices" python3 -c "
+import json, sys
+d = json.loads(sys.argv[1]); ips = {x['ip'] for x in d['devices']}
+want = set(sys.argv[2].split())
+print('devices total', d['total'], 'missing', sorted(want - ips))
+sys.exit(0 if want <= ips else 1)" "$devs" "$LAB_SENDER_IPS"
 	end_step
 }
 
@@ -407,6 +431,7 @@ cmd_reboot() {
 	sp=$!
 	sleep 20
 	t0=$(date +%s)
+	date -u +%FT%TZ >"$LAB_RESULTS/$target/reboot.at"
 	vm reboot | tee -a "$step_dir/log" || true
 	check "VM went down" wait_ssh down 180
 	check "VM came back (ssh)" wait_ssh up 900
@@ -523,6 +548,60 @@ PY
 	esac
 }
 
+cmd_export() { # search the correctness run, export one device-day, check the zip against its manifest
+	new_step export
+	local dev range from to r q j body id st zip
+	dev=${LAB_SENDER_IPS%% *}
+	range=$(python3 -c "import datetime as d; n=d.datetime.now(d.timezone.utc); print(n.strftime('%Y-%m-%dT00:00:00Z'), (n+d.timedelta(minutes=2)).strftime('%Y-%m-%dT%H:%M:%SZ'))")
+	from=${range% *}; to=${range#* }
+	r=$(cut -d' ' -f1 "$LAB_RESULTS/$target/correctness.run" 2>/dev/null || true)
+	if [ -n "$r" ]; then
+		q=$(python3 -c "import sys, urllib.parse as u; print(u.urlencode({'q': 'seq=' + sys.argv[1] + ':', 'limit': 5, 'from': sys.argv[2], 'to': sys.argv[3]}))" "$r" "$from" "$to")
+		j=$(vm api GET "/api/search?$q" | tr -d '\r' | tee "$step_dir/search.json")
+		check "search finds the correctness run ($r)" python3 -c "
+import json, sys
+d = json.loads(sys.argv[1]); n = len(d['results'])
+print('search:', n, 'results, scanned', d['scanned_files'], 'files /', d['scanned_bytes'], 'bytes in', d['elapsed_ms'], 'ms, partial', d['partial'])
+sys.exit(0 if n > 0 and all(('seq=' + sys.argv[2] + ':') in x['raw'] for x in d['results']) else 1)" "$j" "$r"
+	fi
+	body=$(mktemp)
+	printf '{"devices": ["%s"], "from": "%s", "to": "%s"}\n' "$dev" "$from" "$to" >"$body"
+	vm_put "$body" "$(vm_tmp)/export-body.json"; rm -f "$body"
+	id=$(vm api POST /api/exports "$(vm_tmp)/export-body.json" | tr -d '\r' | jget 'd["id"]')
+	log "export $id: $dev, $from .. $to"
+	for _ in $(seq 120); do
+		st=$(vm api GET "/api/exports/$id" | tr -d '\r' | jget 'd["state"]')
+		case "$st" in ready | failed | expired) break ;; esac
+		sleep 2
+	done
+	check "export $id is ready (state $st)" test "$st" = ready
+	vm download "/api/exports/$id/download" "$(vm_tmp)/export-$id.zip" | tee -a "$step_dir/log"
+	vm_get "$(vm_tmp)/export-$id.zip" "$step_dir/export.zip"
+	check "export zip: every file matches the manifest's sha256 and line count" python3 - "$step_dir/export.zip" "$LAB_RESULTS/$target/reboot.at" <<'PY'
+import datetime, hashlib, json, os, sys, zipfile
+z = zipfile.ZipFile(sys.argv[1]); m = json.loads(z.read("manifest.json"))
+bad = 0
+for f in m["files"]:
+    data = z.read(f["path"])
+    ok = hashlib.sha256(data).hexdigest() == f["sha256"] and data.count(b"\n") == f["lines"]
+    bad += not ok
+    print(("ok  " if ok else "BAD ") + f"{f['path']}: {f['lines']} lines, {f['bytes']} bytes")
+print(f"manifest: {m['woodpile_version']}, {m['lines']} lines, {len(m['files'])} files, {m['events']} events; gaps: {json.dumps(m['gaps'])}")
+if os.path.exists(sys.argv[2]):
+    at = datetime.datetime.strptime(open(sys.argv[2]).read().strip(), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
+    hit = [g for g in m["gaps"] if g["kind"] == "not_running" and
+           datetime.datetime.fromisoformat(g["from"].replace("Z", "+00:00")) <= at + datetime.timedelta(minutes=5) and
+           datetime.datetime.fromisoformat(g["to"].replace("Z", "+00:00")) >= at - datetime.timedelta(minutes=1)]
+    print(f"reboot at {at:%H:%M:%SZ}: {'shown as ' + json.dumps(hit) if hit else 'NOT in gaps'}")
+    open(sys.argv[1] + ".reboot-gap", "w").write("yes" if hit else "no")
+sys.exit(1 if bad else 0)
+PY
+	if [ -f "$step_dir/export.zip.reboot-gap" ]; then
+		check "the export's gaps report shows the reboot" grep -qx yes "$step_dir/export.zip.reboot-gap"
+	fi
+	end_step
+}
+
 cmd_collect() {
 	new_step collect
 	local f
@@ -540,16 +619,16 @@ tools) cmd_tools ;;
 setup-sender) cmd_setup_sender ;;
 senders) cmd_senders "$@" ;;
 stage) set_target "$1"; cmd_stage ;;
-install | check | correctness | stress | reboot | portable | collect) set_target "$1"; "cmd_$c" ;;
+install | check | correctness | stress | reboot | export | portable | collect) set_target "$1"; "cmd_$c" ;;
 soak) set_target "$1"; shift; cmd_soak "$@" ;;
 all)
 	set_target "$1"
 	rc=0
-	for s in install check correctness stress reboot; do fails=0; "cmd_$s" || rc=1; done
+	for s in install check correctness stress reboot export; do fails=0; "cmd_$s" || rc=1; done
 	case "$(tv KIND)" in deb | msi) fails=0; cmd_portable || rc=1 ;; esac
 	fails=0; cmd_collect || true
 	exit "$rc"
 	;;
-help | -h | --help) sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//' ;;
+help | -h | --help) sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//' ;;
 *) die "unknown command $c (wl help)" ;;
 esac

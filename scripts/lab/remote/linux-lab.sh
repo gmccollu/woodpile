@@ -9,6 +9,7 @@
 #   linux-lab.sh fw-open | fw-close        open / close UDP+TCP 514 exactly as docs/install.md says
 #   linux-lab.sh verify RUN N [MISSING_OK] [WAIT]   verifyseq -json against the service's data dir
 #   linux-lab.sh stats                     GET /api/stats (localhost UI)
+#   linux-lab.sh api METHOD PATH [BODY]    any local API call; download PATH OUT saves a body (export zips)
 #   linux-lab.sh devices                   the device folders under logs/
 #   linux-lab.sh sample OUT INTERVAL SECS [PID]     CSV of RSS, CPU seconds, fds, threads, UDP drops
 #   linux-lab.sh soak-sampler start|stop|status SECS   the sampler as a transient systemd unit
@@ -39,7 +40,8 @@ install)
 	pkg=${1:?package path}
 	case "$pkg" in
 	*.deb) $S env DEBIAN_FRONTEND=noninteractive apt-get install -y "$(realpath "$pkg")" ;;
-	*.rpm) $S dnf install -y "$(realpath "$pkg")" ;;
+	*.rpm) # the lab VM may not reach its distro mirrors: try without repos first (the rpm needs nothing beyond the base OS)
+		$S dnf install -y --disablerepo='*' "$(realpath "$pkg")" || $S dnf install -y "$(realpath "$pkg")" ;;
 	*) echo "install: unknown package type $pkg" >&2; exit 2 ;;
 	esac
 	;;
@@ -109,6 +111,12 @@ verify-detached)
 	echo "started woodpile-lab-verify-$run -> $out"
 	;;
 stats) curl -fsS --max-time 5 "$UI/api/stats" ;;
+api) # api METHOD PATH [BODYFILE]: the local UI API (no auth on localhost); prints the body
+	m=${1:?method} path=${2:?path} body=${3:-}
+	if [ -n "$body" ]; then curl -fsS --max-time 30 -X "$m" -H 'Content-Type: application/json' --data @"$body" "$UI$path"
+	else curl -fsS --max-time 30 -X "$m" "$UI$path"; fi
+	;;
+download) curl -fsS --max-time 300 -o "${2:?out}" "$UI${1:?path}" && ls -l "$2" ;;
 devices) $S ls -1 "${WL_DATA:-$DATA}/logs" ;;
 sample)
 	out=${1:?out} iv=${2:?interval} secs=${3:?seconds} pid=${4:-}

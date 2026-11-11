@@ -16,7 +16,9 @@
   soak-sampler start SECS|stop|status   the sampler as a SYSTEM scheduled task (survives logoff)
   verify-detached RUN N OUTJSON   verifyseq as a scheduled task (long runs)
   portable start|stop|status PORT [allow]   the zip's woodpile.exe by hand on PORT; "allow" adds a temporary rule
-  reboot                          Restart-Computer in 5 s
+  reboot                          shutdown /r in 5 s
+  api METHOD PATH [BODYFILE]      any local API call; download PATH OUT saves a body (export zips)
+  parse                           check this script parses
   collect OUT.zip                 event log, service config, firewall rules, config, status, data listing, samples
 #>
 param([Parameter(Position = 0, Mandatory = $true)][string]$Action,
@@ -152,7 +154,19 @@ port = 18514
       "status" { Get-Process woodpile -ErrorAction SilentlyContinue | Select-Object Id, Path | Format-Table -AutoSize | Out-String }
     }
   }
-  "reboot" { Start-Process -WindowStyle Hidden powershell.exe -ArgumentList "-NoProfile -Command Start-Sleep 5; Restart-Computer -Force"; "rebooting in 5 s" }
+  # shutdown.exe schedules the restart in the OS; a child process would die with the ssh session (OpenSSH job object)
+  "reboot" { & shutdown.exe /r /t 5 /c "woodpile-lab reboot test"; "rebooting in 5 s (exit $LASTEXITCODE)" }
+  "api" {
+    $m = Arg 0; $path = Arg 1; $body = Arg 2
+    if ($body) { (Invoke-WebRequest -UseBasicParsing -TimeoutSec 30 -Method $m -ContentType "application/json" -InFile $body "$Ui$path").Content }
+    else { (Invoke-WebRequest -UseBasicParsing -TimeoutSec 30 -Method $m "$Ui$path").Content }
+  }
+  "download" { Invoke-WebRequest -UseBasicParsing -TimeoutSec 300 -OutFile (Arg 1) "$Ui$(Arg 0)"; (Get-Item (Arg 1)).Length }
+  "parse" {  # self-check: does this script parse on this host's PowerShell?
+    $t = $null; $e = $null
+    [System.Management.Automation.Language.Parser]::ParseFile($PSCommandPath, [ref]$t, [ref]$e) | Out-Null
+    if ($e.Count) { $e | ForEach-Object { "PARSE ERROR line $($_.Extent.StartLineNumber): $($_.Message)" }; exit 1 } else { "parse ok ($($PSVersionTable.PSVersion))" }
+  }
   "collect" {
     $out = Arg 0
     $d = Join-Path $env:TEMP ("wl-collect-" + [guid]::NewGuid().ToString("N").Substring(0, 8))
