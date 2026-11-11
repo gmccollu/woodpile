@@ -6,11 +6,15 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"net"
 	"net/http"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -39,17 +43,20 @@ const (
 	maxSessions     = 256
 )
 
-// Login limits (SPEC §5, security review L2). Three layers:
+// Login limits (SPEC §5, security review L2 and N8):
 //   - A rate bucket per client network (an IPv4 address, an IPv6 /64, since a
 //     host can pick any address in its /64): loginBurst quick attempts, then one
 //     per loginRefill.
-//   - Exponential backoff per full address (zone included, so link-local
-//     clients, which all share fe80::/64, don't slow each other): after
-//     backoffAfter failures within failWindow, each further failure doubles the
-//     wait before the next attempt, up to backoffMax. There's no hard lockout:
-//     once the wait is over, the right password works.
-//   - A global budget: more than globalFailures failures a minute across all
+//   - Exponential backoff, after backoffAfter failures within failWindow, both
+//     per network (so rotating through a /64 doesn't buy attempts) and per full
+//     address (zone included: link-local clients all share fe80::/64). Each
+//     further failure doubles the wait, up to backoffMax. There's no hard
+//     lockout: once the wait is over, the right password works.
+//   - A global budget: more than globalFailures failures an hour across all
 //     clients spaces every attempt globalSpacing apart.
+//   - A remembered client (the knownClientCookie a successful login sets, kept
+//     knownClientTTL) skips the network and global limits, but not its own
+//     address's backoff, so a neighbour or a flood can't keep the admin out.
 //
 // Each table keeps at most maxClients entries and evicts the least recently
 // seen when full.
@@ -60,10 +67,16 @@ const (
 	backoffMax      = 15 * time.Minute
 	failWindow      = 15 * time.Minute
 	lockoutFailures = 10 // failures that record a warning event
-	globalFailures  = 200
-	globalSpacing   = 5 * time.Second
+	globalFailures  = 50
+	globalWindow    = time.Hour
+	globalSpacing   = 60 * time.Second
 	maxClients      = 4096
 	maxHashers      = 2 // concurrent Argon2id verifications (each uses Memory KiB)
+
+	knownClientCookie = "woodpile_known_client"
+	knownClientTTL    = 90 * 24 * time.Hour
+	maxKnownClients   = 1000
+	knownClientsFile  = "ui-known-clients"
 )
 
 type session struct {
@@ -78,10 +91,10 @@ type bucket struct {
 	lastRefill time.Time
 }
 
-// addrState is one full address's failures and backoff.
+// addrState is one address's or network's failures and backoff.
 type addrState struct {
 	failures    int
-	firstFail   time.Time
+	lastFail    time.Time
 	nextAllowed time.Time
 	lastSeen    time.Time
 }
@@ -97,12 +110,15 @@ type auth struct {
 	hashers chan struct{}
 
 	mu       sync.Mutex
+	tickets  map[[32]byte]*ticket  // download tickets, by SHA-256 of the token
 	hash     string                // cached copy of the hash file; "" when unset
 	sessions map[[32]byte]*session // keyed by SHA-256 of the cookie value
 	buckets  map[netip.Prefix]*bucket
-	addrs    map[netip.Addr]*addrState
-	recent   []time.Time // failure times in the last minute, all clients (at most globalFailures+1 kept)
-	globalAt time.Time   // when the global budget next allows an attempt
+	nets     map[netip.Prefix]*addrState // backoff per network
+	addrs    map[netip.Addr]*addrState   // backoff per full address
+	recent   []time.Time                 // failure times in the last globalWindow, all clients (at most globalFailures+1 kept)
+	globalAt time.Time                   // when the global budget next allows an attempt
+	known    map[[32]byte]time.Time      // remembered clients: SHA-256 of the token -> expiry
 }
 
 func newAuth(dataDir string, p argonParams, now func() time.Time, record func(Event)) (*auth, error) {
@@ -118,8 +134,11 @@ func newAuth(dataDir string, p argonParams, now func() time.Time, record func(Ev
 		hashers:  make(chan struct{}, maxHashers),
 		hash:     h,
 		sessions: map[[32]byte]*session{},
+		tickets:  map[[32]byte]*ticket{},
 		buckets:  map[netip.Prefix]*bucket{},
+		nets:     map[netip.Prefix]*addrState{},
 		addrs:    map[netip.Addr]*addrState{},
+		known:    readKnownClients(dataDir, now()),
 	}, nil
 }
 
@@ -138,6 +157,59 @@ func randomToken() string {
 }
 
 func tokenKey(tok string) [32]byte { return sha256.Sum256([]byte(tok)) }
+
+// Download tickets (docs/api.md, Exports): a browser download can't send the
+// session header, so the page first asks for a ticket and navigates to the
+// download URL with it. A ticket is single-use, lives ticketTTL, is bound to the
+// session and the export, and only its hash is kept. The cookie is still
+// required.
+const (
+	ticketTTL  = 60 * time.Second
+	maxTickets = 1024
+)
+
+type ticket struct {
+	session [32]byte // the session's cookie key ({} when no login is required)
+	export  string
+	expires time.Time
+}
+
+// newTicket issues a ticket for export, bound to the session with cookie key sess.
+func (a *auth) newTicket(sess [32]byte, export string) string {
+	tok := randomToken()
+	now := a.now()
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for k, t := range a.tickets {
+		if !now.Before(t.expires) {
+			delete(a.tickets, k)
+		}
+	}
+	if len(a.tickets) >= maxTickets {
+		evictOldest(a.tickets, func(t *ticket) time.Time { return t.expires })
+	}
+	a.tickets[tokenKey(tok)] = &ticket{session: sess, export: export, expires: now.Add(ticketTTL)}
+	return tok
+}
+
+// useTicket spends a ticket: true if tok is a live ticket for this session and
+// export. Any ticket presented is used up, valid or not.
+func (a *auth) useTicket(tok string, sess [32]byte, export string) bool {
+	if tok == "" || len(tok) > 128 {
+		return false
+	}
+	k := tokenKey(tok)
+	now := a.now()
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	t := a.tickets[k]
+	if t == nil {
+		return false
+	}
+	delete(a.tickets, k)
+	return now.Before(t.expires) && t.export == export &&
+		subtle.ConstantTimeCompare(t.session[:], sess[:]) == 1
+}
 
 // authenticate returns the request's session when it carries both the session
 // cookie and the matching SessionHeader; either alone is no session.
@@ -288,23 +360,33 @@ func evictOldest[K comparable, V any](m map[K]V, seen func(V) time.Time) {
 	delete(m, oldK)
 }
 
-// pruneRecentLocked drops global failure times older than a minute.
+// pruneRecentLocked drops global failure times older than globalWindow.
 func (a *auth) pruneRecentLocked(now time.Time) {
 	i := 0
-	for i < len(a.recent) && now.Sub(a.recent[i]) > time.Minute {
+	for i < len(a.recent) && now.Sub(a.recent[i]) > globalWindow {
 		i++
 	}
 	a.recent = a.recent[i:]
 }
 
 // allow decides whether an attempt from remoteAddr may go ahead, taking a
-// token from its network's bucket if so.
-func (a *auth) allow(remoteAddr string) limitResult {
+// token from its network's bucket if so. known (a remembered client) skips the
+// network and global limits.
+func (a *auth) allow(remoteAddr string, known bool) limitResult {
 	now := a.now()
 	addr, key := clientAddr(remoteAddr), clientKey(remoteAddr)
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if st := a.addrs[addr]; st != nil {
+		st.lastSeen = now
+		if now.Before(st.nextAllowed) {
+			return limitResult{retryAfter: st.nextAllowed.Sub(now), locked: true}
+		}
+	}
+	if known {
+		return limitResult{ok: true}
+	}
+	if st := a.nets[key]; st != nil {
 		st.lastSeen = now
 		if now.Before(st.nextAllowed) {
 			return limitResult{retryAfter: st.nextAllowed.Sub(now), locked: true}
@@ -332,23 +414,14 @@ func (a *auth) allow(remoteAddr string) limitResult {
 	return limitResult{ok: true}
 }
 
-// fail records a failed attempt from remoteAddr. It reports the address's
-// failure count in the window, so the caller can record an event once.
-func (a *auth) fail(remoteAddr string) int {
-	now := a.now()
-	addr := clientAddr(remoteAddr)
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	st := a.addrs[addr]
-	if st == nil {
-		evictOldest(a.addrs, func(s *addrState) time.Time { return s.lastSeen })
-		st = &addrState{}
-		a.addrs[addr] = st
+// backoffLocked counts a failure in st and sets its next allowed attempt.
+func backoffLocked(st *addrState, now time.Time) int {
+	// The count resets after failWindow without a failure (not from the first
+	// one: a steady guesser would otherwise start over every window).
+	if st.failures == 0 || now.Sub(st.lastFail) > failWindow {
+		st.failures = 0
 	}
-	st.lastSeen = now
-	if st.failures == 0 || now.Sub(st.firstFail) > failWindow {
-		st.failures, st.firstFail = 0, now
-	}
+	st.lastSeen, st.lastFail = now, now
 	st.failures++
 	if st.failures >= backoffAfter {
 		wait := backoffMax
@@ -357,20 +430,120 @@ func (a *auth) fail(remoteAddr string) int {
 		}
 		st.nextAllowed = now.Add(wait)
 	}
+	return st.failures
+}
+
+// fail records a failed attempt from remoteAddr: its address's backoff, and
+// unless known its network's backoff and the global budget. It reports the
+// address's failure count in the window, so the caller can record an event once.
+func (a *auth) fail(remoteAddr string, known bool) int {
+	now := a.now()
+	addr, key := clientAddr(remoteAddr), clientKey(remoteAddr)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	st := a.addrs[addr]
+	if st == nil {
+		evictOldest(a.addrs, func(s *addrState) time.Time { return s.lastSeen })
+		st = &addrState{}
+		a.addrs[addr] = st
+	}
+	n := backoffLocked(st, now)
+	if known {
+		return n
+	}
+	ns := a.nets[key]
+	if ns == nil {
+		evictOldest(a.nets, func(s *addrState) time.Time { return s.lastSeen })
+		ns = &addrState{}
+		a.nets[key] = ns
+	}
+	backoffLocked(ns, now)
 	a.pruneRecentLocked(now)
 	if len(a.recent) <= globalFailures {
 		a.recent = append(a.recent, now)
 	} else {
 		a.recent = append(a.recent[1:], now)
 	}
-	return st.failures
+	return n
 }
 
-// succeed clears an address's failures after a correct password.
+// succeed clears an address's failures after a correct password. Its network's
+// backoff stays (another host in the /64 may be the one guessing) and wears off
+// with failWindow.
 func (a *auth) succeed(remoteAddr string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	delete(a.addrs, clientAddr(remoteAddr))
+}
+
+// isKnown reports whether r carries a live remembered-client token.
+func (a *auth) isKnown(r *http.Request) bool {
+	c, err := r.Cookie(knownClientCookie)
+	if err != nil || c.Value == "" || len(c.Value) > 128 {
+		return false
+	}
+	k := tokenKey(c.Value)
+	now := a.now()
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	exp, ok := a.known[k]
+	return ok && now.Before(exp)
+}
+
+// remember issues a remembered-client token, stored hashed (also on disk, so a
+// restart doesn't forget the admin's browser).
+func (a *auth) remember() string {
+	tok := randomToken()
+	now := a.now()
+	a.mu.Lock()
+	for k, exp := range a.known {
+		if !now.Before(exp) {
+			delete(a.known, k)
+		}
+	}
+	if len(a.known) >= maxKnownClients { // drop the one expiring soonest
+		var oldK [32]byte
+		var oldT time.Time
+		first := true
+		for k, exp := range a.known {
+			if first || exp.Before(oldT) {
+				oldK, oldT, first = k, exp, false
+			}
+		}
+		delete(a.known, oldK)
+	}
+	a.known[tokenKey(tok)] = now.Add(knownClientTTL)
+	data := knownClientsData(a.known)
+	a.mu.Unlock()
+	_ = writeFileAtomic(filepath.Join(a.dataDir, knownClientsFile), data, 0o600)
+	return tok
+}
+
+func knownClientsData(m map[[32]byte]time.Time) []byte {
+	var b []byte
+	for k, exp := range m {
+		b = fmt.Appendf(b, "%s %d\n", hex.EncodeToString(k[:]), exp.Unix())
+	}
+	return b
+}
+
+// readKnownClients loads the remembered-client hashes that haven't expired.
+func readKnownClients(dataDir string, now time.Time) map[[32]byte]time.Time {
+	out := map[[32]byte]time.Time{}
+	b, err := os.ReadFile(filepath.Join(dataDir, knownClientsFile))
+	if err != nil {
+		return out
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		h, e, ok := strings.Cut(strings.TrimSpace(line), " ")
+		raw, err := hex.DecodeString(h)
+		exp, err2 := strconv.ParseInt(e, 10, 64)
+		if !ok || err != nil || err2 != nil || len(raw) != 32 || !now.Before(time.Unix(exp, 0)) {
+			continue
+		}
+		out[[32]byte(raw)] = time.Unix(exp, 0)
+	}
+	return out
 }
 
 // check verifies password against the stored hash, limiting how many
@@ -433,12 +606,77 @@ func (s *Server) requireSession(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
+		// An export download may carry a ticket instead of the header (with the
+		// cookie).
+		if id, ok := downloadPath(r.URL.Path); ok && r.Method == http.MethodGet && r.URL.Query().Has("ticket") {
+			if _, k, ok := s.auth.lookup(r); ok && s.auth.useTicket(r.URL.Query().Get("ticket"), k, id) {
+				next.ServeHTTP(w, r)
+				return
+			}
+			writeError(w, http.StatusUnauthorized, "This download link has expired or was already used; download again from the Export page.")
+			return
+		}
 		if _, _, ok := s.auth.authenticate(r); !ok {
 			writeError(w, http.StatusUnauthorized, "Log in first (send the session cookie and the "+SessionHeader+" header).")
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// setRequireLocal saves ui.require_login_local through the backend and applies it.
+func (s *Server) setRequireLocal(ctx context.Context, on bool) error {
+	st, err := s.backend.Settings(ctx)
+	if err != nil {
+		return err
+	}
+	if st.UI.RequireLoginLocal != on {
+		st.UI.RequireLoginLocal = on
+		if _, err := s.backend.SaveSettings(ctx, st); err != nil {
+			return err
+		}
+	}
+	s.mu.Lock()
+	s.want.RequireLoginLocal = on
+	s.mu.Unlock()
+	s.requireLocal.Store(on)
+	return nil
+}
+
+// downloadPath returns the export ID of an /api/exports/{id}/download path.
+func downloadPath(p string) (string, bool) {
+	rest, ok := strings.CutPrefix(p, "/api/exports/")
+	if !ok {
+		return "", false
+	}
+	id, ok := strings.CutSuffix(rest, "/download")
+	if !ok || id == "" || strings.Contains(id, "/") {
+		return "", false
+	}
+	return id, true
+}
+
+// postTicket serves POST /api/exports/{id}/ticket.
+func (s *Server) postTicket(w http.ResponseWriter, r *http.Request) {
+	id, ok := exportID(w, r)
+	if !ok {
+		return
+	}
+	if _, err := s.backend.Export(r.Context(), id); err != nil {
+		s.requestOrBackendError(w, r, err, fmt.Sprintf("No export with id %q.", id))
+		return
+	}
+	var sess [32]byte
+	if s.authActive() {
+		_, k, ok := s.auth.authenticate(r) // requireSession already checked
+		if !ok {
+			writeError(w, http.StatusUnauthorized, "Log in first.")
+			return
+		}
+		sess = k
+	}
+	tok := s.auth.newTicket(sess, id)
+	writeJSON(w, http.StatusOK, map[string]string{"url": "/api/exports/" + id + "/download?ticket=" + tok})
 }
 
 // ---- handlers ----
@@ -520,7 +758,8 @@ func plural(n int) string {
 // outcome. It writes the response and returns false when the attempt is refused
 // or wrong.
 func (s *Server) verifyLimited(w http.ResponseWriter, r *http.Request, password string, wrongStatus int) bool {
-	if l := s.auth.allow(r.RemoteAddr); !l.ok {
+	known := s.auth.isKnown(r)
+	if l := s.auth.allow(r.RemoteAddr, known); !l.ok {
 		writeLimited(w, l)
 		return false
 	}
@@ -530,7 +769,7 @@ func (s *Server) verifyLimited(w http.ResponseWriter, r *http.Request, password 
 		return false
 	}
 	if !ok {
-		if n := s.auth.fail(r.RemoteAddr); n == lockoutFailures {
+		if n := s.auth.fail(r.RemoteAddr, known); n == lockoutFailures {
 			s.event(LevelWarn, EventKindAuth, fmt.Sprintf("UI login from %s slowed down after %d failed attempts (each further "+
 				"failure doubles the wait, up to %d minutes).", clientAddr(r.RemoteAddr), n, int(backoffMax/time.Minute)))
 		}
@@ -565,6 +804,10 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	}
 	tok, secret := s.auth.newSession()
 	s.setSessionCookie(w, tok)
+	// Remember this browser, so throttling aimed at its network or at everyone
+	// doesn't keep it out next time.
+	http.SetCookie(w, &http.Cookie{Name: knownClientCookie, Value: s.auth.remember(), Path: "/", MaxAge: int(knownClientTTL / time.Second),
+		Secure: s.lanActive(), HttpOnly: true, SameSite: http.SameSiteStrictMode})
 	info := s.sessionInfo(r)
 	info.Authenticated, info.SessionSecret = true, secret
 	writeJSON(w, http.StatusOK, info)
@@ -623,6 +866,14 @@ func (s *Server) putPassword(w http.ResponseWriter, r *http.Request) {
 		s.event(LevelInfo, EventKindAuth, "UI password changed.")
 	} else {
 		s.event(LevelInfo, EventKindAuth, "UI password set.")
+		// A first password also protects localhost (docs/api.md, M5 default):
+		// require_login_local turns on; the user can turn it off. Installs that
+		// already had a password keep their setting.
+		if err := s.setRequireLocal(r.Context(), true); err != nil {
+			s.backendError(w, r, fmt.Errorf("the password is set, but turning on require_login_local failed: %w", err))
+			return
+		}
+		s.event(LevelInfo, EventKindAuth, "Login now required on localhost too (require_login_local on; turn it off in Settings).")
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusNoContent)

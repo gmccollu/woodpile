@@ -10,6 +10,7 @@ import (
 	"go/token"
 	"net"
 	"net/http"
+	"net/http/cookiejar"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -116,7 +117,8 @@ func TestNoHandlerDialsOut(t *testing.T) {
 	t.Cleanup(func() { http.DefaultTransport, net.DefaultResolver = oldTransport, oldResolver })
 
 	// The test's own client gets its own transport.
-	c := &http.Client{Timeout: 10 * time.Second, Transport: &http.Transport{}}
+	jar, _ := cookiejar.New(nil)
+	c := &http.Client{Timeout: 10 * time.Second, Transport: &http.Transport{}, Jar: jar}
 
 	// Exercise every route in localhost mode, with the real host identity so
 	// certificate generation runs as in production.
@@ -134,6 +136,8 @@ func TestNoHandlerDialsOut(t *testing.T) {
 	} {
 		do(t, c, rq.method, srv.url(rq.path), rq.body)
 	}
+	// The first password turned on require_login_local: log in.
+	login(t, srv, c, "password-123")
 	srv.b.mu.Lock()
 	s := srv.b.settings
 	srv.b.mu.Unlock()

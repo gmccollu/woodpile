@@ -244,9 +244,12 @@ The UI calls this first: in LAN mode with `authenticated: false` it shows the lo
 (`__Host-woodpile_session`, `Secure; HttpOnly; SameSite=Strict; Path=/`; with `require_login_local` on plain
 localhost, `woodpile_session`, the same without `Secure`). `401` for a wrong password, `400` in localhost mode
 without `require_login_local`. Limits (`429` with `Retry-After`): each IP (each /64 for IPv6) gets 5 quick attempts,
-then one a second; from the 5th failure within 15 minutes, each address (the full address, zone included) waits
-1 s, 2 s, 4 s … up to 15 minutes before its next attempt, after which the right password works; and over 200
-failures a minute across all clients spaces every attempt 5 s apart.
+then one a second; from the 5th failure (the count resets after 15 minutes without one), each address (the full
+address, zone included) and each IPv4 address or IPv6 /64 waits 1 s, 2 s, 4 s … up to 15 minutes before its next
+attempt, after which the right password works; and over 50 failures an hour across all clients spaces every attempt
+60 s apart. A successful login also sets `woodpile_known_client` (`HttpOnly; SameSite=Strict`, `Secure` in LAN
+mode, 90 days; stored hashed): attempts that carry it skip the per-network and global limits, though not their
+own address's backoff.
 
 `POST /api/logout` → `204`, ends the session and clears the cookie.
 

@@ -166,6 +166,7 @@ func (s *Server) apiRoutes() *http.ServeMux {
 	mux.Handle("/api/exports/estimate", methods{http.MethodPost: s.postEstimate})
 	mux.Handle("/api/exports/{id}", methods{http.MethodGet: s.getExport, http.MethodDelete: s.deleteExport})
 	mux.Handle("/api/exports/{id}/download", methods{http.MethodGet: s.downloadExport})
+	mux.Handle("/api/exports/{id}/ticket", methods{http.MethodPost: s.postTicket})
 
 	// Settings.
 	mux.Handle("/api/settings", methods{

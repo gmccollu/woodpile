@@ -3,7 +3,6 @@ package e2e
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -213,17 +212,11 @@ func TestPortableRequireLoginLocal(t *testing.T) {
 	if code := put("/api/password", `{"current":"","new":"correct horse battery"}`); code != 204 {
 		t.Fatalf("set password: %d", code)
 	}
-	resp, err := http.Get(base + "/api/settings")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var settings map[string]any
-	json.NewDecoder(resp.Body).Decode(&settings)
-	resp.Body.Close()
-	settings["ui"].(map[string]any)["require_login_local"] = true
-	b, _ := json.Marshal(settings)
-	if code := put("/api/settings", string(b)); code != 200 {
-		t.Fatalf("turn on require_login_local: %d", code)
+	// The first password turns require_login_local on by itself (docs/api.md).
+	if resp, err := http.Get(base + "/api/settings"); err != nil || resp.StatusCode != 401 {
+		t.Fatalf("require_login_local didn't come on with the first password: %v %v", resp, err)
+	} else {
+		resp.Body.Close()
 	}
 	stopPortable(t, cmd, out, exited)
 

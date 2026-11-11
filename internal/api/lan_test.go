@@ -22,13 +22,18 @@ import (
 	"time"
 )
 
-// setPassword sets the UI password through the API in localhost mode.
-func setPasswordLocal(t *testing.T, srv *testServer, pw string) {
+// setPasswordLocal sets the first UI password through the API in localhost
+// mode. That turns on require_login_local, so it returns a localhost client
+// logged in with the new password.
+func setPasswordLocal(t *testing.T, srv *testServer, pw string) *http.Client {
 	t.Helper()
 	r := do(t, httpClient(), "PUT", srv.url("/api/password"), fmt.Sprintf(`{"new": %q}`, pw))
 	if r.code != 204 {
 		t.Fatalf("set password: %d %s", r.code, r.body)
 	}
+	c := jarClient()
+	login(t, srv, c, pw)
+	return c
 }
 
 // lanServer starts in localhost mode, sets a password, then turns LAN mode on
@@ -36,14 +41,14 @@ func setPasswordLocal(t *testing.T, srv *testServer, pw string) {
 func lanServer(t *testing.T, pw string) *testServer {
 	t.Helper()
 	srv := startServer(t, nil, UIConfig{})
-	setPasswordLocal(t, srv, pw)
+	c := setPasswordLocal(t, srv, pw)
 	old := srv.State()
 	srv.b.mu.Lock()
 	s := srv.b.settings
 	srv.b.mu.Unlock()
 	s.UI.LANMode, s.UI.Port = true, 0
 	body, _ := json.Marshal(s)
-	if r := do(t, httpClient(), "PUT", srv.url("/api/settings"), string(body)); r.code != 200 {
+	if r := do(t, c, "PUT", srv.url("/api/settings"), string(body)); r.code != 200 {
 		t.Fatalf("enable LAN: %d %s", r.code, r.body)
 	}
 	srv.waitRestart(t, true, old)
@@ -177,11 +182,15 @@ func TestLANLoginLogoutSession(t *testing.T) {
 	if r.code != 200 {
 		t.Fatalf("login %d %s", r.code, r.body)
 	}
-	sc := r.header.Values("Set-Cookie")
-	if len(sc) != 1 {
-		t.Fatalf("Set-Cookie %v", sc)
+	var cookie string
+	for _, v := range r.header.Values("Set-Cookie") {
+		if strings.HasPrefix(v, SessionCookie+"=") {
+			cookie = v
+		}
 	}
-	cookie := sc[0]
+	if cookie == "" {
+		t.Fatalf("Set-Cookie %v", r.header.Values("Set-Cookie"))
+	}
 	for _, want := range []string{SessionCookie + "=", "Path=/", "HttpOnly", "Secure", "SameSite=Strict"} {
 		if !strings.Contains(cookie, want) {
 			t.Errorf("cookie %q lacks %q", cookie, want)
@@ -356,6 +365,8 @@ func TestLoginBurstLimit(t *testing.T) {
 	const pw = "the-real-password"
 	srv := lanServer(t, pw)
 	c := tlsClient(t, srv.dataDir)
+	c.Jar = nil                             // no remembered-client cookie: that would skip the bucket
+	srv.clock.Add(loginBurst * loginRefill) // lanServer's own login took a token
 	// Even right passwords: loginBurst quick attempts, then one per loginRefill.
 	for i := range loginBurst {
 		if r := do(t, c, "POST", srv.url("/api/login"), fmt.Sprintf(`{"password": %q}`, pw)); r.code != 200 {
@@ -668,7 +679,7 @@ func TestModeSwitchRestarts(t *testing.T) {
 	srv.b.mu.Lock()
 	s := srv.b.settings
 	srv.b.mu.Unlock()
-	s.UI.LANMode = false
+	s.UI.LANMode, s.UI.RequireLoginLocal = false, false // open localhost again
 	body, _ := json.Marshal(s)
 	r := do(t, c, "PUT", srv.url("/api/settings"), string(body))
 	if r.code != 200 {
