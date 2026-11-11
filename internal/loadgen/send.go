@@ -1,0 +1,260 @@
+// Package loadgen is Woodpile's test tooling, behind `woodpile send` and
+// `woodpile bench`. Send sends numbered syslog messages to any syslog server;
+// Bench runs an in-process Woodpile pipeline (listener, store, live hub) in a temp
+// data dir, sends to it at a target rate, and then checks on disk that every
+// message arrived exactly once.
+package loadgen
+
+import (
+	"bufio"
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"net"
+	"strconv"
+	"strings"
+	"syscall"
+	"time"
+)
+
+// Defaults for SendOptions.
+const (
+	DefaultSize     = 200
+	DefaultHostname = "woodpile-send"
+)
+
+// SendOptions configures Send.
+type SendOptions struct {
+	Addr    string // host:port of the syslog server
+	Proto   string // "udp" (default) or "tcp"
+	Framing string // TCP only: "lf" (newline, default) or "octet" (RFC 6587 octet counting)
+
+	// Count messages are sent. With Count 0, Rate × Duration are.
+	Count    int
+	Rate     float64       // messages per second; 0 sends as fast as possible
+	Duration time.Duration // used when Count is 0 (needs a Rate)
+
+	Size     int    // approximate message size in bytes, padded (default 200)
+	RunID    string // tag carried in every message (default random)
+	FirstSeq int    // sequence number of the first message (default 0)
+	Hostname string // the message's HOSTNAME field (default "woodpile-send")
+}
+
+// SendResult describes a Send.
+type SendResult struct {
+	RunID   string
+	Sent    int // messages the OS accepted
+	Elapsed time.Duration
+	Rate    float64 // achieved messages per second
+	// Backpressure counts sends the OS refused for lack of buffer space (UDP
+	// ENOBUFS) and that were retried; no message is skipped for it.
+	Backpressure int
+}
+
+// NewRunID returns a random 8-hex-digit run tag.
+func NewRunID() string {
+	var b [4]byte
+	rand.Read(b[:])
+	return hex.EncodeToString(b[:])
+}
+
+// SeqTag returns the marker every message of a run carries, followed by the
+// sequence number: "seq=<run>:".
+func SeqTag(runID string) string { return "seq=" + runID + ":" }
+
+// message appends one RFC 5424 message (without framing) for seq.
+func message(dst []byte, o *SendOptions, seq int, now time.Time) []byte {
+	start := len(dst)
+	dst = append(dst, "<134>1 "...)
+	dst = now.UTC().AppendFormat(dst, "2006-01-02T15:04:05.000Z")
+	dst = append(dst, ' ')
+	dst = append(dst, o.Hostname...)
+	dst = append(dst, " woodpile - - - "...)
+	dst = append(dst, SeqTag(o.RunID)...)
+	dst = strconv.AppendInt(dst, int64(seq), 10)
+	if pad := o.Size - (len(dst) - start) - 1; pad > 0 {
+		dst = append(dst, ' ')
+		for i := 0; i < pad; i++ {
+			dst = append(dst, byte('a'+(seq+i)%26))
+		}
+	}
+	return dst
+}
+
+func (o *SendOptions) defaults() error {
+	if o.Addr == "" {
+		return errors.New("loadgen: Addr is required")
+	}
+	switch o.Proto {
+	case "":
+		o.Proto = "udp"
+	case "udp", "tcp":
+	default:
+		return fmt.Errorf("loadgen: unknown protocol %q (udp or tcp)", o.Proto)
+	}
+	switch o.Framing {
+	case "":
+		o.Framing = "lf"
+	case "lf", "octet":
+	default:
+		return fmt.Errorf("loadgen: unknown framing %q (lf or octet)", o.Framing)
+	}
+	if o.Count <= 0 {
+		if o.Rate <= 0 || o.Duration <= 0 {
+			return errors.New("loadgen: give Count, or Rate and Duration")
+		}
+		o.Count = int(o.Rate * o.Duration.Seconds())
+	}
+	if o.Size <= 0 {
+		o.Size = DefaultSize
+	}
+	if o.RunID == "" {
+		o.RunID = NewRunID()
+	}
+	if strings.ContainsAny(o.RunID, " :\n\r") {
+		return fmt.Errorf("loadgen: RunID %q has a space or ':'", o.RunID)
+	}
+	if o.Hostname == "" {
+		o.Hostname = DefaultHostname
+	}
+	return nil
+}
+
+// pacer spreads sends evenly at a rate: due returns how many messages should have
+// gone out by now.
+type pacer struct {
+	start time.Time
+	rate  float64
+}
+
+func (p pacer) due(n int) int {
+	if p.rate <= 0 {
+		return n
+	}
+	return min(n, int(time.Since(p.start).Seconds()*p.rate)+1)
+}
+
+// wait sleeps until the next message is due (a millisecond at most, so sends go out
+// in small, frequent batches).
+func (p pacer) wait(ctx context.Context, sent int) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if p.rate <= 0 {
+		return nil
+	}
+	next := p.start.Add(time.Duration(float64(sent) / p.rate * float64(time.Second)))
+	if d := time.Until(next); d > 0 {
+		time.Sleep(min(d, time.Millisecond))
+	}
+	return nil
+}
+
+// Send sends o.Count numbered messages (or o.Rate × o.Duration) to o.Addr. Each
+// message carries SeqTag(RunID) and its sequence number. It stops early, with
+// what was sent so far, if ctx is cancelled or the connection fails.
+func Send(ctx context.Context, o SendOptions) (SendResult, error) {
+	if err := o.defaults(); err != nil {
+		return SendResult{}, err
+	}
+	res := SendResult{RunID: o.RunID}
+	var err error
+	start := time.Now()
+	if o.Proto == "udp" {
+		err = sendUDP(ctx, &o, &res)
+	} else {
+		err = sendTCP(ctx, &o, &res)
+	}
+	res.Elapsed = time.Since(start)
+	if s := res.Elapsed.Seconds(); s > 0 {
+		res.Rate = float64(res.Sent) / s
+	}
+	return res, err
+}
+
+func sendUDP(ctx context.Context, o *SendOptions, res *SendResult) error {
+	c, err := net.Dial("udp", o.Addr)
+	if err != nil {
+		return fmt.Errorf("loadgen: %w", err)
+	}
+	defer c.Close()
+	p := pacer{start: time.Now(), rate: o.Rate}
+	buf := make([]byte, 0, o.Size+128)
+	for res.Sent < o.Count {
+		for due := p.due(o.Count); res.Sent < due; {
+			buf = message(buf[:0], o, o.FirstSeq+res.Sent, time.Now())
+			_, err := c.Write(buf)
+			if err != nil {
+				if isNoBufs(err) {
+					// The OS send queue is full (macOS returns ENOBUFS for UDP rather
+					// than blocking). Back off briefly and resend the same message.
+					res.Backpressure++
+					time.Sleep(50 * time.Microsecond)
+					if ctx.Err() != nil {
+						return ctx.Err()
+					}
+					continue
+				}
+				if isConnRefused(err) {
+					// ICMP port unreachable from an earlier datagram: nothing is
+					// listening. Report it rather than spin.
+					return fmt.Errorf("loadgen: %s: nothing is listening (connection refused)", o.Addr)
+				}
+				return fmt.Errorf("loadgen: %w", err)
+			}
+			res.Sent++
+		}
+		if err := p.wait(ctx, res.Sent); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func sendTCP(ctx context.Context, o *SendOptions, res *SendResult) error {
+	var d net.Dialer
+	c, err := d.DialContext(ctx, "tcp", o.Addr)
+	if err != nil {
+		return fmt.Errorf("loadgen: %w", err)
+	}
+	defer c.Close()
+	bw := bufio.NewWriterSize(c, 64<<10)
+	p := pacer{start: time.Now(), rate: o.Rate}
+	msg := make([]byte, 0, o.Size+128)
+	pending := 0
+	for res.Sent+pending < o.Count {
+		for due := p.due(o.Count); res.Sent+pending < due; pending++ {
+			msg = message(msg[:0], o, o.FirstSeq+res.Sent+pending, time.Now())
+			if o.Framing == "octet" {
+				bw.WriteString(strconv.Itoa(len(msg)))
+				bw.WriteByte(' ')
+				bw.Write(msg)
+			} else {
+				bw.Write(msg)
+				bw.WriteByte('\n')
+			}
+			if bw.Available() < o.Size+128 {
+				if err := bw.Flush(); err != nil {
+					return fmt.Errorf("loadgen: %w", err)
+				}
+			}
+		}
+		if err := bw.Flush(); err != nil {
+			return fmt.Errorf("loadgen: %w", err)
+		}
+		res.Sent += pending
+		pending = 0
+		if err := p.wait(ctx, res.Sent); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func isNoBufs(err error) bool {
+	return errors.Is(err, syscall.ENOBUFS) || errors.Is(err, syscall.EAGAIN)
+}
+
+func isConnRefused(err error) bool { return errors.Is(err, syscall.ECONNREFUSED) }

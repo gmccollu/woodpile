@@ -1,0 +1,329 @@
+package loadgen
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"sync/atomic"
+	"time"
+
+	"woodpile/internal/config"
+	"woodpile/internal/hub"
+	"woodpile/internal/index"
+	"woodpile/internal/listen"
+	"woodpile/internal/model"
+	"woodpile/internal/store"
+	"woodpile/internal/store/logfile"
+)
+
+// Defaults for BenchOptions.
+const (
+	DefaultBenchRate     = 10000
+	DefaultBenchDuration = 30 * time.Second
+	DefaultSettle        = 5 * time.Second
+)
+
+// BenchOptions configures Bench.
+type BenchOptions struct {
+	Proto    string        // "udp" (default) or "tcp"
+	Framing  string        // TCP: "lf" (default) or "octet"
+	Rate     float64       // target messages per second (default 10,000)
+	Duration time.Duration // how long to send (default 30 s)
+	Size     int           // approximate message size (default 200 bytes)
+
+	// DataDir is where the store writes. Empty means a new temp dir, deleted
+	// afterwards unless Keep is set. A given DataDir is never deleted.
+	DataDir string
+	Keep    bool
+
+	// Settle is how long to wait, after the last send, with no new message arriving
+	// before giving up on the rest (default 5 s).
+	Settle      time.Duration
+	RcvbufBytes int          // UDP receive buffer to request (default 32 MiB)
+	Logger      *slog.Logger // for the store and listener; default discards
+}
+
+// BenchResult is what Bench measured. Missing and Duplicates come from reading
+// the log files back, not from counters.
+type BenchResult struct {
+	Proto   string
+	Framing string `json:",omitempty"`
+	RunID   string
+
+	Sent       int64 // messages the sender handed to the OS
+	Received   int64 // distinct sequence numbers found on disk
+	Missing    int64 // sent but not on disk
+	Duplicates int64 // extra copies on disk
+	Foreign    int64 // lines on disk that aren't from this run (a reused DataDir)
+
+	Listened     int64 // messages the listener passed to the pipeline
+	Stored       int64 // messages the store wrote
+	StoreDropped int64 // messages the store refused (low disk, write errors)
+
+	TargetRate   float64
+	AchievedRate float64       // Sent / SendTime
+	SendTime     time.Duration // time spent sending
+	Elapsed      time.Duration // the whole run, including settling and the read-back
+
+	UDPRcvbufBytes          int
+	UDPRcvbufRequestedBytes int
+	KernelDropsVisible      bool
+	KernelDrops             int64 // Linux only
+	Backpressure            int   // UDP sends retried because the OS send queue was full
+
+	DataDir  string // where the files are (removed unless Keep or a given DataDir)
+	LogBytes int64  // bytes of log files written
+}
+
+// OK reports whether every message sent arrived exactly once.
+func (r BenchResult) OK() bool { return r.Sent > 0 && r.Missing == 0 && r.Duplicates == 0 }
+
+// String is a human-readable summary.
+func (r BenchResult) String() string {
+	var b strings.Builder
+	proto := strings.ToUpper(r.Proto)
+	if r.Proto == "tcp" {
+		proto += " (" + r.Framing + ")"
+	}
+	verdict := "PASS"
+	if !r.OK() {
+		verdict = "FAIL"
+	}
+	fmt.Fprintf(&b, "%s %s: sent %d in %v (%.0f msg/s, target %.0f)\n", verdict, proto, r.Sent,
+		r.SendTime.Round(time.Millisecond), r.AchievedRate, r.TargetRate)
+	fmt.Fprintf(&b, "  on disk: %d received, %d missing, %d duplicates", r.Received, r.Missing, r.Duplicates)
+	if r.Foreign > 0 {
+		fmt.Fprintf(&b, ", %d other lines", r.Foreign)
+	}
+	fmt.Fprintf(&b, "\n  pipeline: listener %d, store wrote %d, store dropped %d\n", r.Listened, r.Stored, r.StoreDropped)
+	if r.Proto == "udp" {
+		fmt.Fprintf(&b, "  UDP receive buffer: %d bytes granted of %d requested\n", r.UDPRcvbufBytes, r.UDPRcvbufRequestedBytes)
+		if r.KernelDropsVisible {
+			fmt.Fprintf(&b, "  kernel UDP drops: %d\n", r.KernelDrops)
+		} else {
+			b.WriteString("  kernel UDP drops: not visible on this OS\n")
+		}
+		if r.Backpressure > 0 {
+			fmt.Fprintf(&b, "  sender backpressure retries: %d\n", r.Backpressure)
+		}
+	}
+	return b.String()
+}
+
+// Bench runs an in-process pipeline (listener on 127.0.0.1, store and live hub,
+// as the server wires them), sends Rate × Duration messages to it, waits for them
+// to settle, closes the store and then reads every log file back to check that
+// each sequence number arrived exactly once.
+func Bench(ctx context.Context, o BenchOptions) (BenchResult, error) {
+	t0 := time.Now()
+	if o.Proto == "" {
+		o.Proto = "udp"
+	}
+	if o.Proto == "tcp" && o.Framing == "" {
+		o.Framing = "lf"
+	}
+	if o.Rate <= 0 {
+		o.Rate = DefaultBenchRate
+	}
+	if o.Duration <= 0 {
+		o.Duration = DefaultBenchDuration
+	}
+	if o.Settle <= 0 {
+		o.Settle = DefaultSettle
+	}
+	if o.RcvbufBytes <= 0 {
+		o.RcvbufBytes = config.DefaultUDPRcvbufBytes
+	}
+	if o.Logger == nil {
+		o.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	}
+	res := BenchResult{Proto: o.Proto, Framing: o.Framing, RunID: NewRunID(), TargetRate: o.Rate}
+
+	dir := o.DataDir
+	if dir == "" {
+		d, err := os.MkdirTemp("", "woodpile-bench-*")
+		if err != nil {
+			return res, err
+		}
+		dir = d
+		if !o.Keep {
+			defer os.RemoveAll(dir)
+		}
+	}
+	res.DataDir = dir
+
+	idx, err := index.Open(filepath.Join(dir, index.FileName))
+	if err != nil {
+		return res, err
+	}
+	defer idx.Close()
+	st, err := store.Open(store.Options{DataDir: dir, Index: idx, Logger: o.Logger})
+	if err != nil {
+		return res, err
+	}
+	storeOpen := true
+	defer func() {
+		if storeOpen {
+			st.Close()
+		}
+	}()
+	live := hub.New(hub.Options{})
+	defer live.Close()
+
+	var writeErrs atomic.Int64
+	cfg := config.Listeners{UDPRcvbufBytes: o.RcvbufBytes, MaxMessageBytes: config.DefaultMaxMessageBytes}
+	ln := config.Listener{Enabled: true, Addr: "127.0.0.1", Port: 0}
+	if o.Proto == "udp" {
+		cfg.UDP = ln
+	} else {
+		cfg.TCP = ln
+	}
+	srv, err := listen.Start(cfg, listen.Options{
+		Logger: o.Logger,
+		Sink: func(m model.Message) {
+			if st.Write(m) != nil {
+				writeErrs.Add(1)
+			}
+			live.Publish(m)
+		},
+	})
+	if err != nil {
+		return res, err
+	}
+	listenerOpen := true
+	defer func() {
+		if listenerOpen {
+			srv.Close()
+		}
+	}()
+	addr, ok := srv.UDPAddr()
+	if o.Proto == "tcp" {
+		addr, ok = srv.TCPAddr()
+	}
+	if !ok {
+		ls := srv.Status().Listeners
+		if len(ls) > 0 {
+			return res, fmt.Errorf("loadgen: listener failed: %s", ls[0].Error)
+		}
+		return res, errors.New("loadgen: listener failed to start")
+	}
+	stat := srv.Status()
+	res.UDPRcvbufBytes, res.UDPRcvbufRequestedBytes = stat.UDPRcvbufBytes, stat.UDPRcvbufRequestedBytes
+
+	sres, sendErr := Send(ctx, SendOptions{
+		Addr: addr.String(), Proto: o.Proto, Framing: o.Framing,
+		Rate: o.Rate, Duration: o.Duration, Size: o.Size, RunID: res.RunID,
+	})
+	res.Sent, res.SendTime, res.AchievedRate, res.Backpressure = int64(sres.Sent), sres.Elapsed, sres.Rate, sres.Backpressure
+	if sendErr != nil && res.Sent == 0 {
+		return res, sendErr
+	}
+
+	// Let the listener catch up: wait until it has passed on everything sent, or
+	// nothing new has arrived for Settle.
+	last, lastChange := int64(-1), time.Now()
+	for {
+		n := srv.Status().Received
+		if n >= res.Sent {
+			break
+		}
+		if n != last {
+			last, lastChange = n, time.Now()
+		} else if time.Since(lastChange) > o.Settle {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	stat = srv.Status()
+	srv.Close()
+	listenerOpen = false
+	res.Listened = stat.Received
+	res.KernelDropsVisible, res.KernelDrops = stat.KernelDropsVisible, stat.KernelDrops
+
+	if err := st.Flush(); err != nil {
+		return res, fmt.Errorf("loadgen: flushing the store: %w", err)
+	}
+	u := st.Usage() // Written counts messages once they're in the files
+	if err := st.Close(); err != nil {
+		return res, fmt.Errorf("loadgen: closing the store: %w", err)
+	}
+	storeOpen = false
+	res.Stored, res.StoreDropped = u.Written, u.Dropped+writeErrs.Load()
+
+	v, err := Verify(dir, res.RunID, int(res.Sent))
+	if err != nil {
+		return res, err
+	}
+	res.Received, res.Missing, res.Duplicates, res.Foreign, res.LogBytes = v.Received, v.Missing, v.Duplicates, v.Foreign, v.LogBytes
+	res.Elapsed = time.Since(t0)
+	return res, sendErr
+}
+
+// VerifyResult is what Verify found on disk.
+type VerifyResult struct {
+	Received   int64 // distinct sequence numbers in [0, n)
+	Missing    int64
+	Duplicates int64
+	Foreign    int64 // lines without this run's tag, or with a sequence number out of range
+	LogBytes   int64
+}
+
+// Verify reads every log file under dataDir (compressed or not) and checks that
+// sequence numbers 0..n-1 of runID each appear exactly once.
+func Verify(dataDir, runID string, n int) (VerifyResult, error) {
+	var v VerifyResult
+	files, _, err := logfile.List(dataDir)
+	if err != nil {
+		return v, err
+	}
+	seen := make([]uint8, n)
+	tag := []byte(SeqTag(runID))
+	for _, f := range files {
+		v.LogBytes += f.Size
+		r, err := logfile.Open(f.Path)
+		if err != nil {
+			return v, err
+		}
+		_, err = logfile.Scan(r, logfile.ScanOptions{OnLine: func(_ int64, l logfile.Line) error {
+			i := bytes.Index(l.Escaped, tag)
+			if i < 0 {
+				v.Foreign++
+				return nil
+			}
+			num := l.Escaped[i+len(tag):]
+			if j := bytes.IndexByte(num, ' '); j >= 0 {
+				num = num[:j]
+			}
+			seq, err := strconv.Atoi(string(num))
+			if err != nil || seq < 0 || seq >= n {
+				v.Foreign++
+				return nil
+			}
+			if seen[seq] < 255 {
+				seen[seq]++
+			}
+			return nil
+		}})
+		r.Close()
+		if err != nil {
+			return v, fmt.Errorf("loadgen: reading %s: %w", f.Rel, err)
+		}
+	}
+	for _, c := range seen {
+		switch {
+		case c == 0:
+			v.Missing++
+		default:
+			v.Received++
+			v.Duplicates += int64(c) - 1
+		}
+	}
+	return v, nil
+}
