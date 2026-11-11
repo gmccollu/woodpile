@@ -100,7 +100,7 @@ cp "$dl/woodpile" "$ro/woodpile"
 chmod 0555 "$ro"
 inner="cd '$ro' && echo \$\$ >'$work/tty.pid' && HOME='$work/home' exec ./woodpile"
 if [ "$os" = Darwin ]; then
-	script -q "$work/tty.out" /bin/sh -c "$inner" </dev/null >/dev/null 2>&1 &
+	script -q -t 0 "$work/tty.out" /bin/sh -c "$inner" </dev/null >/dev/null 2>&1 &
 else
 	script -qfec "$inner" "$work/tty.out" </dev/null >/dev/null 2>&1 &
 fi
