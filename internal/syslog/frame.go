@@ -1,0 +1,242 @@
+package syslog
+
+import (
+	"bytes"
+	"io"
+)
+
+// DefaultMaxSize is the maximum message size (SPEC §3.1), used when
+// NewStreamReader is given a size of zero or less.
+const DefaultMaxSize = 64 << 10
+
+const (
+	readBufSize    = 32 << 10
+	maxCountDigits = 10 // octet counts up to 9,999,999,999; longer runs are text
+	maxEmptyReads  = 100
+)
+
+// StreamReader splits a syslog TCP stream into messages. Framing is detected
+// per message (RFC 6587):
+//
+//   - Octet counting, "<len> <msg>", when the frame starts with a non-zero
+//     digit, at most 10 digits, a space and then '<' (the PRI every octet-
+//     counting sender emits). Once a connection has used octet counting, the
+//     '<' check is dropped for its later frames.
+//   - Otherwise newline framing: the message ends at LF or NUL; a CR right
+//     before the terminator is dropped too, so CRLF works. A lone CR inside a
+//     message is kept.
+//
+// Empty frames (blank lines, a stray LF after an octet-counted frame) are
+// skipped. A StreamReader is not safe for concurrent use.
+type StreamReader struct {
+	r          io.Reader
+	buf        []byte
+	start, end int   // unread bytes are buf[start:end]
+	err        error // sticky error from r, returned once the buffer drains
+	max        int
+	msg        []byte
+	octet      bool // this connection has sent an octet-counted frame
+}
+
+// NewStreamReader returns a reader that yields messages of at most maxSize
+// bytes from r (DefaultMaxSize if maxSize <= 0).
+func NewStreamReader(r io.Reader, maxSize int) *StreamReader {
+	if maxSize <= 0 {
+		maxSize = DefaultMaxSize
+	}
+	return &StreamReader{r: r, buf: make([]byte, readBufSize), max: maxSize}
+}
+
+// Next returns the next message without its framing. A message longer than
+// maxSize is cut to maxSize bytes and truncated is true; the rest of it is
+// read and discarded so the next call starts on the next frame. The returned
+// slice is valid only until the next call to Next.
+//
+// When the stream ends, any final unterminated message (or the part of an
+// octet-counted frame that arrived) is returned first, with a nil error. After
+// that Next returns io.EOF, or the reader's error if it failed. A reader that
+// keeps returning no data and no error gets io.ErrNoProgress.
+func (s *StreamReader) Next() (msg []byte, truncated bool, err error) {
+	for {
+		for s.start < s.end && isFrameJunk(s.buf[s.start]) {
+			s.start++
+		}
+		if s.start < s.end {
+			break
+		}
+		if !s.fill() {
+			return nil, false, s.err
+		}
+	}
+	if n, hdr, ok := s.octetHeader(); ok {
+		s.octet = true
+		return s.readCounted(n, hdr)
+	}
+	return s.readLine()
+}
+
+func isFrameJunk(c byte) bool { return c == '\n' || c == '\r' || c == 0 }
+
+// fill reads more data into buf. It reports false when no byte was added
+// because r is done or failed (s.err is then set).
+func (s *StreamReader) fill() bool {
+	if s.err != nil {
+		return false
+	}
+	if s.start == s.end {
+		s.start, s.end = 0, 0
+	} else if s.end == len(s.buf) {
+		s.compact()
+	}
+	for range maxEmptyReads {
+		n, err := s.r.Read(s.buf[s.end:])
+		if n < 0 || n > len(s.buf)-s.end {
+			n = 0
+			if err == nil {
+				err = io.ErrShortBuffer
+			}
+		}
+		s.end += n
+		if err != nil {
+			s.err = err
+			return n > 0
+		}
+		if n > 0 {
+			return true
+		}
+	}
+	s.err = io.ErrNoProgress
+	return false
+}
+
+func (s *StreamReader) compact() {
+	n := copy(s.buf, s.buf[s.start:s.end])
+	s.start, s.end = 0, n
+}
+
+// ensure tries to have n unread bytes buffered. It asks r only for what is
+// missing, so it never waits for bytes past the n-th.
+func (s *StreamReader) ensure(n int) bool {
+	if len(s.buf)-s.start < n {
+		s.compact()
+	}
+	for s.end-s.start < n {
+		if !s.fill() {
+			return false
+		}
+	}
+	return true
+}
+
+// octetHeader checks for "<digits> " at the start of the unread data, peeking
+// one byte at a time so an idle connection after a short line can't block it.
+func (s *StreamReader) octetHeader() (n int64, hdr int, ok bool) {
+	for i := 0; ; i++ {
+		if !s.ensure(i + 1) {
+			return 0, 0, false
+		}
+		c := s.buf[s.start+i]
+		switch {
+		case c >= '0' && c <= '9':
+			if (i == 0 && c == '0') || i == maxCountDigits {
+				return 0, 0, false
+			}
+			n = n*10 + int64(c-'0')
+		case c == ' ' && i > 0:
+			if s.octet {
+				return n, i + 1, true
+			}
+			if s.ensure(i+2) && s.buf[s.start+i+1] == '<' {
+				return n, i + 1, true
+			}
+			return 0, 0, false
+		default:
+			return 0, 0, false
+		}
+	}
+}
+
+// readCounted reads an n-byte frame whose header is hdr bytes long.
+func (s *StreamReader) readCounted(n int64, hdr int) ([]byte, bool, error) {
+	s.start += hdr
+	s.msg = s.msg[:0]
+	truncated := false
+	for n > 0 {
+		if s.start == s.end && !s.fill() {
+			break // stream ended mid-frame: return what arrived
+		}
+		take := s.end - s.start
+		if int64(take) > n {
+			take = int(n)
+		}
+		chunk := s.buf[s.start : s.start+take]
+		if room := s.max - len(s.msg); len(chunk) > room {
+			chunk, truncated = chunk[:room], true
+		}
+		s.msg = append(s.msg, chunk...)
+		s.start += take
+		n -= int64(take)
+	}
+	if len(s.msg) == 0 && !truncated {
+		return nil, false, s.err
+	}
+	return s.msg, truncated, nil
+}
+
+// readLine reads up to the next LF or NUL.
+func (s *StreamReader) readLine() ([]byte, bool, error) {
+	s.msg = s.msg[:0]
+	var total int64 // bytes in the line, terminator excluded
+	lastCR := false
+	for {
+		data := s.buf[s.start:s.end]
+		k := bytes.IndexByte(data, '\n')
+		seg := data
+		if k >= 0 {
+			seg = data[:k]
+		}
+		if z := bytes.IndexByte(seg, 0); z >= 0 {
+			k, seg = z, seg[:z]
+		}
+		if len(seg) > 0 {
+			lastCR = seg[len(seg)-1] == '\r'
+			total += int64(len(seg))
+			if room := s.max - len(s.msg); room > 0 {
+				s.msg = append(s.msg, seg[:min(room, len(seg))]...)
+			}
+		}
+		if k >= 0 {
+			s.start += k + 1
+			return s.finishLine(total, lastCR)
+		}
+		s.start = s.end
+		if !s.fill() {
+			if total == 0 {
+				return nil, false, s.err
+			}
+			return s.finishLine(total, lastCR)
+		}
+	}
+}
+
+// finishLine drops a CR that sat right before the terminator and works out
+// whether the content (without that CR) was cut.
+func (s *StreamReader) finishLine(total int64, lastCR bool) ([]byte, bool, error) {
+	if lastCR {
+		total--
+		if len(s.msg) > int(total) {
+			s.msg = s.msg[:total]
+		}
+	}
+	return s.msg, total > int64(s.max), nil
+}
+
+// TrimDatagram strips trailing LF, CR and NUL bytes from a UDP datagram, which
+// is always exactly one message. It returns a subslice of b.
+func TrimDatagram(b []byte) []byte {
+	n := len(b)
+	for n > 0 && (b[n-1] == '\n' || b[n-1] == '\r' || b[n-1] == 0) {
+		n--
+	}
+	return b[:n]
+}
