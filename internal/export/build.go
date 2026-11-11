@@ -174,11 +174,9 @@ func (m *Manager) build(ctx context.Context, e *entry) (buildResult, error) {
 			if m.opts.testHookLine != nil {
 				m.opts.testHookLine()
 			}
-			// The stored prefix ("<received> <sender> "), then the raw message as
-			// received (unescaped).
-			line = append(line[:0], h.Line[:len(h.Line)-len(h.Escaped)]...)
-			line = logfile.Unescape(line, h.Escaped)
-			line = append(line, '\n')
+			// The line as stored: "<received> <sender> <message>", with CR, LF and
+			// backslash in the message escaped, so every message is one line.
+			line = append(append(line[:0], h.Line...), '\n')
 			if _, err := zw.Write(line); err != nil {
 				sc.Close()
 				return res, err
@@ -231,7 +229,7 @@ func (m *Manager) build(ctx context.Context, e *entry) (buildResult, error) {
 		}
 		return last
 	}
-	gaps := computeGaps(evs, info.From, info.To, exportedAt, lastMessage)
+	gaps := ComputeGaps(evs, info.From, info.To, exportedAt, lastMessage)
 
 	if err := zw.create("woodpile-events.log", -1); err != nil {
 		return res, err
@@ -325,10 +323,12 @@ func readme(info Info) string {
 	b.WriteString(strings.TrimLeft(`
 logs/<device>/<YYYY-MM-DD>.log
     The messages Woodpile received from each device on that day (UTC), oldest
-    first, one per line:
-        <received time, UTC> <sender IP> <message exactly as received>
-    A message that itself contained line breaks continues on the next line(s);
-    only the first line of a message starts with the received time and sender.
+    first, one message per line, exactly as Woodpile stores them:
+        <received time, UTC> <sender IP> <message>
+    In <message>, a carriage return is written \r, a line feed \n and a
+    backslash \\, so a message never spans lines; every other byte is as
+    received. To get the messages back with their own line breaks:
+        perl -pe 's/\\(\\|r|n)/$1 eq "r" ? "\r" : $1 eq "n" ? "\n" : "\\"/ge' <file>
     <device> is the sender's IP address (":" written as "_" for IPv6).
 
 manifest.json

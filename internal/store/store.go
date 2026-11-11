@@ -168,8 +168,40 @@ type Store struct {
 
 	lastRollup time.Time
 
+	// clockHW is the highest received time written (unix ms), to notice the
+	// received clock stepping back (watchClock).
+	clockHW atomic.Int64
+
 	// testHookGzip, if set, is called with the temp gzip path before verification.
 	testHookGzip func(path string)
+}
+
+// watchClock records a warning event when a message's received time is more
+// than logfile.MaxSkew before the newest one written: the system clock stepped
+// back, so lines within a file are out of order by more than readers allow
+// for, and searches near that time may miss lines. It warns once per step
+// (the high-water mark moves back with the clock).
+func (s *Store) watchClock(rec time.Time) {
+	ms := rec.UnixMilli()
+	for {
+		hw := s.clockHW.Load()
+		if ms > hw {
+			if s.clockHW.CompareAndSwap(hw, ms) {
+				return
+			}
+			continue
+		}
+		back := time.Duration(hw-ms) * time.Millisecond
+		if back <= logfile.MaxSkew {
+			return
+		}
+		if s.clockHW.CompareAndSwap(hw, ms) {
+			s.event(index.LevelWarn, index.KindClock, "", fmt.Sprintf(
+				"system clock stepped back %s (received times went from %s to %s); searches near this time may miss lines",
+				back.Round(time.Second), time.UnixMilli(hw).UTC().Format(time.RFC3339), rec.Format(time.RFC3339)))
+			return
+		}
+	}
 }
 
 // Open recovers the data dir (see recover.go) and starts the store.
@@ -229,6 +261,14 @@ func Open(opts Options) (*Store, error) {
 	if err := s.applyIndex(); err != nil {
 		s.log.Warn("store: index update failed", "err", err)
 	}
+	// A clock that stepped back while Woodpile was stopped counts too.
+	if files, err := s.idx.Files(s.ctx, ""); err == nil {
+		for _, f := range files {
+			if ms := f.LastReceived.UnixMilli(); ms > s.clockHW.Load() {
+				s.clockHW.Store(ms)
+			}
+		}
+	}
 	if !opts.Manual {
 		s.wg.Add(3)
 		go s.flushLoop()
@@ -284,6 +324,7 @@ func (s *Store) Write(m model.Message) error {
 		rec = s.clock()
 	}
 	rec = time.UnixMilli(rec.UnixMilli()).UTC() // the file keeps milliseconds; so does the index
+	s.watchClock(rec)
 	d := s.device(m.Sender.Unmap())
 	d.mu.Lock()
 	defer d.mu.Unlock()

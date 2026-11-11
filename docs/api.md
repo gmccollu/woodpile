@@ -144,9 +144,9 @@ Exports are deleted 24 h after they're ready. Their size counts against free dis
 them first), but not against the log retention cap.
 
 **Zip contents** (SPEC §4.1):
-- `logs/<device-id>/<YYYY-MM-DD>.log`: the matching lines, unescaped, one message per line, in received order. Each
-  line keeps the stored prefix (`<received> <sender> `) so it's self-describing. A message that itself held CR or LF
-  continues on the next line(s); only a message's first line starts with the prefix.
+- `logs/<device-id>/<YYYY-MM-DD>.log`: the matching lines as stored, one message per line, in received order: each
+  line is `<received> <sender> <message>`, with CR, LF and backslash in the message escaped as `\r`, `\n` and `\\`
+  (`README.txt` shows how to unescape). Search and context results still return the raw message unescaped.
 - `manifest.json`: Woodpile version, export time, the request (devices with names and groups, range, filters), and
   per-file line count and SHA-256. Also `gaps`: periods inside the range when Woodpile wasn't running or a listener
   was down, from the event log.

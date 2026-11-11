@@ -30,63 +30,63 @@ const (
 const minGap = time.Second
 
 // GapsNote is how gaps are derived; it goes into manifest.json.
-const GapsNote = "Gaps come from Woodpile's own event log. not_running: from a \"Woodpile stopped\" event (or, after " +
+const GapsNote = "Gaps come from Woodpile's own event log. not_running: from the service's stop event (or, after " +
 	"a crash, the last message or event recorded before the next start; the start of such a gap is approximate) to the " +
-	"next \"started\" event, and before the first start on record. listener_down: from a bind error to that listener's " +
+	"next start event, and before the first start on record. listener_down: from a bind error to that listener's " +
 	"next start. listener_stopped: from a listener stop while the service kept running (a settings change) to its next " +
 	"start. Gaps shorter than 1 s are left out. A device that simply sent nothing is not a gap."
 
-// eventClass is what an event means for gaps. The texts come from
-// internal/listen (listener start, stop and bind events) and internal/server
-// (the service's start and stop), which use index.KindStart, KindStop and
-// KindBind for both.
-type eventClass int
+// EventClass is what an event means for gaps.
+type EventClass int
 
+// Event classes. They are read from an event's Kind and Source only, never its
+// wording: the service records its start and stop with index.SourceService,
+// each listener its start, stop and bind errors with index.ListenerSource.
 const (
-	evOther eventClass = iota
-	evServiceStart
-	evServiceStop
-	evListenerStart
-	evListenerStop
-	evBindError
+	EventOther EventClass = iota
+	EventServiceStart
+	EventServiceStop
+	EventListenerStart
+	EventListenerStop
+	EventBindError
 )
 
-func classify(e index.Event) (eventClass, string) {
+// ClassifyEvent returns what e means for gap detection, and the listener's
+// protocol for listener events.
+func ClassifyEvent(e index.Event) (EventClass, string) {
 	proto := ""
-	switch {
-	case strings.HasPrefix(e.Text, "UDP "):
+	switch e.Source {
+	case index.SourceListenerUDP:
 		proto = "udp"
-	case strings.HasPrefix(e.Text, "TCP "):
+	case index.SourceListenerTCP:
 		proto = "tcp"
+	case index.SourceService:
+		switch e.Kind {
+		case index.KindStart:
+			return EventServiceStart, ""
+		case index.KindStop:
+			return EventServiceStop, ""
+		}
+		return EventOther, ""
+	default:
+		return EventOther, ""
 	}
 	switch e.Kind {
 	case index.KindStart:
-		if proto != "" && strings.Contains(e.Text, " listener started") {
-			return evListenerStart, proto
-		}
-		if strings.HasPrefix(e.Text, "Woodpile ") {
-			return evServiceStart, ""
-		}
+		return EventListenerStart, proto
 	case index.KindStop:
-		if proto != "" && strings.Contains(e.Text, " listener ") {
-			return evListenerStop, proto
-		}
-		if strings.HasPrefix(e.Text, "Woodpile stopped") {
-			return evServiceStop, ""
-		}
+		return EventListenerStop, proto
 	case index.KindBind:
-		if proto != "" {
-			return evBindError, proto
-		}
+		return EventBindError, proto
 	}
-	return evOther, proto
+	return EventOther, proto
 }
 
-// computeGaps derives the gaps inside [from, to) from every event up to to
+// ComputeGaps derives the gaps inside [from, to) from every event up to to
 // (oldest first; events before from set the state at from). lastMessage
 // returns the newest received time of any stored line before t, to date a
 // crash. now caps the end: the future isn't a gap.
-func computeGaps(events []index.Event, from, to, now time.Time, lastMessage func(t time.Time) time.Time) []Gap {
+func ComputeGaps(events []index.Event, from, to, now time.Time, lastMessage func(t time.Time) time.Time) []Gap {
 	if now.Before(to) {
 		to = now
 	}
@@ -121,9 +121,9 @@ func computeGaps(events []index.Event, from, to, now time.Time, lastMessage func
 		if !e.Time.Before(to) {
 			break
 		}
-		cls, proto := classify(e)
+		cls, proto := ClassifyEvent(e)
 		switch cls {
-		case evServiceStart:
+		case EventServiceStart:
 			switch {
 			case !everStarted:
 				add(Gap{From: from, To: e.Time, Kind: GapNotRunning, Detail: "before the first start on record"})
@@ -140,19 +140,19 @@ func computeGaps(events []index.Event, from, to, now time.Time, lastMessage func
 				add(Gap{From: stoppedAt, To: e.Time, Kind: GapNotRunning, Detail: "Woodpile wasn't running"})
 			}
 			running, everStarted = true, true
-		case evServiceStop:
+		case EventServiceStop:
 			closeListeners(e.Time)
 			running, stoppedAt = false, e.Time
-		case evListenerStart:
+		case EventListenerStart:
 			if o := listeners[proto]; o != nil {
 				add(Gap{From: o.since, To: e.Time, Kind: o.kind, Proto: proto, Detail: o.detail})
 				delete(listeners, proto)
 			}
-		case evListenerStop:
+		case EventListenerStop:
 			if running && listeners[proto] == nil {
 				listeners[proto] = &open{since: e.Time, kind: GapListenerStopped, detail: strings.ToUpper(proto) + " listener stopped"}
 			}
-		case evBindError:
+		case EventBindError:
 			if listeners[proto] == nil || listeners[proto].kind != GapListenerDown {
 				if o := listeners[proto]; o != nil {
 					add(Gap{From: o.since, To: e.Time, Kind: o.kind, Proto: proto, Detail: o.detail})

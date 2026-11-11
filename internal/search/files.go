@@ -80,10 +80,10 @@ func regionEnd(cps []index.Checkpoint, toMs int64) int64 {
 	return -1
 }
 
-// maxSkew is how far out of order received times within one file are assumed to
-// be at most. It bounds the end of a scan (regionEnd) and the asc merge's
-// lower bound; the start of a scan uses the exact checkpoint guarantee.
-const maxSkew = time.Minute
+// maxSkew bounds the end of a scan (regionEnd) and the asc merge's lower
+// bound (see logfile.MaxSkew); the start of a scan uses the exact checkpoint
+// guarantee.
+const maxSkew = logfile.MaxSkew
 
 // opened is an open log file.
 type opened struct {

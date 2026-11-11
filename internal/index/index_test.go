@@ -430,17 +430,42 @@ func TestRollupAndCounts(t *testing.T) {
 	}
 }
 
+func TestMigrateV2ToV3EventSource(t *testing.T) {
+	dir := t.TempDir()
+	d := openIn(t, dir)
+	// Turn it back into a v2 database with an event in it.
+	if _, err := d.db.Exec(`ALTER TABLE events DROP COLUMN source; PRAGMA user_version = 2`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.db.Exec(`INSERT INTO events (time, level, kind, device_id, text) VALUES (?, 'info', 'start', '', 'old')`, t0.UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+	d.Close()
+	d2 := openIn(t, dir)
+	if v, _ := d2.SchemaVersion(ctx); v != 3 || CurrentSchema != 3 {
+		t.Fatalf("version %d", v)
+	}
+	d2.AddEvent(ctx, Event{Time: t0.Add(time.Second), Level: LevelInfo, Kind: KindStart, Text: "new", Source: SourceListenerUDP})
+	evs, err := d2.Events(ctx, time.Time{}, time.Time{}, 0)
+	if err != nil || len(evs) != 2 || evs[0].Source != "" || evs[1].Source != SourceListenerUDP || evs[1].Text != "new" {
+		t.Fatalf("%+v %v", evs, err)
+	}
+	if ListenerSource("tcp") != SourceListenerTCP || ListenerSource("x") != "" {
+		t.Error("ListenerSource")
+	}
+}
+
 func TestMigrateV1ToV2(t *testing.T) {
 	dir := t.TempDir()
 	d := openIn(t, dir)
 	d.Apply(ctx, Batch{Activity: []Activity{{DeviceID: "192.0.2.1", IP: "192.0.2.1", Minute: t0, Counts: Counts{Msgs: 3}}}})
 	// Turn it back into a v1 database.
-	if _, err := d.db.Exec(`DROP TABLE stats_hourly; PRAGMA user_version = 1`); err != nil {
+	if _, err := d.db.Exec(`DROP TABLE stats_hourly; ALTER TABLE events DROP COLUMN source; PRAGMA user_version = 1`); err != nil {
 		t.Fatal(err)
 	}
 	d.Close()
 	d2 := openIn(t, dir)
-	if v, _ := d2.SchemaVersion(ctx); v != 2 || CurrentSchema != 2 {
+	if v, _ := d2.SchemaVersion(ctx); v != CurrentSchema {
 		t.Fatalf("version %d", v)
 	}
 	if n, err := d2.RollupStats(ctx, t0.Add(48*time.Hour)); err != nil || n != 1 {

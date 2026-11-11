@@ -13,6 +13,14 @@ const (
 	CheckpointInterval = time.Minute
 )
 
+// MaxSkew is how far out of order received times within one file are assumed
+// to be at most: concurrent receivers interleave by milliseconds, and this
+// leaves room for small clock corrections. Readers rely on it to stop a scan
+// at the far end of a time range (lines after a checkpoint more than MaxSkew
+// past the range's end are taken to be past it too); the store records a
+// warning event whenever the received clock steps back by more than this.
+const MaxSkew = 5 * time.Minute
+
 // Checkpoint marks a line in a file's uncompressed byte stream.
 //
 // Received is the highest received time of any line up to and including the line at

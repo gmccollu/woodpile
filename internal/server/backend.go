@@ -128,17 +128,17 @@ func (b *backend) listenEvent(e listen.Event) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := b.idx.AddEvent(ctx, index.Event{
-		Time: e.Time, Level: index.Level(e.Level), Kind: index.Kind(e.Kind), Text: e.Text,
+		Time: e.Time, Level: index.Level(e.Level), Kind: index.Kind(e.Kind), Text: e.Text, Source: index.ListenerSource(e.Proto),
 	}); err != nil {
 		b.log.Warn("couldn't record a listener event", "err", err, "text", e.Text)
 	}
 }
 
-// event records one of the service's own events.
-func (b *backend) event(level index.Level, kind index.Kind, text string) {
+// serviceEvent records the service's start or stop (index.SourceService).
+func (b *backend) serviceEvent(level index.Level, kind index.Kind, text string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := b.idx.AddEvent(ctx, index.Event{Level: level, Kind: kind, Text: text}); err != nil {
+	if err := b.idx.AddEvent(ctx, index.Event{Level: level, Kind: kind, Text: text, Source: index.SourceService}); err != nil {
 		b.log.Warn("couldn't record an event", "err", err, "text", text)
 	}
 }

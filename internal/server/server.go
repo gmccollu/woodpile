@@ -245,7 +245,7 @@ func (s *Server) Run(ctx context.Context) error {
 	cfg := s.be.config()
 	started := time.Now().UTC()
 	s.be.startedAt = started
-	s.be.event(index.LevelInfo, index.KindStart,
+	s.be.serviceEvent(index.LevelInfo, index.KindStart,
 		fmt.Sprintf("Woodpile %s (%s) started on %s/%s; data folder %s.", s.opts.Version, s.opts.Commit, runtime.GOOS, runtime.GOARCH, cfg.Storage.DataDir))
 
 	ln, err := listen.Start(cfg.Listeners, listen.Options{
@@ -341,7 +341,7 @@ func (s *Server) shutdown(ln *listen.Server, apiCancel context.CancelFunc, apiDo
 		if len(errs) > 0 {
 			level, text = index.LevelError, "Woodpile stopped with errors: "+errors.Join(errs...).Error()
 		}
-		s.be.event(level, index.KindStop, text)
+		s.be.serviceEvent(level, index.KindStop, text)
 		setStep("closing the index")
 		if err := s.idx.Close(); err != nil {
 			errs = append(errs, fmt.Errorf("index: %w", err))

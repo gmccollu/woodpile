@@ -54,6 +54,7 @@ type Event struct {
 	Time  time.Time
 	Level string // LevelInfo, LevelWarn or LevelError
 	Kind  string // KindStart, KindStop or KindBind
+	Proto string // "udp" or "tcp": the listener it's about (readers act on this, not on Text)
 	Text  string
 }
 
@@ -392,7 +393,7 @@ func (s *Server) startUDP(ev *events) {
 	}
 	s.udp = u
 	s.kdrops.attach(u)
-	ev.add(LevelInfo, KindStart, fmt.Sprintf("UDP listener started on %s; receive buffer %s granted of %s requested",
+	ev.add("udp", LevelInfo, KindStart, fmt.Sprintf("UDP listener started on %s; receive buffer %s granted of %s requested",
 		hostPort(s.cfg.UDP.Addr, int(u.bound.Port())), sizeText(u.granted), sizeText(u.requested)))
 	s.log.Info("listen: UDP listening", "addr", u.bound, "rcvbuf_granted", u.granted, "rcvbuf_requested", u.requested)
 }
@@ -404,7 +405,7 @@ func (s *Server) stopUDP(ev *events) {
 	}
 	s.kdrops.detach(s.udp)
 	s.udp.close()
-	ev.add(LevelInfo, KindStop, "UDP listener on "+hostPort(s.udp.addr, int(s.udp.bound.Port()))+" stopped")
+	ev.add("udp", LevelInfo, KindStop, "UDP listener on "+hostPort(s.udp.addr, int(s.udp.bound.Port()))+" stopped")
 	s.udp = nil
 }
 
@@ -421,7 +422,7 @@ func (s *Server) startTCP(ev *events) {
 		return
 	}
 	s.tcp = t
-	ev.add(LevelInfo, KindStart, "TCP listener started on "+hostPort(s.cfg.TCP.Addr, int(t.bound.Port())))
+	ev.add("tcp", LevelInfo, KindStart, "TCP listener started on "+hostPort(s.cfg.TCP.Addr, int(t.bound.Port())))
 	s.log.Info("listen: TCP listening", "addr", t.bound)
 }
 
@@ -431,7 +432,7 @@ func (s *Server) stopTCP(ev *events) {
 		return
 	}
 	s.tcp.close()
-	ev.add(LevelInfo, KindStop, "TCP listener on "+hostPort(s.tcp.addr, int(s.tcp.bound.Port()))+" stopped")
+	ev.add("tcp", LevelInfo, KindStop, "TCP listener on "+hostPort(s.tcp.addr, int(s.tcp.bound.Port()))+" stopped")
 	s.tcp = nil
 }
 
@@ -501,8 +502,8 @@ func (s *Server) pollKernelDrops() {
 // events collects events while s.mu is held; flush sends them after it's released.
 type events []Event
 
-func (e *events) add(level, kind, text string) {
-	*e = append(*e, Event{Time: time.Now().UTC(), Level: level, Kind: kind, Text: text})
+func (e *events) add(proto, level, kind, text string) {
+	*e = append(*e, Event{Time: time.Now().UTC(), Level: level, Kind: kind, Proto: proto, Text: text})
 }
 
 func (e *events) bind(st ListenerStatus) {
@@ -510,7 +511,7 @@ func (e *events) bind(st ListenerStatus) {
 	if st.Holder != "" {
 		text += " (held by " + st.Holder + ")"
 	}
-	e.add(LevelError, KindBind, text)
+	e.add(st.Proto, LevelError, KindBind, text)
 }
 
 func (e events) flush(s *Server) {

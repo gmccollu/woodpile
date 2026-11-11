@@ -157,6 +157,11 @@ CREATE TABLE stats_hourly (
 ) WITHOUT ROWID;
 CREATE INDEX stats_hourly_hour ON stats_hourly (hour);
 `,
+	// 2 -> 3: what an event is about (Event.Source), so readers such as export gap
+	// detection don't depend on the event's wording.
+	`
+ALTER TABLE events ADD COLUMN source TEXT NOT NULL DEFAULT '';
+`,
 }
 
 // CurrentSchema is the schema version this build writes.

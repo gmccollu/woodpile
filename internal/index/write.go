@@ -33,7 +33,7 @@ ON CONFLICT (id) DO UPDATE SET
 	total_msgs = total_msgs + excluded.total_msgs,
 	total_bytes = total_bytes + excluded.total_bytes`
 
-const insertEventSQL = `INSERT INTO events (time, level, kind, device_id, text) VALUES (?, ?, ?, ?, ?)`
+const insertEventSQL = `INSERT INTO events (time, level, kind, device_id, text, source) VALUES (?, ?, ?, ?, ?, ?)`
 
 const insertDeletionSQL = `INSERT INTO deletions (time, file, device_id, bytes, reason) VALUES (?, ?, ?, ?, ?)`
 
@@ -222,7 +222,7 @@ func (s *stmts) event(e Event) error {
 	if e.Level == "" {
 		e.Level = LevelInfo
 	}
-	_, err := s.exec(insertEventSQL, ms(e.Time), string(e.Level), string(e.Kind), e.DeviceID, e.Text)
+	_, err := s.exec(insertEventSQL, ms(e.Time), string(e.Level), string(e.Kind), e.DeviceID, e.Text, string(e.Source))
 	return err
 }
 

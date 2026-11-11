@@ -347,7 +347,7 @@ func (d *DB) LastCheckpoint(ctx context.Context, fileID int64) (Checkpoint, bool
 // Events returns events with from <= Time < to (zero times are unbounded), oldest
 // first, at most limit (0 means no limit).
 func (d *DB) Events(ctx context.Context, from, to time.Time, limit int) ([]Event, error) {
-	q, args := rangeWhere(`SELECT id, time, level, kind, device_id, text FROM events`, "time", from, to)
+	q, args := rangeWhere(`SELECT id, time, level, kind, device_id, text, source FROM events`, "time", from, to)
 	q += ` ORDER BY time, id`
 	if limit > 0 {
 		q += ` LIMIT ?`
@@ -362,11 +362,11 @@ func (d *DB) Events(ctx context.Context, from, to time.Time, limit int) ([]Event
 	for rows.Next() {
 		var e Event
 		var t int64
-		var level, kind string
-		if err := rows.Scan(&e.ID, &t, &level, &kind, &e.DeviceID, &e.Text); err != nil {
+		var level, kind, source string
+		if err := rows.Scan(&e.ID, &t, &level, &kind, &e.DeviceID, &e.Text, &source); err != nil {
 			return nil, err
 		}
-		e.Time, e.Level, e.Kind = tm(t), Level(level), Kind(kind)
+		e.Time, e.Level, e.Kind, e.Source = tm(t), Level(level), Kind(kind), Source(source)
 		out = append(out, e)
 	}
 	return out, rows.Err()

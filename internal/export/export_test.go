@@ -105,7 +105,8 @@ func newEnv(t *testing.T, perDay int) *env {
 	}
 	t.Cleanup(func() { st.Close() })
 	e := &env{t: t, dir: dir, idx: idx, st: st, clock: c, day0: day0}
-	idx.AddEvent(bg, index.Event{Time: day0.Add(time.Millisecond), Level: index.LevelInfo, Kind: index.KindStart, Text: "Woodpile 1.0 (abc) started on test/test; data folder x."})
+	idx.AddEvent(bg, index.Event{Time: day0.Add(time.Millisecond), Level: index.LevelInfo, Kind: index.KindStart,
+		Source: index.SourceService, Text: "Woodpile 1.0 (abc) started on test/test; data folder x."})
 	i := 0
 	for d := 0; d < 2; d++ {
 		start := day0.Add(time.Duration(d) * 24 * time.Hour)
@@ -211,12 +212,7 @@ func (e *env) expected(devs []netip.Addr, from, to time.Time, keep func(raw stri
 				continue
 			}
 			name := "logs/" + model.DeviceID(d) + "/" + logfile.DayOf(mm.at) + ".log"
-			b := logfile.AppendTime(out[name], mm.at)
-			b = append(b, ' ')
-			b = append(b, d.String()...)
-			b = append(b, ' ')
-			b = append(b, mm.raw...)
-			out[name] = append(b, '\n')
+			out[name] = logfile.AppendLine(out[name], mm.at, d, []byte(mm.raw)) // as stored, escaped
 		}
 	}
 	return out
@@ -271,6 +267,8 @@ func TestExportZipContents(t *testing.T) {
 	e := newEnv(t, 400)
 	m := e.manager()
 	from, to := e.day0.Add(3*time.Hour), e.day0.Add(40*time.Hour)
+	e.idx.AddEvent(bg, index.Event{Time: e.day0.Add(10 * time.Hour), Level: index.LevelWarn, Kind: index.KindClock,
+		Text: "system clock stepped back 7m12s (received times went from a to b); searches near this time may miss lines"})
 	in, err := m.Create(bg, Request{Devices: []string{"192.0.2.1", "2001_db8__7"}, From: from, To: to})
 	if err != nil {
 		t.Fatal(err)
@@ -295,12 +293,37 @@ func TestExportZipContents(t *testing.T) {
 	if in.Lines != man.Lines || man.Lines == 0 {
 		t.Errorf("lines %d vs %d", in.Lines, man.Lines)
 	}
-	// Unescaping round trip: every raw message comes back byte for byte,
-	// including the ones holding CR, LF and backslashes.
-	all := string(files["logs/192.0.2.1/2026-11-09.log"])
+	// One message per line, every line with its prefix; unescaping the message
+	// gives back the raw bytes exactly, CR, LF and backslashes included.
+	var raws []string
+	for name, b := range files {
+		if !strings.HasPrefix(name, "logs/") {
+			continue
+		}
+		for _, ln := range strings.Split(strings.TrimSuffix(string(b), "\n"), "\n") {
+			l, err := logfile.ParseLine([]byte(ln))
+			if err != nil {
+				t.Fatalf("%s: line without the prefix: %q", name, ln)
+			}
+			raws = append(raws, string(logfile.Unescape(nil, l.Escaped)))
+		}
+	}
+	wantRaw := map[string]bool{}
 	for _, mm := range e.msgs {
-		if mm.dev == devA && !mm.at.Before(from) && mm.at.Before(e.day0.Add(24*time.Hour)) && !strings.Contains(all, " "+mm.raw+"\n") {
-			t.Fatalf("raw %q missing", mm.raw)
+		if (mm.dev == devA || mm.dev == devC) && !mm.at.Before(from) && mm.at.Before(to) {
+			wantRaw[mm.raw] = true
+		}
+	}
+	got := map[string]bool{}
+	for _, r := range raws {
+		got[r] = true
+	}
+	if len(raws) != len(wantRaw) || len(got) != len(wantRaw) {
+		t.Fatalf("%d lines (%d distinct), want %d", len(raws), len(got), len(wantRaw))
+	}
+	for r := range wantRaw {
+		if !got[r] {
+			t.Fatalf("raw %q missing after unescaping", r)
 		}
 	}
 	everything := ""
@@ -309,10 +332,16 @@ func TestExportZipContents(t *testing.T) {
 			everything += string(b)
 		}
 	}
-	if !strings.Contains(everything, "multi\nline\r\nmessage") || !strings.Contains(everything, `C:\new\temp \n literal`) {
-		t.Error("escaped characters weren't restored")
+	if !strings.Contains(everything, `multi\nline\r\nmessage`) || !strings.Contains(everything, `C:\\new\\temp \\n literal`) {
+		t.Error("CR, LF and backslash aren't escaped as stored")
+	}
+	if !strings.Contains(string(files["README.txt"]), `perl -pe`) {
+		t.Error("README doesn't explain the escaping")
 	}
 	ev := string(files["woodpile-events.log"])
+	if !strings.Contains(ev, "Z warn clock system clock stepped back 7m12s") {
+		t.Errorf("clock warning missing from the events log")
+	}
 	if !strings.Contains(ev, " info rotate 192.0.2.1 closed ") {
 		t.Errorf("events log:\n%.500s", ev)
 	}
@@ -378,11 +407,9 @@ func TestExportFiltersMatchSearch(t *testing.T) {
 			}
 			// Asc results interleave devices by time; files are per device-day.
 			for _, l := range p.Results {
-				ip := strings.ReplaceAll(l.DeviceID, "_", ":")
+				ip := netip.MustParseAddr(strings.ReplaceAll(l.DeviceID, "_", ":"))
 				name := "logs/" + l.DeviceID + "/" + logfile.DayOf(l.Received) + ".log"
-				b := logfile.AppendTime(want[name], l.Received)
-				b = append(append(append(b, ' '), ip...), ' ')
-				want[name] = append(append(b, l.Raw...), '\n')
+				want[name] = logfile.AppendLine(want[name], l.Received, ip, l.Raw)
 				n++
 			}
 			if p.NextCursor == "" {

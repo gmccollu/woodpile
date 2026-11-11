@@ -110,7 +110,8 @@ type Kind string
 // resume and recover; the service and listeners record start, stop and bind; the
 // HTTP layer records ui (UI server start, bind errors, mode changes, certificates)
 // and auth (password changes, login lockouts); the export queue records export
-// (queued, ready, failed, cancelled, deleted, expired).
+// (queued, ready, failed, cancelled, deleted, expired); the store records clock
+// (the received clock stepped back by more than logfile.MaxSkew).
 const (
 	KindStart    Kind = "start"
 	KindStop     Kind = "stop"
@@ -126,7 +127,32 @@ const (
 	KindUI       Kind = "ui"
 	KindAuth     Kind = "auth"
 	KindExport   Kind = "export"
+	KindClock    Kind = "clock"
 )
+
+// Source says what an event is about, for readers that act on events (export
+// gap detection) rather than show them. Empty for events nobody reads that way.
+type Source string
+
+// Event sources. The service records its start and stop with SourceService;
+// each listener records its start, stop and bind errors with its own source.
+const (
+	SourceService     Source = "service"
+	SourceListenerUDP Source = "listener/udp"
+	SourceListenerTCP Source = "listener/tcp"
+)
+
+// ListenerSource is the source of a listener's events, for proto "udp" or "tcp"
+// ("" for anything else).
+func ListenerSource(proto string) Source {
+	switch proto {
+	case "udp":
+		return SourceListenerUDP
+	case "tcp":
+		return SourceListenerTCP
+	}
+	return ""
+}
 
 // Event is one of the service's own events.
 type Event struct {
@@ -136,6 +162,7 @@ type Event struct {
 	Kind     Kind
 	DeviceID string // "" when not about one device
 	Text     string
+	Source   Source // what the event is about, for readers that act on it ("" if nothing)
 }
 
 // Reason is why a file was deleted.

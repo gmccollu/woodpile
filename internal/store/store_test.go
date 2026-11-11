@@ -709,3 +709,41 @@ func TestClosed(t *testing.T) {
 	}
 	e.s.Close() // idempotent
 }
+
+func TestClockStepBackIsRecorded(t *testing.T) {
+	e := newEnv(t, nil)
+	a := ip(1)
+	e.write(a, "first")
+	e.clock.Add(time.Minute)
+	e.write(a, "a minute on")
+	// Small steps back (interleaving, NTP slews) are within logfile.MaxSkew.
+	e.clock.Add(-4 * time.Minute)
+	e.write(a, "4 minutes back: tolerated")
+	e.maintain()
+	if evs := eventsOf(t, e.idx, index.KindClock); len(evs) != 0 {
+		t.Fatalf("events for a small step: %+v", evs)
+	}
+	// A step of 7m12s past the high-water mark is a warning, once.
+	e.clock.Add(4*time.Minute - 7*time.Minute - 12*time.Second)
+	e.write(a, "stepped back")
+	e.clock.Add(time.Second)
+	e.write(a, "and on from there")
+	e.maintain()
+	evs := eventsOf(t, e.idx, index.KindClock)
+	if len(evs) != 1 || evs[0].Level != index.LevelWarn || !strings.Contains(evs[0].Text, "stepped back 7m12s") ||
+		!strings.Contains(evs[0].Text, "searches near this time may miss lines") {
+		t.Fatalf("clock events %+v", evs)
+	}
+	// After a restart the high-water mark comes from the index, so a step back
+	// while stopped is noticed too.
+	e.clock.Add(time.Hour)
+	e.write(a, "an hour on")
+	e.maintain()
+	e.reopen()
+	e.clock.Add(-30 * time.Minute)
+	e.write(a, "after a restart, 30 minutes back")
+	e.maintain()
+	if evs := eventsOf(t, e.idx, index.KindClock); len(evs) != 2 || !strings.Contains(evs[1].Text, "stepped back 30m") {
+		t.Fatalf("after restart %+v", evs)
+	}
+}
