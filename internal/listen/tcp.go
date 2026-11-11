@@ -44,13 +44,14 @@ type tcpListener struct {
 
 // tconn is one open connection.
 type tconn struct {
-	c      net.Conn
-	from   netip.Addr
-	addr   netip.Addr   // from without a zone, for the per-address count
-	group  netip.Prefix // sourceKey(from)
-	connAt time.Time
-	last   atomic.Int64 // UnixNano of the connect or the last complete message
-	cut    atomic.Bool  // we closed it (eviction or shutdown): a partial message is truncated
+	c       net.Conn
+	from    netip.Addr
+	addr    netip.Addr   // from without a zone, for the per-address count
+	group   netip.Prefix // sourceKey(from)
+	connAt  time.Time
+	last    atomic.Int64 // UnixNano of the connect or the last complete message
+	cut     atomic.Bool  // we closed it (eviction or shutdown): a partial message is truncated
+	blocked atomic.Bool  // closed because its sender was blocked: nothing more is stored
 }
 
 func listenTCP(s *Server, ln config.Listener) (*tcpListener, error) {
@@ -116,8 +117,8 @@ func (t *tcpListener) accept() {
 		}
 		backoff = 0
 		from := addrOf(c.RemoteAddr())
-		if !t.srv.allow.Load().allowed(from) {
-			t.srv.rejects.add(from, t.srv.opts.Clock().UTC(), 1, RejectAllowlist)
+		if r := t.srv.allow.Load().refusal(from); r != "" {
+			t.srv.rejects.add(from, t.srv.opts.Clock().UTC(), 1, r)
 			c.Close()
 			continue
 		}
@@ -264,8 +265,27 @@ func (t *tcpListener) serve(tc *tconn) {
 		if fr.fails != fails && (fr.timedOut || tc.cut.Load()) {
 			truncated = true
 		}
-		t.srv.deliver(msg, tc.from, truncated)
+		if tc.blocked.Load() {
+			return
+		}
+		if t.srv.deliver(msg, tc.from, truncated) == RejectBlocked {
+			return // blocked since it connected: close it
+		}
 		fr.frameDone(r.Buffered() > 0)
+	}
+}
+
+// closeBlocked closes the open connections whose sender al blocks, each counted
+// once as a refusal. Their partial messages aren't stored.
+func (t *tcpListener) closeBlocked(al *allowlist) {
+	now := t.srv.opts.Clock().UTC()
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for c := range t.conns {
+		if al.isBlocked(c.from) && !c.blocked.Swap(true) {
+			c.c.Close()
+			t.srv.rejects.add(c.from, now, 1, RejectBlocked)
+		}
 	}
 }
 

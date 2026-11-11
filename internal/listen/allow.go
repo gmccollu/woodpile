@@ -9,9 +9,10 @@ import (
 	"github.com/gmccollu/woodpile/internal/config"
 )
 
-// allowlist is the parsed sender allowlist. Empty allows everyone.
+// allowlist is the parsed sender allowlist (empty allows everyone) and blocklist.
 type allowlist struct {
 	prefixes []netip.Prefix
+	blocked  []netip.Prefix
 }
 
 func newAllowlist(cfg config.Listeners) (*allowlist, error) {
@@ -19,7 +20,36 @@ func newAllowlist(cfg config.Listeners) (*allowlist, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &allowlist{prefixes: ps}, nil
+	bs, err := cfg.BlockPrefixes()
+	if err != nil {
+		return nil, err
+	}
+	return &allowlist{prefixes: ps, blocked: bs}, nil
+}
+
+// refusal returns why a sender is refused (RejectBlocked, then RejectAllowlist:
+// the blocklist wins), or "" if it's accepted.
+func (a *allowlist) refusal(ip netip.Addr) string {
+	if a.isBlocked(ip) {
+		return RejectBlocked
+	}
+	if !a.allowed(ip) {
+		return RejectAllowlist
+	}
+	return ""
+}
+
+func (a *allowlist) isBlocked(ip netip.Addr) bool {
+	if len(a.blocked) == 0 {
+		return false
+	}
+	ip = ip.Unmap().WithZone("")
+	for _, p := range a.blocked {
+		if p.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *allowlist) allowed(ip netip.Addr) bool {

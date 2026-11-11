@@ -111,7 +111,7 @@ type Status struct {
 
 	Received  int64 // messages handed to the sink since Start
 	Truncated int64 // of those, cut at the max message size
-	Rejected  int64 // refused by the allowlist or the per-source limit since Start (a refused TCP connection counts once)
+	Rejected  int64 // refused by the blocklist, the allowlist or the per-source limit since Start (a refused TCP connection counts once)
 
 	TCPConns                 int   // open TCP connections
 	TCPConnsRefused          int64 // closed at once because MaxConns were open and the newcomer's own source held the most
@@ -249,6 +249,9 @@ func (s *Server) Reconfigure(cfg config.Listeners) error {
 	old := s.cfg
 	s.cfg = cloneListeners(cfg)
 	s.allow.Store(al)
+	if s.tcp != nil {
+		s.tcp.closeBlocked(al) // a newly blocked sender's open connections
+	}
 	s.maxSize.Store(int64(maxSizeOf(cfg)))
 	s.setTCPLimits(cfg)
 
@@ -345,17 +348,27 @@ func (s *Server) TCPAddr() (netip.AddrPort, bool) {
 	return s.tcp.bound, true
 }
 
+// BlockedBy reports whether ip is blocked by the blocklist in effect, and by
+// which entry (the most specific match, as written in the config; see
+// config.Listeners.BlockedBy). For PATCH /api/devices {blocked} and blocked_by.
+func (s *Server) BlockedBy(ip netip.Addr) (entry string, blocked bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cfg.BlockedBy(ip)
+}
+
 // RejectedSender is one entry of /api/rejected.
 type RejectedSender struct {
 	IP       string    `json:"ip"`
 	Count24h int64     `json:"count_24h"`
 	LastSeen time.Time `json:"last_seen"`
-	Reason   string    `json:"reason"` // the latest refusal's reason: RejectAllowlist or RejectPerSource
+	Reason   string    `json:"reason"` // the latest refusal's reason: RejectAllowlist, RejectBlocked or RejectPerSource
 }
 
 // Rejection reasons.
 const (
 	RejectAllowlist = "allowlist"  // the sender isn't on the allowlist
+	RejectBlocked   = "blocked"    // the sender is on the blocklist (checked first)
 	RejectPerSource = "per_source" // the sender's address has tcp_max_conns_per_source open, or its IPv6 /64 tcp_max_conns_per_prefix
 )
 
@@ -388,14 +401,15 @@ func (s *Server) KernelDropped24h() (int64, bool) {
 	return s.kdrops.sum24h(s.opts.Clock()), true
 }
 
-// deliver applies the allowlist, truncation and parsing to one framed message and
+// deliver applies the blocklist and the allowlist (before anything else), truncation
+// and parsing to one framed message and
 // hands it to the sink. raw is only read; the message gets its own copy.
-func (s *Server) deliver(raw []byte, from netip.Addr, truncated bool) {
+func (s *Server) deliver(raw []byte, from netip.Addr, truncated bool) (refused string) {
 	now := s.opts.Clock().UTC()
 	from = from.Unmap()
-	if !s.allow.Load().allowed(from) {
-		s.rejects.add(from, now, 1, RejectAllowlist)
-		return
+	if r := s.allow.Load().refusal(from); r != "" {
+		s.rejects.add(from, now, 1, r)
+		return r
 	}
 	if max := int(s.maxSize.Load()); len(raw) > max {
 		raw = raw[:max]
@@ -408,6 +422,7 @@ func (s *Server) deliver(raw []byte, from netip.Addr, truncated bool) {
 	}
 	s.received.Add(1)
 	s.opts.Sink(m)
+	return ""
 }
 
 // --- lifecycle (callers hold s.mu) ---
@@ -560,6 +575,7 @@ func (e events) flush(s *Server) {
 
 func cloneListeners(l config.Listeners) config.Listeners {
 	l.Allowlist = append([]string(nil), l.Allowlist...)
+	l.Blocklist = append([]string(nil), l.Blocklist...)
 	return l
 }
 
