@@ -2,6 +2,7 @@ package service
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/gmccollu/woodpile/packaging"
@@ -14,7 +15,30 @@ const (
 	darwinLogDir    = "/Library/Logs/Woodpile"
 	darwinPkgConfig = "/Library/Application Support/Woodpile/woodpile.toml"
 	darwinPkgData   = "/Library/Application Support/Woodpile"
+	darwinApp       = "/Applications/Woodpile.app"
 )
+
+// installMacApp writes /Applications/Woodpile.app, the pkg's launcher for the web UI.
+func installMacApp(h *host, version string) error {
+	if version == "" {
+		version = "1.0"
+	}
+	files := []struct {
+		path, data string
+		mode       uint32
+	}{
+		{darwinApp + "/Contents/Info.plist", strings.ReplaceAll(packaging.MacAppInfoPlist, "@VERSION@", version), 0o644},
+		{darwinApp + "/Contents/MacOS/Woodpile", packaging.MacAppLauncher, 0o755},
+		{darwinApp + "/Contents/Resources/woodpile.icns", packaging.MacAppIcon, 0o644},
+	}
+	for _, f := range files {
+		if err := h.writeFile(f.path, f.data, os.FileMode(f.mode)); err != nil {
+			return err
+		}
+	}
+	h.say("installed %s (opens the web UI)", darwinApp)
+	return nil
+}
 
 // launchdPlist is the packaged plist (packaging/macos/com.woodpile.daemon.plist)
 // with this install's config and data paths (the same as the pkg's by default).
@@ -114,6 +138,9 @@ func installLaunchd(h *host, o InstallOptions, dataDir string) (Result, error) {
 		return res, err
 	}
 	h.say("installed %s (runs as %s; its own log is %s/woodpile.log)", darwinPlist, DarwinUser, darwinLogDir)
+	if err := installMacApp(h, o.Version); err != nil {
+		return res, fmt.Errorf("install %s: %w", darwinApp, err)
+	}
 
 	target := "system/" + DarwinName
 	_, _ = h.run("launchctl", "enable", target)
@@ -146,6 +173,10 @@ func uninstallLaunchd(h *host, o UninstallOptions) (Result, error) {
 		}
 		h.say("removed %s", f)
 	}
+	if err := h.removeAll(darwinApp); err != nil {
+		return res, err
+	}
+	h.say("removed %s", darwinApp)
 	if err := deleteData(h, "darwin", o, &res, cfgPath, dataDir); err != nil {
 		return res, err
 	}

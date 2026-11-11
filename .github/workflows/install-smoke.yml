@@ -240,6 +240,8 @@ jobs:
           go build -o dist/woodpile ./cmd/woodpile
           go build -o dist/verifyseq ./scripts/verifyseq
           ls -la dist dist/macos
+      - name: pkg launcher app (/Applications/Woodpile.app)
+        run: scripts/smoke/mac-launcher.sh dist/macos/*.pkg
       - name: pkg (installer, restart, uninstall.sh, --delete-logs)
         env:
           VERIFYSEQ: dist/verifyseq

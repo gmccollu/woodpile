@@ -210,6 +210,16 @@ jobs:
             rpm -qip dist/*.x86_64.rpm
             rpm -qlp --scripts dist/*.x86_64.rpm
           fi
+          # The desktop entry that opens the UI, and its icon, in both packages.
+          for f in /usr/share/applications/woodpile.desktop /usr/share/icons/hicolor/scalable/apps/woodpile.svg; do
+            dpkg-deb --contents "$deb" | grep -q " \.$f\$" || { echo "missing $f in $deb"; exit 1; }
+            if command -v rpm >/dev/null; then
+              rpm -qlp dist/*.x86_64.rpm | grep -qx "$f" || { echo "missing $f in the rpm"; exit 1; }
+            fi
+          done
+          if command -v desktop-file-validate >/dev/null || sudo apt-get install -y -qq desktop-file-utils >/dev/null 2>&1; then
+            desktop-file-validate packaging/linux/woodpile.desktop
+          fi
           systemd-analyze verify packaging/linux/woodpile.service 2>&1 | grep -v "Command /usr/bin/woodpile is not executable" || true
 
   windows-msi:

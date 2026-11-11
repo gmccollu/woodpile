@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Woodpile
+GenericName=Syslog server
+Comment=Open the Woodpile web UI (the woodpile service must be running)
+Exec=xdg-open http://localhost:8514/
+Icon=woodpile
+Terminal=false
+Categories=Network;System;Monitor;
+Keywords=syslog;logs;

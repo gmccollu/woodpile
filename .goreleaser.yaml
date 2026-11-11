@@ -134,6 +134,15 @@ nfpms:
         dst: /etc/sysctl.d/60-woodpile.conf
         file_info:
           mode: 0644
+      # A desktop entry that opens the web UI, and its icon (harmless on a headless server).
+      - src: packaging/linux/woodpile.desktop
+        dst: /usr/share/applications/woodpile.desktop
+        file_info:
+          mode: 0644
+      - src: web/public/favicon.svg
+        dst: /usr/share/icons/hicolor/scalable/apps/woodpile.svg
+        file_info:
+          mode: 0644
       - src: LICENSE
         dst: /usr/share/doc/woodpile/LICENSE
         file_info:

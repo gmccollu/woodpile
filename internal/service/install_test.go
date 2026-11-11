@@ -255,6 +255,19 @@ func TestInstallLaunchd(t *testing.T) {
 	if got, _ := h.readFile(darwinNewsyslog); got != packaging.NewsyslogConf {
 		t.Errorf("newsyslog = %q", got)
 	}
+	// The pkg's launcher app, with a version in its plist.
+	if got, _ := h.readFile(darwinApp + "/Contents/MacOS/Woodpile"); got != packaging.MacAppLauncher {
+		t.Error("the launcher app's executable isn't the pkg's")
+	}
+	if fi, err := os.Stat(h.path(darwinApp + "/Contents/MacOS/Woodpile")); err != nil || fi.Mode().Perm() != 0o755 {
+		t.Errorf("the launcher isn't executable: %v", err)
+	}
+	if got, _ := h.readFile(darwinApp + "/Contents/Info.plist"); !strings.Contains(got, "com.woodpile.launcher") || strings.Contains(got, "@VERSION@") {
+		t.Errorf("Info.plist = %q", got)
+	}
+	if !h.exists(darwinApp + "/Contents/Resources/woodpile.icns") {
+		t.Error("no icon in the launcher app")
+	}
 	r.fail = nil // loaded now
 	r.cmds = nil
 	if _, err := uninstallLaunchd(h, UninstallOptions{DeleteLogs: true}); err != nil {
@@ -265,7 +278,7 @@ func TestInstallLaunchd(t *testing.T) {
 			t.Errorf("uninstall didn't run %q: %v", c, r.cmds)
 		}
 	}
-	if h.exists(darwinPlist) || h.exists(darwinBin) || h.exists(darwinPkgData) || h.exists(darwinLogDir) {
+	if h.exists(darwinPlist) || h.exists(darwinBin) || h.exists(darwinPkgData) || h.exists(darwinLogDir) || h.exists(darwinApp) {
 		t.Error("uninstall --delete-logs left files")
 	}
 }

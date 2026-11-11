@@ -45,6 +45,9 @@
 
     <Property Id="ARPURLINFOABOUT" Value="$(var.ProjectUrl)" />
     <Property Id="ARPHELPLINK" Value="$(var.ProjectUrl)" />
+    <!-- Settings > Apps shows the woodpile icon. -->
+    <Icon Id="woodpile.ico" SourceFile="$(var.BinDir)\woodpile.ico" />
+    <Property Id="ARPPRODUCTICON" Value="woodpile.ico" />
     <Property Id="ARPNOMODIFY" Value="1" />
 
     <!-- msiexec /x ... DELETE_LOGS=1 also deletes C:\ProgramData\Woodpile (logs, index, config). -->
@@ -106,6 +109,10 @@
         <Component Id="LicenseTxt">
           <File Id="LicenseTxt" Source="$(var.BinDir)\LICENSE.txt" KeyPath="yes" />
         </Component>
+        <!-- The woodpile icon, for the Start-menu shortcut (woodpile.exe has no icon resource). -->
+        <Component Id="WoodpileIco">
+          <File Id="WoodpileIco" Source="$(var.BinDir)\woodpile.ico" KeyPath="yes" />
+        </Component>
         <Component Id="ThirdPartyNotices">
           <File Id="ThirdPartyNotices" Source="$(var.BinDir)\THIRD_PARTY_NOTICES.txt" KeyPath="yes" />
         </Component>
@@ -152,7 +159,7 @@
     <StandardDirectory Id="ProgramMenuFolder">
       <Component Id="StartMenuShortcut" Guid="F57B1F2E-A19F-421B-AD0D-5942E741BEA4">
         <util:InternetShortcut Id="WoodpileUiShortcut" Directory="ProgramMenuFolder" Name="Woodpile"
-                               Target="http://127.0.0.1:8514/" Type="url" />
+                               Target="http://127.0.0.1:8514/" Type="url" IconFile="[#WoodpileIco]" IconIndex="0" />
         <RegistryValue Root="HKLM" Key="Software\Woodpile" Name="StartMenuShortcut" Type="integer" Value="1" KeyPath="yes" />
       </Component>
     </StandardDirectory>
@@ -161,6 +168,7 @@
       <ComponentRef Id="WoodpileExe" />
       <ComponentRef Id="LicenseTxt" />
       <ComponentRef Id="ThirdPartyNotices" />
+      <ComponentRef Id="WoodpileIco" />
       <ComponentRef Id="DataFolder" />
       <ComponentRef Id="StartMenuShortcut" />
     </Feature>

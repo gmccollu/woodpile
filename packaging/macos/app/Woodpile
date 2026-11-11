@@ -1,0 +1,41 @@
+#!/bin/sh
+# /Applications/Woodpile.app/Contents/MacOS/Woodpile: opens the Woodpile web UI.
+#
+# The service (launchd daemon com.woodpile.daemon) does the work; this only opens its UI
+# in the browser, or explains how to start it when it isn't answering. It talks to
+# localhost only. Installed by the pkg and by `woodpile install`.
+
+STATE="/Library/Application Support/Woodpile/woodpile.state.json"
+URL="http://localhost:8514/"
+
+# The running service writes its UI address here (only readable by its account and
+# administrators, so usually this falls back to the default). Only its scheme and port are
+# used, always on localhost: http, or https in LAN mode (which listens on localhost too).
+if [ -r "$STATE" ]; then
+	u=$(/usr/bin/plutil -extract ui.url raw -o - "$STATE" 2>/dev/null)
+	scheme=$(printf '%s' "$u" | /usr/bin/sed -n 's#^\(https\{0,1\}\)://.*#\1#p')
+	port=$(printf '%s' "$u" | /usr/bin/sed -n 's#^https\{0,1\}://[^/]*:\([0-9][0-9]*\).*#\1#p')
+	if [ -n "$scheme" ] && [ -n "$port" ]; then
+		URL="$scheme://localhost:$port/"
+	fi
+fi
+
+# -k: in LAN mode the UI's certificate is self-signed; this only checks it answers.
+if /usr/bin/curl -fsk --max-time 3 -o /dev/null "${URL}healthz"; then
+	exec open "$URL"
+fi
+
+answer=$(/usr/bin/osascript - "$URL" <<'EOF' 2>/dev/null
+on run argv
+	set msg to "The Woodpile service isn't answering at " & item 1 of argv & "." & return & return & ¬
+		"To start it, run this in Terminal (it asks for your password):" & return & return & ¬
+		"sudo launchctl kickstart -k system/com.woodpile.daemon"
+	set r to display dialog msg with title "Woodpile" buttons {"Open anyway", "OK"} default button "OK" with icon caution
+	return button returned of r
+end run
+EOF
+)
+if [ "$answer" = "Open anyway" ]; then
+	exec open "$URL"
+fi
+exit 1

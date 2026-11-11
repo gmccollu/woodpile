@@ -101,6 +101,7 @@ Copy-Item -Force (Join-Path $repo "LICENSE") (Join-Path $stage "LICENSE.txt")
 $notices = Join-Path $repo "THIRD_PARTY_NOTICES.txt"
 if (-not (Test-Path $notices)) { throw "THIRD_PARTY_NOTICES.txt is missing; run scripts/third_party_notices.py" }
 Copy-Item -Force $notices (Join-Path $stage "THIRD_PARTY_NOTICES.txt")
+Copy-Item -Force (Join-Path $repo "packaging\icons\woodpile.ico") (Join-Path $stage "woodpile.ico")
 
 if (-not (Get-Command wix -ErrorAction SilentlyContinue)) {
     $tools = Join-Path $env:USERPROFILE ".dotnet\tools"

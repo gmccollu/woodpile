@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- /Applications/Woodpile.app: a launcher that opens the Woodpile web UI. The version
+     placeholder is filled in by build-pkg.sh and by `woodpile install`. -->
+<plist version="1.0">
+<dict>
+	<key>CFBundleIdentifier</key>
+	<string>com.woodpile.launcher</string>
+	<key>CFBundleName</key>
+	<string>Woodpile</string>
+	<key>CFBundleDisplayName</key>
+	<string>Woodpile</string>
+	<key>CFBundleExecutable</key>
+	<string>Woodpile</string>
+	<key>CFBundleIconFile</key>
+	<string>woodpile</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleShortVersionString</key>
+	<string>@VERSION@</string>
+	<key>CFBundleVersion</key>
+	<string>@VERSION@</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>13.0</string>
+	<key>LSUIElement</key>
+	<false/>
+	<key>NSHumanReadableCopyright</key>
+	<string>Woodpile, MIT License</string>
+</dict>
+</plist>

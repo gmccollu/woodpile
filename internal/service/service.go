@@ -272,6 +272,8 @@ type InstallOptions struct {
 	DataDir string
 	Exe     string    // the binary to install (default: this program)
 	Out     io.Writer // progress lines (default: discarded)
+	// Version goes into the macOS launcher app's Info.plist (default "1.0").
+	Version string
 }
 
 // UninstallOptions configures Uninstall.

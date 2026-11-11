@@ -2,6 +2,8 @@
 # Builds the macOS installer: a universal (arm64 + x86_64) woodpile binary, a component
 # package (pkgbuild) and the product archive (productbuild).
 #
+# The pkg installs the daemon, the binary and /Applications/Woodpile.app (a launcher for the UI).
+#
 #   packaging/macos/build-pkg.sh [--version 1.2.3] [--commit abc1234] [--out dist/macos]
 #                                [--universal path/to/woodpile]
 #                                [--arm64 path/to/woodpile --amd64 path/to/woodpile]
@@ -112,6 +114,15 @@ if [ ! -f "$repo/THIRD_PARTY_NOTICES.txt" ]; then
 fi
 install -m 0644 "$repo/LICENSE" "$root/usr/local/share/woodpile/LICENSE"
 install -m 0644 "$repo/THIRD_PARTY_NOTICES.txt" "$root/usr/local/share/woodpile/THIRD_PARTY_NOTICES.txt"
+
+# /Applications/Woodpile.app: a launcher that opens the web UI (packaging/macos/app).
+app="$root/Applications/Woodpile.app/Contents"
+mkdir -p "$app/MacOS" "$app/Resources"
+sed "s/@VERSION@/$pkg_version/g" "$here/app/Info.plist" >"$app/Info.plist"
+chmod 0644 "$app/Info.plist"
+install -m 0755 "$here/app/Woodpile" "$app/MacOS/Woodpile"
+install -m 0644 "$repo/packaging/icons/woodpile.icns" "$app/Resources/woodpile.icns"
+plutil -lint "$app/Info.plist" >/dev/null
 plutil -lint "$root/Library/LaunchDaemons/com.woodpile.daemon.plist" >/dev/null
 
 scripts="$work/scripts"
@@ -126,12 +137,22 @@ xattr -cr "$root" "$scripts" 2>/dev/null || true
 
 mkdir -p "$out"
 component="$work/woodpile-component.pkg"
+# The app must land in /Applications: not relocatable (Installer would otherwise move it to
+# wherever another bundle with its identifier already is) and not upgraded by version alone.
+components="$work/components.plist"
+pkgbuild --analyze --root "$root" "$components" >/dev/null
+n=$(plutil -extract . raw -o - "$components" 2>/dev/null || echo 0)
+for ((i = 0; i < n; i++)); do
+	plutil -replace "$i.BundleIsRelocatable" -bool NO "$components"
+	plutil -replace "$i.BundleOverwriteAction" -string upgrade "$components"
+done
 echo "==> pkgbuild"
 pkgbuild --root "$root" \
 	--identifier com.woodpile.pkg \
 	--version "$pkg_version" \
 	--install-location / \
 	--ownership recommended \
+	--component-plist "$components" \
 	--scripts "$scripts" \
 	"$component"
 

@@ -102,6 +102,16 @@ for ($i = 0; $i -lt 30 -and (Get-Service Woodpile).Status -ne "Running"; $i++) {
 if ((Get-Service Woodpile).Status -ne "Running") { Die "the service isn't running" }
 Ok "the service runs with them"
 
+# The Start-menu shortcut opens the UI, with the woodpile icon.
+$lnk = Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\Woodpile.url"
+if (-not (Test-Path $lnk)) { Die "no Start-menu shortcut at $lnk" }
+$url = Get-Content $lnk -Raw
+Write-Host $url
+if ($url -notmatch "URL=http://127\.0\.0\.1:8514/") { Die "the shortcut doesn't open the UI" }
+$icon = [regex]::Match($url, "IconFile=(.+)").Groups[1].Value.Trim()
+if (-not $icon -or -not $icon.EndsWith("woodpile.ico") -or -not (Test-Path $icon)) { Die "the shortcut's icon isn't the installed woodpile.ico: '$icon'" }
+Ok "Start-menu shortcut opens http://127.0.0.1:8514/ with the woodpile icon ($icon)"
+
 Write-Host "==> uninstall with DELETE_LOGS=1"
 Msiexec @("/x", "`"$Msi`"", "DELETE_LOGS=1") (Join-Path $Logs "hardening-uninstall.log")
 if (Test-Path $Data) { Die "$Data is still there after DELETE_LOGS=1" }

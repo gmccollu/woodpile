@@ -24,7 +24,9 @@ The first time, your computer may warn you because Woodpile isn't signed yet:
 - **macOS:** if it says it "can't be opened", open **System Settings → Privacy & Security**, scroll down and click
   **Open Anyway**.
 
-Then open **<http://localhost:8514/>** in a browser on the same computer. (Portable mode opens it for you.) The
+Then open **<http://localhost:8514/>** in a browser on the same computer. (Portable mode opens it for you.) Later, the installer's
+launcher gets you back there: **Woodpile** in the Start menu (Windows), in Applications or Launchpad (macOS), or in
+your desktop's app menu (Linux). The
 **Setup** page shows the addresses your devices should send to and whether Woodpile is listening.
 
 ## 2. Point a device at it

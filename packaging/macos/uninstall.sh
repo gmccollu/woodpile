@@ -42,7 +42,7 @@ echo "Removing the program files"
 rm -f "$PLIST" \
 	/usr/local/bin/woodpile \
 	/etc/newsyslog.d/com.woodpile.daemon.conf
-rm -rf /usr/local/share/woodpile
+rm -rf /usr/local/share/woodpile /Applications/Woodpile.app
 pkgutil --forget "$PKG_ID" >/dev/null 2>&1 || true
 
 if [ "$delete_logs" -eq 1 ]; then

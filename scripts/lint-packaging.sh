@@ -13,12 +13,14 @@ sh_scripts=(
 	packaging/macos/scripts/preinstall
 	packaging/macos/scripts/postinstall
 	packaging/macos/uninstall.sh
+	packaging/macos/app/Woodpile
 )
 bash_scripts=(
 	packaging/macos/build-pkg.sh
 	scripts/fuzz.sh
 	scripts/release-notes.sh
 	scripts/check-asset-names.sh
+	scripts/smoke/mac-launcher.sh
 	scripts/lint-packaging.sh
 	scripts/soak.sh
 	scripts/smoke/unix.sh
