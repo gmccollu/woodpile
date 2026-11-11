@@ -125,14 +125,15 @@ func TestConcurrentWriters(t *testing.T) {
 // midnight rotation and a restart in the middle, then checks that the lines on disk
 // (decompressing the .gz files) match exactly, and that the index agrees.
 func TestMillionMessages(t *testing.T) {
-	total := 1_000_000
+	total, partBytes := 1_000_000, int64(1<<20)
 	if testing.Short() {
-		total = 100_000
+		// A tenth of the messages: shrink the parts too, so files still split.
+		total, partBytes = 100_000, 64<<10
 	}
 	const devices, writers = 50, 8
 	e := newEnv(t, func(o *Options) {
 		o.Manual = false
-		o.PartBytes = 1 << 20
+		o.PartBytes = partBytes
 		o.FlushInterval = 20 * time.Millisecond
 		o.SyncInterval = 100 * time.Millisecond
 	})
