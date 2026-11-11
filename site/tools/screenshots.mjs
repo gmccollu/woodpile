@@ -17,23 +17,26 @@ const BASE = process.env.BASE ?? 'http://127.0.0.1:8765';
 const OUT = fileURLToPath(new URL('../screenshots-review/', import.meta.url));
 const PORT = 9800 + Math.floor(Math.random() * 100);
 
-const NAMES = [
-  'woodpile_1.0.0_windows_amd64.msi', 'woodpile_1.0.0_windows_arm64.msi', 'woodpile_1.0.0_macos_universal.pkg',
-  'woodpile_1.0.0_amd64.deb', 'woodpile_1.0.0_arm64.deb', 'woodpile-1.0.0-1.x86_64.rpm', 'woodpile-1.0.0-1.aarch64.rpm',
-  'woodpile_1.0.0_windows_amd64.zip', 'woodpile_1.0.0_windows_arm64.zip', 'woodpile_1.0.0_darwin_universal.tar.gz',
-  'woodpile_1.0.0_linux_amd64.tar.gz', 'woodpile_1.0.0_linux_arm64.tar.gz', 'checksums.txt',
+// The release's file names (packaging commit 79b5d2f); X is the version.
+const namesFor = (X) => [
+  `woodpile_${X}_windows_amd64.msi`, `woodpile_${X}_windows_arm64.msi`, `woodpile_${X}_macos_universal.pkg`,
+  `woodpile_${X}_amd64.deb`, `woodpile_${X}_arm64.deb`, `woodpile-${X}-1.x86_64.rpm`, `woodpile-${X}-1.aarch64.rpm`,
+  `woodpile_${X}_windows_amd64.zip`, `woodpile_${X}_windows_arm64.zip`, `woodpile_${X}_darwin_universal.tar.gz`,
+  `woodpile_${X}_linux_amd64.tar.gz`, `woodpile_${X}_linux_arm64.tar.gz`, 'checksums.txt',
 ];
 const hex = (i) => [...Array(64)].map((_, k) => '0123456789abcdef'[(i * 7 + k * 13) % 16]).join('');
-const RELEASE = JSON.stringify({
-  tag_name: 'v1.0.0',
-  html_url: 'https://github.com/gmccollu/woodpile/releases/tag/v1.0.0',
-  assets: NAMES.map((name, i) => ({
-    name,
-    size: name === 'checksums.txt' ? 1200 : 9_000_000 + i * 731_000,
-    browser_download_url: `https://github.com/gmccollu/woodpile/releases/download/v1.0.0/${name}`,
-    digest: name === 'checksums.txt' ? null : `sha256:${hex(i + 1)}`,
-  })),
-});
+const releaseFor = (X) =>
+  JSON.stringify({
+    tag_name: `v${X}`,
+    html_url: `https://github.com/gmccollu/woodpile/releases/tag/v${X}`,
+    assets: namesFor(X).map((name, i) => ({
+      name,
+      size: name === 'checksums.txt' ? 1200 : 9_000_000 + i * 731_000,
+      browser_download_url: `https://github.com/gmccollu/woodpile/releases/download/v${X}/${name}`,
+      digest: name === 'checksums.txt' ? null : `sha256:${hex(i + 1)}`,
+    })),
+  });
+const RELEASES = { release: releaseFor('1.0.0'), rc: releaseFor('0.9.0-rc2') };
 
 const WIN = { ua: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0 Safari/537.36', meta: { platform: 'Windows', platformVersion: '15.0.0', architecture: 'x86', bitness: '64', model: '', mobile: false } };
 const MAC = { ua: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 15_6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0 Safari/537.36', meta: { platform: 'macOS', platformVersion: '15.6.0', architecture: 'arm', bitness: '64', model: '', mobile: false } };
@@ -55,6 +58,8 @@ const SHOTS = [
   { name: 'home-desktop-all-downloads-light', mode: 'light', path: '/#download', w: 1400, h: 900, client: WIN, api: 'release',
     act: `(document.getElementById('dl-others').open = true, true)`,
     check: `[...document.querySelectorAll('#dl-others-body li')].every((li) => li.getBoundingClientRect().height < 80)` },
+  { name: 'home-prerelease-dark', mode: 'dark', path: '/#download', w: 1400, h: 900, client: WIN, api: 'rc',
+    check: `document.querySelector('#dl-status').textContent === 'Woodpile 0.9.0-rc2 for Windows:' && [...document.querySelectorAll('#dl-primary .asset .f')][0].textContent.startsWith('woodpile_0.9.0-rc2_windows_amd64.msi')` },
   { name: 'home-mac-light', mode: 'light', path: '/#download', w: 1400, h: 900, client: MAC, api: 'release',
     check: `[...document.querySelectorAll('#dl-primary .asset .n')].map((x) => x.textContent).join('|') === 'macOS installer (Intel and Apple silicon)|macOS portable (Intel and Apple silicon)'` },
   { name: 'home-linux-arm-dark', mode: 'dark', path: '/#download', w: 1400, h: 900, client: LINUX_ARM, api: 'release',
@@ -109,7 +114,7 @@ try {
     } else if (msg.method === 'Fetch.requestPaused') {
       apiCalls++;
       const p = msg.params;
-      const bodies = { release: [200, RELEASE], 404: [404, '{"message":"Not Found"}'], 403: [403, '{"message":"API rate limit exceeded"}'] };
+      const bodies = { release: [200, RELEASES.release], rc: [200, RELEASES.rc], 404: [404, '{"message":"Not Found"}'], 403: [403, '{"message":"API rate limit exceeded"}'] };
       const [code, body] = bodies[api] ?? [500, '{}'];
       send('Fetch.fulfillRequest', {
         requestId: p.requestId,

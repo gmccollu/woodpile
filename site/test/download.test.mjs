@@ -3,33 +3,35 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { classify, detectPlatform, loadRelease, pick, latestApiUrl, releasesUrl, REPO } from '../download.js';
 
-// Every file the release workflow produces for 1.0.0 (.goreleaser.yaml, build-msi.ps1,
-// build-pkg.sh), plus checksums.txt.
-const NAMES = [
-  'woodpile_1.0.0_windows_amd64.msi',
-  'woodpile_1.0.0_windows_arm64.msi',
-  'woodpile_1.0.0_macos_universal.pkg',
-  'woodpile_1.0.0_amd64.deb',
-  'woodpile_1.0.0_arm64.deb',
-  'woodpile-1.0.0-1.x86_64.rpm',
-  'woodpile-1.0.0-1.aarch64.rpm',
-  'woodpile_1.0.0_windows_amd64.zip',
-  'woodpile_1.0.0_windows_arm64.zip',
-  'woodpile_1.0.0_darwin_universal.tar.gz',
-  'woodpile_1.0.0_linux_amd64.tar.gz',
-  'woodpile_1.0.0_linux_arm64.tar.gz',
+// Every file the release workflow produces (packaging commit 79b5d2f): X is the version,
+// "1.0.0" or a prerelease such as "0.9.0-rc2" (a hyphen, never "~" or ".rc").
+const namesFor = (X) => [
+  `woodpile_${X}_windows_amd64.msi`,
+  `woodpile_${X}_windows_arm64.msi`,
+  `woodpile_${X}_macos_universal.pkg`,
+  `woodpile_${X}_amd64.deb`,
+  `woodpile_${X}_arm64.deb`,
+  `woodpile-${X}-1.x86_64.rpm`,
+  `woodpile-${X}-1.aarch64.rpm`,
+  `woodpile_${X}_windows_amd64.zip`,
+  `woodpile_${X}_windows_arm64.zip`,
+  `woodpile_${X}_darwin_universal.tar.gz`,
+  `woodpile_${X}_linux_amd64.tar.gz`,
+  `woodpile_${X}_linux_arm64.tar.gz`,
   'checksums.txt',
 ];
-const RELEASE = {
-  tag_name: 'v1.0.0',
-  html_url: 'https://github.com/gmccollu/woodpile/releases/tag/v1.0.0',
-  assets: NAMES.map((name, i) => ({
+const releaseFor = (X) => ({
+  tag_name: `v${X}`,
+  html_url: `https://github.com/gmccollu/woodpile/releases/tag/v${X}`,
+  assets: namesFor(X).map((name, i) => ({
     name,
     size: 1_000_000 + i,
-    browser_download_url: `https://github.com/gmccollu/woodpile/releases/download/v1.0.0/${name}`,
+    browser_download_url: `https://github.com/gmccollu/woodpile/releases/download/v${X}/${name}`,
     digest: `sha256:${String(i).padStart(64, '0')}`,
   })),
-};
+});
+const NAMES = namesFor('1.0.0');
+const RELEASE = releaseFor('1.0.0');
 
 const names = (list) => list.map((a) => a.name);
 
@@ -59,6 +61,58 @@ test('"other downloads" lists everything else, and nothing is lost', () => {
     assert.equal(r.best.length + r.others.length, NAMES.length - 1);
     assert.equal(r.checksums.name, 'checksums.txt');
   }
+});
+
+const LABELS = [
+  'Windows installer (x64)',
+  'Windows installer (ARM64)',
+  'macOS installer (Intel and Apple silicon)',
+  'Debian / Ubuntu package (x64)',
+  'Debian / Ubuntu package (ARM64)',
+  'Fedora / RHEL package (x64)',
+  'Fedora / RHEL package (ARM64)',
+  'Windows portable (x64)',
+  'Windows portable (ARM64)',
+  'macOS portable (Intel and Apple silicon)',
+  'Linux portable (x64)',
+  'Linux portable (ARM64)',
+];
+
+test('the same labels and picks for 1.0.0 and a prerelease (0.9.0-rc2)', () => {
+  for (const X of ['1.0.0', '0.9.0-rc2']) {
+    const names = namesFor(X);
+    assert.deepEqual(names.slice(0, -1).map((n) => classify(n)?.label), LABELS, X);
+    const rel = releaseFor(X);
+    assert.deepEqual(pick(rel.assets, { os: 'linux', arch: 'arm64' }).best.map((a) => a.name), [
+      `woodpile_${X}_arm64.deb`,
+      `woodpile-${X}-1.aarch64.rpm`,
+      `woodpile_${X}_linux_arm64.tar.gz`,
+    ]);
+    assert.deepEqual(pick(rel.assets, { os: 'windows', arch: 'x64' }).best.map((a) => a.name), [
+      `woodpile_${X}_windows_amd64.msi`,
+      `woodpile_${X}_windows_amd64.zip`,
+    ]);
+  }
+});
+
+test('the broken rc1 forms ("~", and GitHub\'s ".rc1" rename) still get the right label, never a wrong one', () => {
+  const broken = {
+    'woodpile_0.9.0~rc1_amd64.deb': 'Debian / Ubuntu package (x64)',
+    'woodpile_0.9.0.rc1_amd64.deb': 'Debian / Ubuntu package (x64)',
+    'woodpile_0.9.0~rc1_arm64.deb': 'Debian / Ubuntu package (ARM64)',
+    'woodpile_0.9.0.rc1_arm64.deb': 'Debian / Ubuntu package (ARM64)',
+    'woodpile-0.9.0~rc1-1.x86_64.rpm': 'Fedora / RHEL package (x64)',
+    'woodpile-0.9.0.rc1-1.x86_64.rpm': 'Fedora / RHEL package (x64)',
+    'woodpile-0.9.0~rc1-1.aarch64.rpm': 'Fedora / RHEL package (ARM64)',
+    'woodpile-0.9.0.rc1-1.aarch64.rpm': 'Fedora / RHEL package (ARM64)',
+    'woodpile_0.9.0.rc1_linux_amd64.tar.gz': 'Linux portable (x64)',
+    'woodpile_0.9.0.rc1_windows_arm64.msi': 'Windows installer (ARM64)',
+    'woodpile_0.9.0.rc1_macos_universal.pkg': 'macOS installer (Intel and Apple silicon)',
+  };
+  for (const [name, label] of Object.entries(broken)) assert.equal(classify(name)?.label, label, name);
+  // Nothing that merely looks similar is offered: a deb/rpm without its arch, or other files.
+  for (const name of ['woodpile_0.9.0~rc1.deb', 'woodpile-0.9.0.rc1.x86_64.rpm', 'woodpile_0.9.0.rc1_amd64.deb.sig', 'checksums.txt.rc1'])
+    assert.equal(classify(name), null, name);
 });
 
 const nav = (userAgent, userAgentData) => ({ userAgent, userAgentData });
