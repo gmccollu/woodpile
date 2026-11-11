@@ -31,3 +31,20 @@ func TestCheckOwnedByMe(t *testing.T) {
 		}
 	}
 }
+
+// Re-test W8: a portable folder others can write is made private.
+func TestTightenPortableDir(t *testing.T) {
+	dir := t.TempDir()
+	os.Chmod(dir, 0o777)
+	note, err := tightenPortableDir(dir)
+	if err != nil || !strings.Contains(note, "0700") {
+		t.Fatalf("%q %v", note, err)
+	}
+	if fi, _ := os.Stat(dir); fi.Mode().Perm() != 0o700 {
+		t.Errorf("mode %04o", fi.Mode().Perm())
+	}
+	os.Chmod(dir, 0o750)
+	if note, err := tightenPortableDir(dir); note != "" || err != nil {
+		t.Errorf("a private folder changed: %q %v", note, err)
+	}
+}

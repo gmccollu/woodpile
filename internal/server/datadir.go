@@ -24,8 +24,9 @@ func makeProtectedDir(dir string) error {
 	return winacl.ProtectForCurrentUser(dir)
 }
 
-// sharedAccess is winacl.SharedAccess (faked in tests).
-var sharedAccess = winacl.SharedAccess
+// sharedAccess lists who besides this account, SYSTEM and Administrators can
+// open the data folder, or a foreign owner (dataDirExposure; faked in tests).
+var sharedAccess = dataDirExposure
 
 // ownedByCurrentUser is winacl.OwnedByCurrentUser (faked in tests).
 var ownedByCurrentUser = winacl.OwnedByCurrentUser
@@ -61,12 +62,12 @@ func checkSharedDataDir(dir string, createdHere bool, opts Options, log *slog.Lo
 			}
 		}
 	}
-	text := fmt.Sprintf("The data folder %s lets %s open it, so other users of this machine can read the logs "+
+	text := fmt.Sprintf("The data folder %s is open to %s, so other users of this machine can read the logs "+
 		"or plant files. Restrict it to SYSTEM, Administrators and the service account (reinstall or repair "+
 		"Woodpile, or run `woodpile install`).", dir, who)
 	if opts.Service && !opts.AllowSharedDataDir {
 		log.Error("refusing to start: " + text + " To start anyway, add --allow-shared-data-dir to the service's command line.")
-		return nil, fmt.Errorf("the data folder %s lets %s in; refusing to start (fix its permissions, or pass --allow-shared-data-dir)", dir, who)
+		return nil, fmt.Errorf("the data folder %s is open to %s; refusing to start (fix its permissions, or pass --allow-shared-data-dir)", dir, who)
 	}
 	log.Error(text, "dir", dir)
 	return &api.Banner{Kind: "shared_data_dir", Level: api.LevelError, Text: text}, nil

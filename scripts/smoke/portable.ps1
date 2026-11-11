@@ -177,6 +177,30 @@ if (Broad $shared) { Die "woodpile run left $shared shared" }
 Ok "woodpile run made a shared folder it owns private"
 Stop-Process -Id $r.Id -Force; $r.WaitForExit(10000) | Out-Null
 
+# ---- re-test W1: a folder another user created, with a narrow ACL naming them ----
+Write-Host "==> a data folder owned by another user, with a protected ACL naming them, isn't accepted"
+New-LocalUser -Name "wpother" -NoPassword -Description "Woodpile smoke test" | Out-Null
+$foreign = "C:\wp-foreign"
+Write-TestConfig $foreign
+icacls $foreign /setowner wpother /T | Out-Null
+icacls $foreign /inheritance:r /grant:r "wpother:(OI)(CI)F" "${env:USERNAME}:(OI)(CI)F" "*S-1-5-18:(OI)(CI)F" /T | Out-Null
+$before = (Get-Acl $foreign).Sddl
+Write-Host "  $foreign ACL: $before"
+if (Broad $foreign) { Die "the test ACL names a broad group" }
+$out = & $exe run --service --config (Join-Path $foreign "woodpile.toml") 2>&1 | Out-String
+Write-Host $out
+if ($out -notmatch "allow-shared-data-dir" -or $out -notmatch "wpother") { Die "--service accepted a folder owned by another user" }
+Ok "--service refuses a folder owned by (and open to) another user, and names them"
+$r = Start-Process -FilePath $exe -ArgumentList "run","--config",(Join-Path $foreign "woodpile.toml") -PassThru `
+    -RedirectStandardOutput (Join-Path $work "run-foreign.out") -RedirectStandardError (Join-Path $work "run-foreign.err.out")
+if (-not (Wait-UI 18514)) { Die "woodpile run didn't start on the foreign folder" }
+$st = Invoke-RestMethod "http://127.0.0.1:18514/api/status"
+$b = $st.banners | Where-Object { $_.kind -eq "shared_data_dir" }
+if (-not $b -or $b.text -notmatch "wpother") { Die "no shared_data_dir banner naming the other user" }
+if ((Get-Acl $foreign).Sddl -ne $before) { Die "woodpile run changed the ACL of a folder it doesn't own" }
+Ok "woodpile run starts on it with a banner naming the other user, and leaves its ACL alone"
+Stop-Process -Id $r.Id -Force; $r.WaitForExit(10000) | Out-Null
+
 Copy-Item "$work\*.out" $Logs -ErrorAction SilentlyContinue
 Write-Host "`nportable smoke test (Windows): $script:passes checks passed"
 # The refused --service start left $LASTEXITCODE at 1, which the runner would report.

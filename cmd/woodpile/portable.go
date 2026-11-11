@@ -230,6 +230,11 @@ func runPortable(o portableOpts, stdout, stderr io.Writer) (code int) {
 			return failf("%v", err)
 		}
 	}
+	if note, err := tightenPortableDir(dir); err != nil {
+		return failf("%v", err)
+	} else if note != "" {
+		fmt.Fprintln(stdout, note)
+	}
 
 	// Another copy already running on this folder? Say so before touching the config.
 	if inUse, _ := server.DataDirInUse(dir); inUse {

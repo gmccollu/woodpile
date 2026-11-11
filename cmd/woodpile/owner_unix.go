@@ -117,7 +117,9 @@ func runAsOwnerFirst(dataDir string) error {
 	if os.Geteuid() != 0 {
 		return nil
 	}
-	fi, err := os.Lstat(dataDir)
+	// Stat, not Lstat: a symlinked data folder is judged by the folder it points
+	// at, where the lock and the index would be created (re-test W5).
+	fi, err := os.Stat(dataDir)
 	if err != nil {
 		return err
 	}
@@ -133,7 +135,7 @@ func runAsOwnerHint(dataDir string) string {
 	if runtime.GOOS == "darwin" {
 		name = "_woodpile"
 	}
-	if fi, err := os.Lstat(dataDir); err == nil {
+	if fi, err := os.Stat(dataDir); err == nil {
 		if st, ok := fi.Sys().(*syscall.Stat_t); ok {
 			if u, err := user.LookupId(fmt.Sprint(st.Uid)); err == nil {
 				name = u.Username
@@ -152,4 +154,21 @@ func shellQuote(s string) string {
 		return s
 	}
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// tightenPortableDir makes a portable data folder that others can write private
+// (0700) and says so (re-test W8): anyone could otherwise plant or swap files in
+// it. It's only called on a folder checkOwnedByMe accepted.
+func tightenPortableDir(dir string) (string, error) {
+	fi, err := os.Lstat(dir)
+	if err != nil {
+		return "", err
+	}
+	if fi.Mode().Perm()&0o022 == 0 {
+		return "", nil
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%s could be written by other users (mode %04o); it's now 0700, private to you.", dir, fi.Mode().Perm()), nil
 }

@@ -53,7 +53,9 @@ func (l *DirLock) MatchOwner(dataDir string) error {
 	if l == nil || l.f == nil || os.Geteuid() != 0 {
 		return nil
 	}
-	fd, err := syscall.Open(dataDir, syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_DIRECTORY|syscall.O_CLOEXEC, 0)
+	// Followed if it's a symlink: the lock was created in the folder it points at
+	// (re-test W5).
+	fd, err := syscall.Open(dataDir, syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_CLOEXEC, 0)
 	if err != nil {
 		return err
 	}

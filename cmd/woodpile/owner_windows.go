@@ -43,3 +43,6 @@ func checkOwnedByMe(path string) error {
 func runAsOwnerFirst(string) error { return nil }
 
 func runAsOwnerHint(string) string { return "Run it from an administrator prompt, with the service stopped." }
+
+// tightenPortableDir is Unix only: on Windows the server checks the folder's ACL.
+func tightenPortableDir(string) (string, error) { return "", nil }
