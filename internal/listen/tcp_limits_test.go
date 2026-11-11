@@ -34,6 +34,20 @@ func closedByServer(c net.Conn, d time.Duration) bool {
 	return err != nil
 }
 
+// dialRetry dials addr, retrying for a while if the OS refuses the connection
+// (a full listen backlog).
+func dialRetry(addr string) (net.Conn, error) {
+	var err error
+	for try := 0; try < 50; try++ {
+		var c net.Conn
+		if c, err = net.Dial("tcp", addr); err == nil {
+			return c, nil
+		}
+		time.Sleep(time.Duration(try+1) * 5 * time.Millisecond)
+	}
+	return nil, err
+}
+
 func TestSourceKey(t *testing.T) {
 	for in, want := range map[string]string{
 		"192.0.2.7":                 "192.0.2.7/32",
@@ -62,16 +76,25 @@ func TestOneSourceCantTakeAllSlots(t *testing.T) {
 			cn.Close()
 		}
 	}()
+	// Dial in batches smaller than the OS listen backlog (Windows caps it near
+	// 200 and resets the overflow) and let Woodpile account for each batch, so
+	// every refusal below is Woodpile's, not the kernel's. A kernel refusal is
+	// retried; it never reached Woodpile, so it doesn't change the counts.
+	handled := func() int64 { st := s.Status(); return int64(st.TCPConns) + st.TCPConnsPerSourceRefused }
+	const batch = 50
 	for i := 0; i < DefaultMaxConns; i++ {
-		cn, err := net.Dial("tcp", v4)
+		cn, err := dialRetry(v4)
 		if err != nil {
 			t.Fatalf("dial %d: %v", i, err)
 		}
 		conns = append(conns, cn)
 		cn.Write([]byte("<"))
+		if (i+1)%batch == 0 || i+1 == DefaultMaxConns {
+			want := int64(i + 1)
+			waitFor(t, fmt.Sprintf("Woodpile to handle %d connections", want), func() bool { return handled() == want })
+		}
 	}
 	refused := int64(DefaultMaxConns - config.DefaultTCPMaxConnsPerSource)
-	waitFor(t, "the accepts", func() bool { return s.Status().TCPConnsPerSourceRefused == refused })
 	st := s.Status()
 	if st.TCPConns != config.DefaultTCPMaxConnsPerSource || st.TCPConnsRefused != 0 || st.TCPConnsEvicted != 0 {
 		t.Errorf("status %+v", st)
