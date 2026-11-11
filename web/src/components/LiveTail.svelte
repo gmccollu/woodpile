@@ -42,7 +42,9 @@
   let rows = $state.raw<Row[]>([]);
   let heldCount = $state(0);
   let sampled = $state<SampledNotice | null>(null);
-  let conn = $state<'connecting' | 'open' | 'error'>('connecting');
+  let conn = $state<'connecting' | 'open' | 'error' | 'closed'>('connecting');
+  /** Bumped to reopen a stream the browser closed for good (it won't retry after a 401 or 5xx). */
+  let attempt = $state(0);
   let qDebounced = $state('');
   // A string key, so a new array with the same ids doesn't reconnect.
   const devKey = $derived(devices.join(','));
@@ -51,6 +53,7 @@
   let pending: Row[] = [];
   let seq = 0;
   let flushTimer = 0;
+  let reopen = 0;
   let sampledAt = 0;
 
   $effect(() => {
@@ -84,6 +87,7 @@
   // Reconnect whenever a filter changes. The server applies the filters and replays
   // up to 200 matching lines from its ring buffer on connect.
   $effect(() => {
+    void attempt;
     const filters = { group: group || undefined, ungrouped, devices: devKey ? devKey.split(',') : undefined, min_severity: minSev < 7 ? minSev : undefined, q: qDebounced || undefined };
     rows = [];
     pending = [];
@@ -103,6 +107,7 @@
       },
       onState(s) {
         conn = s;
+        if (s === 'closed') reopen = window.setTimeout(() => attempt++, 3000);
       },
     });
     const staleSample = setInterval(() => {
@@ -112,6 +117,7 @@
       close();
       clearInterval(staleSample);
       clearTimeout(flushTimer);
+      clearTimeout(reopen);
       flushTimer = 0;
     };
   });
@@ -167,7 +173,7 @@
       </p>
     {:else if sampled}
       <p class="m-0 text-[var(--sev-warn)]">{num(sampled.rate)} msg/s, showing a sample</p>
-    {:else if conn === 'error'}
+    {:else if conn === 'error' || conn === 'closed'}
       <p class="m-0 text-[var(--sev-err)]">Connection lost. Reconnecting…</p>
     {/if}
   </div>

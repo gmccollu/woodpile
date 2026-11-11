@@ -1,6 +1,7 @@
 // Shared, polled server state: /api/status for the banners on every page, and
 // the device list (names for log lines, first-run detection).
-import { getDevices, getStatus, type Device, type Status } from './api';
+import { ApiError, getDevices, getStatus, type Device, type Status } from './api';
+import { auth } from './session.svelte';
 
 export const live = $state<{
   status: Status | null;
@@ -10,15 +11,18 @@ export const live = $state<{
 }>({ status: null, statusError: '', devices: null, now: Date.now() });
 
 export async function refreshStatus(): Promise<void> {
+  if (auth.needLogin) return;
   try {
     live.status = await getStatus();
     live.statusError = '';
   } catch (e) {
-    live.statusError = (e as Error).message;
+    // A 401 shows the login form instead of an "unreachable" banner.
+    if (!(e instanceof ApiError && e.status === 401)) live.statusError = (e as Error).message;
   }
 }
 
 export async function refreshDevices(): Promise<void> {
+  if (auth.needLogin) return;
   try {
     live.devices = await getDevices();
   } catch {

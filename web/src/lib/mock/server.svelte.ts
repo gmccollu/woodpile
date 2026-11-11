@@ -14,6 +14,10 @@
 //   mock_latency=N    simulated response time in ms (default 120)
 //   mock_releases=URL releases_url in /api/status (default empty: no public releases page yet)
 //   mock_panel=0      hide the mock control panel (for screenshots)
+//   mock_auth=1       LAN mode with auth: the password is "woodpile-demo" and the session starts logged out
+//   mock_loggedin=1   with mock_auth: start logged in
+//   mock_locked=1     with mock_auth: logins from "this address" are locked out for 15 minutes
+//   mock_password=1   localhost mode, but a password is already set (so LAN mode can be turned on)
 
 import type {
   Device,
@@ -46,7 +50,76 @@ export const mock = $state({
   cycle: P.get('mock_cycle') !== '0',
   latency: n('mock_latency', 120),
   panel: P.get('mock_panel') !== '0',
+  /** LAN mode with auth (mirrors settings.ui.lan_mode). */
+  lan: P.get('mock_auth') === '1',
+  loggedIn: P.get('mock_loggedin') === '1',
 });
+
+export const MOCK_PASSWORD = 'woodpile-demo';
+
+const authState = {
+  password: P.get('mock_auth') === '1' || P.get('mock_password') === '1' ? MOCK_PASSWORD : '',
+  csrf: newToken(),
+  failures: [] as number[],
+  lastAttempt: 0,
+  lockedUntil: P.get('mock_locked') === '1' ? Date.now() + 15 * 60_000 : 0,
+};
+
+function newToken(): string {
+  return Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+/** For the smoke checks in scripts/screenshots.mjs: the last X-CSRF-Token the mock received. */
+const probe = { lastCsrf: '' as string | null, get csrf() { return authState.csrf; } };
+(window as unknown as { __woodpileMock: typeof probe }).__woodpileMock = probe;
+
+/** Mock panel: switch LAN mode with auth on (logged out) or off. */
+export function setLanAuth(on: boolean) {
+  mock.lan = on;
+  settings.ui.lan_mode = on;
+  if (on && !authState.password) authState.password = MOCK_PASSWORD;
+  mock.loggedIn = false;
+  authState.csrf = newToken();
+}
+
+/** Mock panel: end the session as if it expired; the next API call gets a 401. */
+export function expireSession() {
+  mock.loggedIn = false;
+  authState.csrf = newToken();
+}
+
+function sessionJSON() {
+  const lan = mock.lan;
+  return {
+    mode: lan ? 'lan' : 'localhost',
+    auth_required: lan,
+    authenticated: !lan || mock.loggedIn,
+    password_set: !!authState.password,
+    csrf_token: lan && mock.loggedIn ? authState.csrf : '',
+  };
+}
+
+const PUBLIC = ['/api/session', '/api/login', '/api/logout', '/healthz'];
+
+function lockout(now: number): Response | null {
+  if (authState.lockedUntil > now)
+    return retryLater(Math.ceil((authState.lockedUntil - now) / 1000), 'Too many failed logins from this address.');
+  return null;
+}
+
+function retryLater(secs: number, error: string): Response {
+  return new Response(JSON.stringify({ error }), {
+    status: 429,
+    headers: { 'Content-Type': 'application/json', 'Retry-After': String(secs) },
+  });
+}
+
+/** 10 failures in 15 min lock the address out for 15 min; after 5, one attempt a second. */
+function recordFailure(now: number) {
+  authState.failures = authState.failures.filter((t) => now - t < 15 * 60_000);
+  authState.failures.push(now);
+  if (authState.failures.length >= 10) authState.lockedUntil = now + 15 * 60_000;
+}
 
 const GiB = 1024 ** 3;
 const MiB = 1024 ** 2;
@@ -110,7 +183,7 @@ let settings: Settings = {
     retention_bytes: 20 * GiB,
     part_bytes: 100 * MiB,
   },
-  ui: { lan_mode: false, port: 8514 },
+  ui: { lan_mode: P.get('mock_auth') === '1', port: 8514, cert_file: '', key_file: '' },
   quiet: { quiet_after_seconds: 300, offline_after_seconds: 3600 },
 };
 
@@ -154,7 +227,14 @@ function validate(s: Settings): Record<string, string> {
   else if (st.part_bytes > st.retention_bytes) e['storage.part_bytes'] = 'Part size must be smaller than the disk cap.';
   if (st.data_dir !== settings.storage.data_dir) e['storage.data_dir'] = 'The data folder can only be changed in the config file.';
   port('ui.port', s.ui.port, 1024);
-  if (s.ui.lan_mode) e['ui.lan_mode'] = 'LAN mode needs a password and HTTPS first; it is not available yet.';
+  if (s.ui.lan_mode && !authState.password) e['ui.lan_mode'] = 'Set a password before turning on LAN mode.';
+  const cert = s.ui.cert_file ?? '';
+  const key = s.ui.key_file ?? '';
+  const abs = (f: string) => f.startsWith('/') || /^[A-Za-z]:\\/.test(f);
+  if (cert && !abs(cert)) e['ui.cert_file'] = 'Use the full path to the certificate file.';
+  if (key && !abs(key)) e['ui.key_file'] = 'Use the full path to the key file.';
+  if (cert && !key && !e['ui.cert_file']) e['ui.key_file'] = 'Set the key file too, or clear both to use the generated certificate.';
+  if (key && !cert && !e['ui.key_file']) e['ui.cert_file'] = 'Set the certificate file too, or clear both to use the generated certificate.';
   const q = s.quiet;
   if (!Number.isInteger(q.quiet_after_seconds) || q.quiet_after_seconds < 30)
     e['quiet.quiet_after_seconds'] = 'Use at least 30 seconds.';
@@ -318,6 +398,7 @@ const SAMPLE_LIMIT = 50;
 
 class MockEventSource implements EventStream {
   onerror: ((e: Event) => void) | null = null;
+  readyState = 0;
   onopen: ((e: Event) => void) | null = null;
   private listeners: Record<string, ((e: MessageEvent<string>) => void)[]> = {};
   private filters: LiveFilters;
@@ -337,6 +418,13 @@ class MockEventSource implements EventStream {
     };
     setTimeout(() => {
       if (this.closed) return;
+      if (mock.lan && !mock.loggedIn) {
+        // The real server answers 401: EventSource reports an error and closes for good.
+        this.readyState = 2;
+        this.onerror?.(new Event('error'));
+        return;
+      }
+      this.readyState = 1;
       this.onopen?.(new Event('open'));
       for (const l of ring.filter((x) => matches(x, this.filters)).slice(-200)) this.send('message', l);
       subs.add(this);
@@ -370,6 +458,7 @@ class MockEventSource implements EventStream {
   }
 
   close() {
+    this.readyState = 2;
     this.closed = true;
     subs.delete(this);
   }
@@ -538,9 +627,54 @@ const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 const err = (status: number, error: string) => json({ error }, status);
 
-async function route(method: string, url: URL, body: unknown): Promise<Response> {
+async function route(method: string, url: URL, body: unknown, csrf: string | null): Promise<Response> {
   const p = url.pathname;
   const now = Date.now();
+  const changing = !['GET', 'HEAD', 'OPTIONS'].includes(method);
+  if (changing) probe.lastCsrf = csrf;
+
+  if (method === 'GET' && p === '/healthz') return json({ ok: true });
+  if (method === 'GET' && p === '/api/session') return json(sessionJSON());
+  if (method === 'POST' && p === '/api/login') {
+    if (!mock.lan) return err(400, 'LAN mode is off; there is nothing to log in to.');
+    const locked = lockout(now);
+    if (locked) return locked;
+    const recent = authState.failures.filter((t) => now - t < 15 * 60_000).length;
+    if (recent >= 5 && now - authState.lastAttempt < 1000) return retryLater(1, 'Slow down.');
+    authState.lastAttempt = now;
+    if ((body as { password?: string })?.password !== authState.password) {
+      recordFailure(now);
+      return lockout(now) ?? err(401, 'Wrong password.');
+    }
+    authState.failures = [];
+    mock.loggedIn = true;
+    authState.csrf = newToken();
+    return json(sessionJSON());
+  }
+  if (method === 'POST' && p === '/api/logout') {
+    mock.loggedIn = false;
+    return new Response(null, { status: 204 });
+  }
+  if (mock.lan && !PUBLIC.includes(p)) {
+    if (!mock.loggedIn) return err(401, 'Log in first.');
+    if (changing && csrf !== authState.csrf) return err(403, 'Missing or wrong CSRF token.');
+  }
+  if (method === 'PUT' && p === '/api/password') {
+    const b = (body ?? {}) as { current?: string; new?: string };
+    if (mock.lan && authState.password) {
+      const locked = lockout(now);
+      if (locked) return locked;
+      if (b.current !== authState.password) {
+        recordFailure(now);
+        return err(403, 'The current password is wrong.');
+      }
+    }
+    const len = new TextEncoder().encode(b.new ?? '').length;
+    if (len < 8 || len > 1024)
+      return json({ error: 'That password is not allowed.', errors: { new: 'Use 8 to 1024 characters.' } }, 400);
+    authState.password = b.new ?? '';
+    return new Response(null, { status: 204 });
+  }
   if (method === 'GET' && p === '/api/status') return json(statusJSON());
   if (method === 'POST' && p === '/api/listeners/retry') {
     await sleep(500);
@@ -566,7 +700,15 @@ async function route(method: string, url: URL, body: unknown): Promise<Response>
     const s = body as Settings;
     const errors = validate(s);
     if (Object.keys(errors).length) return json({ errors }, 400);
+    const wasLan = settings.ui.lan_mode;
     settings = structuredClone(s);
+    if (wasLan !== s.ui.lan_mode) {
+      // The real server restarts at the new address; the mock just switches modes and keeps
+      // this browser logged in, as if it had already logged in there.
+      mock.lan = s.ui.lan_mode;
+      mock.loggedIn = s.ui.lan_mode;
+      authState.csrf = newToken();
+    }
     return json(settings);
   }
   if (method === 'GET' && p === '/api/storage/history') return json(history());
@@ -635,7 +777,8 @@ export const mockTransport: Transport = {
     const method = (init?.method ?? 'GET').toUpperCase();
     const body = typeof init?.body === 'string' ? JSON.parse(init.body) : undefined;
     await sleep(mock.latency * (0.5 + Math.random()));
-    return route(method, url, body);
+    const csrf = new Headers(init?.headers).get('X-CSRF-Token');
+    return route(method, url, body, csrf);
   },
   eventSource: (path) => new MockEventSource(path),
 };

@@ -165,7 +165,8 @@ export interface ListenerSettings {
 export interface Settings {
   listeners: { udp: ListenerSettings; tcp: ListenerSettings; allowlist: string[] };
   storage: { data_dir: string; retention_days: number; retention_bytes: number; part_bytes: number };
-  ui: { lan_mode: boolean; port: number };
+  /** cert_file/key_file: paths to a user certificate for LAN mode; empty = self-signed. */
+  ui: { lan_mode: boolean; port: number; cert_file: string; key_file: string };
   quiet: { quiet_after_seconds: number; offline_after_seconds: number };
 }
 
@@ -181,18 +182,56 @@ export interface StorageHistoryEntry {
 
 // ---------- Errors ----------
 
+export interface Session {
+  mode: 'localhost' | 'lan';
+  auth_required: boolean;
+  authenticated: boolean;
+  password_set: boolean;
+  /** "" when not logged in, and always "" in localhost mode. */
+  csrf_token: string;
+}
+
 export class ApiError extends Error {
   readonly status: number;
-  /** Per-field messages from a 400 on PUT /api/settings, keyed by dotted path ("listeners.allowlist[2]"). */
+  /** Per-field messages from a 400 (e.g. PUT /api/settings), keyed by dotted path ("listeners.allowlist[2]"). */
   readonly fields: Record<string, string>;
+  /** Seconds from a Retry-After header (429 on login), else 0. */
+  readonly retryAfter: number;
 
-  constructor(status: number, message: string, fields: Record<string, string> = {}) {
+  constructor(status: number, message: string, fields: Record<string, string> = {}, retryAfter = 0) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
     this.fields = fields;
+    this.retryAfter = retryAfter;
   }
 }
+
+/** Retry-After is either delay-seconds or an HTTP date (RFC 9110 §10.2.3). */
+function retryAfterSeconds(h: string | null): number {
+  if (!h) return 0;
+  const n = Number(h);
+  if (Number.isFinite(n)) return Math.max(0, Math.ceil(n));
+  const t = Date.parse(h);
+  return Number.isNaN(t) ? 0 : Math.max(0, Math.ceil((t - Date.now()) / 1000));
+}
+
+// ---------- Session: CSRF token and 401 handling ----------
+
+let csrfToken = '';
+let onUnauthorized: (() => void) | null = null;
+
+/** The token sent as X-CSRF-Token on every POST, PUT, PATCH and DELETE. */
+export function setCsrfToken(t: string): void {
+  csrfToken = t;
+}
+
+/** Called on any 401 from a route that needs a session, so the app can show the login form. */
+export function setUnauthorizedHandler(fn: () => void): void {
+  onUnauthorized = fn;
+}
+
+const SESSION_ROUTES = ['/api/session', '/api/login', '/api/logout'];
 
 // ---------- Transport ----------
 
@@ -200,6 +239,8 @@ export class ApiError extends Error {
 export interface EventStream {
   addEventListener(type: 'message' | 'sampled', fn: (e: MessageEvent<string>) => void): void;
   onerror: ((e: Event) => void) | null;
+  /** 2 (CLOSED) when the browser gave up, e.g. after a 401: it won't reconnect by itself. */
+  readonly readyState: number;
   onopen: ((e: Event) => void) | null;
   close(): void;
 }
@@ -221,11 +262,13 @@ export function setTransport(t: Transport): void {
 }
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const init: RequestInit = { method, headers: { Accept: 'application/json' } };
+  const headers: Record<string, string> = { Accept: 'application/json' };
+  const init: RequestInit = { method, headers };
   if (body !== undefined) {
     init.body = JSON.stringify(body);
-    (init.headers as Record<string, string>)['Content-Type'] = 'application/json';
+    headers['Content-Type'] = 'application/json';
   }
+  if (!['GET', 'HEAD', 'OPTIONS'].includes(method) && csrfToken) headers['X-CSRF-Token'] = csrfToken;
   let res: Response;
   try {
     res = await transport.fetch(path, init);
@@ -246,7 +289,8 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
     const d = (data ?? {}) as { error?: string; errors?: Record<string, string> };
     const fields = d.errors && typeof d.errors === 'object' ? d.errors : {};
     const msg = d.error || (Object.keys(fields).length ? 'Some settings need fixing.' : `${res.status} ${res.statusText}`);
-    throw new ApiError(res.status, msg, fields);
+    if (res.status === 401 && !SESSION_ROUTES.includes(path.split('?')[0])) onUnauthorized?.();
+    throw new ApiError(res.status, msg, fields, retryAfterSeconds(res.headers.get('Retry-After')));
   }
   return data as T;
 }
@@ -264,6 +308,12 @@ function query(params: Record<string, string | number | boolean | string[] | und
 }
 
 // ---------- Routes ----------
+
+export const getSession = () => request<Session>('GET', '/api/session');
+export const login = (password: string) => request<Session>('POST', '/api/login', { password });
+export const logout = () => request<void>('POST', '/api/logout');
+export const putPassword = (current: string, next: string) =>
+  request<void>('PUT', '/api/password', { current, new: next });
 
 export const getStatus = () => request<Status>('GET', '/api/status');
 export const retryListeners = () => request<void>('POST', '/api/listeners/retry');
@@ -293,7 +343,7 @@ export const getStorageHistory = () => request<StorageHistoryEntry[]>('GET', '/a
 export interface LiveHandlers {
   onMessage(line: LogLine): void;
   onSampled?(n: SampledNotice): void;
-  onState?(state: 'open' | 'error'): void;
+  onState?(state: 'open' | 'error' | 'closed'): void;
 }
 
 /** Opens the live tail. EventSource reconnects by itself after errors. Returns a close function. */
@@ -322,6 +372,6 @@ export function openLive(filters: LiveFilters, h: LiveHandlers): () => void {
     }
   });
   es.onopen = () => h.onState?.('open');
-  es.onerror = () => h.onState?.('error');
+  es.onerror = () => h.onState?.(es.readyState === 2 ? 'closed' : 'error');
   return () => es.close();
 }

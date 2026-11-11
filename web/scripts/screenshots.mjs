@@ -31,6 +31,7 @@ const H_JS = `
     Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, v);
     el.dispatchEvent(new Event('input', { bubbles: true }));
   };
+  window.__tick = () => new Promise((r) => setTimeout(r, 120));
   window.__field = (label) => [...document.querySelectorAll('label')].find((l) => l.textContent.trim().startsWith(label))?.querySelector('input,textarea');
 `;
 
@@ -107,7 +108,7 @@ const SHOTS = [
     url: '/?mock_panel=0#/settings',
     act: `document.querySelector('[aria-label="Allow 198.51.100.7"]').click();`,
     after: 300,
-    check: `document.querySelector('textarea').value.split('\\n').includes('198.51.100.7/32') && __btn('Added, save to apply')?.disabled`,
+    check: `document.querySelector('textarea').value.split('\\n').includes('198.51.100.7') && __btn('Added, save to apply')?.disabled`,
   },
   {
     name: 'ungrouped-tab-filters-tail',
@@ -167,6 +168,89 @@ const SHOTS = [
   { name: 'about-linux-light', mode: 'light', url: '/?mock_panel=0&mock_os=linux#/about' },
   ...both({ name: 'search', url: '/?mock_panel=0#/search' }),
   ...both({ name: 'export', url: '/?mock_panel=0#/export' }),
+  // ---- LAN mode and auth ----
+  ...both({
+    name: 'login',
+    url: '/?mock_panel=0&mock_auth=1#/devices',
+    check: `!!__field('Password') && !document.querySelector('nav') && !document.querySelector('input[type=search]')`,
+  }),
+  {
+    name: 'login-wrong-password-light',
+    mode: 'light',
+    url: '/?mock_panel=0&mock_auth=1#/devices',
+    act: `__set(__field('Password'), 'not-it'); await __tick(); __btn('Log in').click();`,
+    after: 800,
+    check: `document.body.innerText.includes("That password isn't right.")`,
+  },
+  {
+    name: 'login-locked-light',
+    mode: 'light',
+    url: '/?mock_panel=0&mock_auth=1&mock_locked=1#/devices',
+    act: `__set(__field('Password'), 'woodpile-demo'); await __tick(); __btn('Log in').click();`,
+    after: 1200,
+    check: `/locked for 1[45] min \\d+ s/.test(document.body.innerText) && __btn('Log in').disabled`,
+  },
+  {
+    name: 'login-returns-and-sends-csrf',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0&mock_auth=1#/devices',
+    act: `__set(__field('Password'), 'woodpile-demo'); await __tick(); __btn('Log in').click();
+      await new Promise(r => setTimeout(r, 1500));
+      document.querySelector('[aria-label="Rename edge-fw-01"]').click(); await new Promise(r => setTimeout(r, 200));
+      const i = document.getElementById('edit-name-10.1.0.1'); __set(i, 'edge-fw-01b');
+      i.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));`,
+    after: 900,
+    check: `location.hash === '#/devices' && !!__btn('Log out') && document.body.innerText.includes('edge-fw-01b')
+      && window.__woodpileMock.lastCsrf === window.__woodpileMock.csrf && window.__woodpileMock.csrf.length === 32`,
+  },
+  {
+    name: 'expired-session-401-shows-login',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_auth=1&mock_loggedin=1#/settings',
+    act: `__btn('Mock data ▸').click(); await new Promise(r => setTimeout(r, 200)); __btn('Expire session').click();
+      await new Promise(r => setTimeout(r, 1200));
+      if (!__field('Password') || document.querySelector('nav')) throw new Error('no login form after the 401');
+      __set(__field('Password'), 'woodpile-demo'); await __tick(); __btn('Log in').click();`,
+    after: 1500,
+    check: `location.hash === '#/settings' && document.body.innerText.includes('UI access') && !!document.querySelector('nav')`,
+  },
+  {
+    name: 'password-set-enables-lan',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/settings',
+    act: `const lan = document.querySelector('[aria-describedby^="hint-lan"]'); if (!lan.disabled) throw new Error('LAN enabled without a password');
+      __set(__field('New password'), 'short'); __set(__field('Repeat it'), 'short'); await __tick(); __btn('Set password').click();
+      await new Promise(r => setTimeout(r, 600));
+      if (!document.body.innerText.includes('Use 8 to 1024 characters.')) throw new Error('no length error');
+      __set(__field('New password'), 'correct horse'); __set(__field('Repeat it'), 'correct horse'); await __tick(); __btn('Set password').click();`,
+    after: 800,
+    check: `document.body.innerText.includes('Password set.') && !document.querySelector('[aria-describedby^="hint-lan"]').disabled`,
+  },
+  {
+    name: 'settings-lan-warning-light',
+    mode: 'light',
+    url: '/?mock_panel=0&mock_password=1#/settings',
+    act: `document.querySelector('[aria-describedby^="hint-lan"]').click();`,
+    check: `document.body.innerText.includes('Before you turn this on')`,
+  },
+  {
+    name: 'settings-lan-saved-windows-light',
+    mode: 'light',
+    url: '/?mock_panel=0&mock_password=1&mock_os=windows#/settings',
+    act: `document.querySelector('[aria-describedby^="hint-lan"]').click(); __btn('Save').click();`,
+    after: 900,
+    check: `document.body.innerText.includes('netsh advfirewall firewall add rule name="Woodpile UI" dir=in action=allow protocol=TCP localport=8514')
+      && [...document.querySelectorAll('a')].some((a) => a.textContent.trim() === 'Go there' && a.href.startsWith('https://'))`,
+  },
+  {
+    name: 'settings-lan-on-dark',
+    mode: 'dark',
+    url: '/?mock_panel=0&mock_auth=1&mock_loggedin=1#/settings',
+    check: `!!__field('Current password') && !!__btn('Log out')`,
+  },
   { name: 'mock-panel-light', mode: 'light', url: '/#/dashboard', act: `__btn('Mock data ▸').click();`, after: 500 },
 ].filter((s) => s.name.includes(only));
 

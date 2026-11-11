@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { mock, restartFirstRun, sendFirstMessage } from './server.svelte';
+  import { MOCK_PASSWORD, expireSession, mock, restartFirstRun, sendFirstMessage, setLanAuth } from './server.svelte';
+  import { loadSession } from '../session.svelte';
   import { refreshDevices, refreshStatus } from '../status.svelte';
   import { go } from '../router.svelte';
 
@@ -13,6 +14,15 @@
     restartFirstRun();
     refreshDevices();
     go('welcome');
+  }
+  async function lan() {
+    setLanAuth(!mock.lan);
+    await loadSession();
+    refreshStatus();
+  }
+  function expire() {
+    expireSession();
+    refreshStatus(); // gets a 401, which shows the login form
   }
   function testMessage() {
     sendFirstMessage();
@@ -47,6 +57,11 @@
           <button class="ghost-btn" onclick={firstRun}>Restart as first run</button>
           <button class="ghost-btn" onclick={testMessage} disabled={!mock.firstRun}>Send test message</button>
         </div>
+        <label class="row"><input type="checkbox" checked={mock.lan} onchange={lan} /> LAN mode with auth</label>
+        <div class="row presets">
+          <button class="ghost-btn" onclick={expire} disabled={!mock.lan || !mock.loggedIn}>Expire session</button>
+        </div>
+        <p class="hint">Mock password: <code>{MOCK_PASSWORD}</code>. Ten wrong tries lock logins for 15 min.</p>
         <p class="hint">Settings validation: try port 70000, a bad CIDR, or offline &lt; quiet.</p>
       </div>
     {/if}

@@ -2,6 +2,8 @@
   import { router, href, go, type Route } from './lib/router.svelte';
   import { theme, setTheme } from './lib/theme.svelte';
   import { live, startPolling } from './lib/status.svelte';
+  import { auth, loadSession, logout } from './lib/session.svelte';
+  import Login from './pages/Login.svelte';
   import { ui } from './lib/ui.svelte';
   import Icon, { type IconName } from './components/Icon.svelte';
   import Logo from './components/Logo.svelte';
@@ -14,7 +16,20 @@
   import Settings from './pages/Settings.svelte';
   import About from './pages/About.svelte';
 
-  startPolling();
+  // Session first: in LAN mode every other route needs a login.
+  loadSession().then(startPolling);
+
+  let loggingOut = $state(false);
+  async function doLogout() {
+    loggingOut = true;
+    try {
+      await logout();
+    } finally {
+      loggingOut = false;
+    }
+  }
+  const showLogin = $derived(auth.needLogin);
+  const canLogout = $derived(!auth.needLogin && !!auth.session && auth.session.auth_required && auth.session.authenticated);
 
   const NAV: { r: Route; label: string; icon: IconName; soon?: boolean }[] = [
     { r: 'dashboard', label: 'Dashboard', icon: 'home' },
@@ -68,6 +83,7 @@
         </span>
       </a>
 
+      {#if !showLogin}
       <label class="search glass order-3 w-full sm:order-none sm:w-auto sm:flex-1">
         <span class="text-muted"><Icon name="search" /></span>
         <span class="sr-only">Filter devices and live messages</span>
@@ -79,13 +95,22 @@
           class="w-full border-0 bg-transparent text-[14px] text-fg outline-none placeholder:text-muted"
         />
       </label>
+      {/if}
 
-      <div class="mode glass ml-auto sm:ml-0" role="group" aria-label="Colour mode">
+      <div class="mode glass ml-auto {showLogin ? '' : 'sm:ml-0'}" role="group" aria-label="Colour mode">
         <button aria-pressed={theme.mode === 'light'} onclick={() => setTheme('light')}><Icon name="sun" size={15} />Light</button>
         <button aria-pressed={theme.mode === 'dark'} onclick={() => setTheme('dark')}><Icon name="moon" size={15} />Dark</button>
       </div>
+      {#if canLogout}
+        <button class="logout glass" onclick={doLogout} disabled={loggingOut}><Icon name="logout" size={15} />Log out</button>
+      {/if}
     </header>
 
+    {#if !auth.session && !auth.error}
+      <main id="main" class="panel text-muted" tabindex="-1">Loading…</main>
+    {:else if showLogin}
+      <main id="main" class="panel" tabindex="-1"><Login /></main>
+    {:else}
     <div class="grid grid-cols-1 gap-5 md:grid-cols-[84px_minmax(0,1fr)]">
       <nav class="nav" aria-label="Pages">
         {#each NAV as n (n.r)}
@@ -116,6 +141,7 @@
         {/if}
       </main>
     </div>
+    {/if}
   </div>
 </div>
 
@@ -169,6 +195,18 @@
   }
   .search input:focus-visible {
     outline: none;
+  }
+  .logout {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 12px 16px;
+    border-radius: 999px;
+    color: var(--fg);
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+    backdrop-filter: none;
   }
   .mode {
     display: flex;

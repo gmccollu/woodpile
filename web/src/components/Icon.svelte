@@ -25,6 +25,7 @@
     retry: 'M4 12a8 8 0 0 1 14-5.3M20 12a8 8 0 0 1-14 5.3M18 3v4h-4M6 21v-4h4',
     clear: 'M5 7h14M8 7v12h8V7M10 4h4',
     arrow: 'M5 12h14M13 6l6 6-6 6',
+    logout: 'M14 4h5v16h-5M10 8l-4 4 4 4M6 12h10',
     flask: 'M9 3h6M10 3v6l-5 9a2 2 0 0 0 1.8 3h10.4A2 2 0 0 0 19 18l-5-9V3',
   } as const;
   export type IconName = keyof typeof PATHS;

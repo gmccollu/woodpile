@@ -11,6 +11,9 @@
   } from '../lib/api';
   import { ago, bytes, dateTime, GiB, MiB, num } from '../lib/format';
   import { deviceName, live, refreshStatus } from '../lib/status.svelte';
+  import { auth, loadSession } from '../lib/session.svelte';
+  import PasswordForm from '../components/PasswordForm.svelte';
+  import CopyButton from '../components/CopyButton.svelte';
 
   // The form edits friendlier units (GiB, MiB, minutes, one CIDR per line) and converts on save.
   interface Form {
@@ -27,6 +30,8 @@
     partMiB: number;
     lanMode: boolean;
     uiPort: number;
+    certFile: string;
+    keyFile: string;
     quietMin: number;
     offlineMin: number;
   }
@@ -38,6 +43,8 @@
   let formError = $state('');
   let busy = $state(false);
   let savedAt = $state(0);
+  /** Set after a save that changed lan_mode or the UI port: the server restarts at a new address. */
+  let moved = $state<{ url: string; lan: boolean; port: number } | null>(null);
   let history = $state<StorageHistoryEntry[] | null>(null);
   let rejected = $state<RejectedSender[] | null>(null);
   /** The allowlist as last sent, so "listeners.allowlist[2]" errors can name the entry. */
@@ -60,6 +67,8 @@
       partMiB: round(s.storage.part_bytes / MiB),
       lanMode: s.ui.lan_mode,
       uiPort: s.ui.port,
+      certFile: s.ui.cert_file ?? '',
+      keyFile: s.ui.key_file ?? '',
       quietMin: round(s.quiet.quiet_after_seconds / 60),
       offlineMin: round(s.quiet.offline_after_seconds / 60),
     };
@@ -81,7 +90,7 @@
         retention_bytes: Math.round(n(f.retentionGiB) * GiB),
         part_bytes: Math.round(n(f.partMiB) * MiB),
       },
-      ui: { lan_mode: f.lanMode, port: n(f.uiPort) },
+      ui: { lan_mode: f.lanMode, port: n(f.uiPort), cert_file: f.certFile.trim(), key_file: f.keyFile.trim() },
       quiet: {
         quiet_after_seconds: Math.round(n(f.quietMin) * 60),
         offline_after_seconds: Math.round(n(f.offlineMin) * 60),
@@ -116,7 +125,8 @@
   function allow(ip: string) {
     if (!form || inDraft(ip)) return;
     const cur = form.allowlist.replace(/\s+$/, '');
-    form.allowlist = cur ? `${cur}\n${hostCidr(ip)}` : hostCidr(ip);
+    // docs/api.md: allowlist entries may be a bare IP or a CIDR.
+    form.allowlist = cur ? `${cur}\n${ip}` : ip;
   }
 
   async function load() {
@@ -152,6 +162,8 @@
     'storage.part_bytes',
     'ui.lan_mode',
     'ui.port',
+    'ui.cert_file',
+    'ui.key_file',
     'quiet.quiet_after_seconds',
     'quiet.offline_after_seconds',
   ];
@@ -187,13 +199,21 @@
     formError = '';
     const body = fromForm(form);
     sentAllowlist = body.listeners.allowlist;
+    const before = saved?.ui;
     try {
       saved = await putSettings(body);
       form = toForm(saved);
+      if (before && (before.lan_mode !== saved.ui.lan_mode || before.port !== saved.ui.port)) {
+        const lan = saved.ui.lan_mode;
+        // location.hostname keeps IPv6 brackets. Turning LAN mode off means localhost only.
+        const url = lan ? `https://${location.hostname}:${saved.ui.port}/` : `http://localhost:${saved.ui.port}/`;
+        moved = { url, lan, port: saved.ui.port };
+      }
       savedAt = Date.now();
       setTimeout(() => (savedAt = 0), 2500);
       refreshStatus();
       loadRejected();
+      loadSession();
     } catch (x) {
       if (x instanceof ApiError && Object.keys(x.fields).length) {
         errors = x.fields;
@@ -218,9 +238,26 @@
     { p: 'udp', label: 'UDP' },
     { p: 'tcp', label: 'TCP' },
   ] as const;
+  const isWindows = $derived(live.status?.os.startsWith('windows') ?? false);
+  const firewallCmd = (port: number) =>
+    `netsh advfirewall firewall add rule name="Woodpile UI" dir=in action=allow protocol=TCP localport=${port}`;
+  const passwordSet = $derived(!!auth.session?.password_set);
   const isMac = $derived(live.status?.os.startsWith('darwin') ?? false);
   const reasonText = { age: 'older than the retention period', cap: 'disk cap reached', low_disk: 'low disk space' };
 </script>
+
+{#snippet firewall(port: number)}
+  <div class="mt-3">
+    <p class="m-0 text-[13.5px]">
+      <b>Windows firewall:</b> allow the UI port so other machines can connect. Run this in a Command Prompt or PowerShell opened with
+      <b>Run as administrator</b>:
+    </p>
+    <div class="log-panel mt-2 flex items-start gap-3 rounded-2xl p-3">
+      <code class="grow text-[13px] leading-relaxed break-all whitespace-pre-wrap">{firewallCmd(port)}</code>
+      <CopyButton text={firewallCmd(port)} />
+    </div>
+  </div>
+{/snippet}
 
 {#snippet fieldError(path: string)}
   {#if err(path)}<p class="ferr" id="err-{path}">{err(path)}</p>{/if}
@@ -249,6 +286,30 @@
         {#each otherErrors as [k, m] (k)}
           <div class="mt-1"><code class="font-mono text-[13px]">{k}</code>: {m}</div>
         {/each}
+      </div>
+    {/if}
+
+    {#if moved}
+      <div class="moved" role="status">
+        <p class="m-0 font-semibold">Woodpile is restarting its web UI at a new address.</p>
+        <p class="m-0 mt-1 text-[14px]">
+          {moved.lan ? 'LAN mode is on: the UI is now served over HTTPS and needs the password.' : 'The UI now answers only on this machine.'}
+          This page stops updating; open the new address to carry on.
+        </p>
+        <div class="mt-3 flex flex-wrap items-center gap-3">
+          <code class="font-mono text-[14px] font-semibold break-all">{moved.url}</code>
+          <a class="pill-btn no-underline" href={moved.url}>Go there</a>
+          <button type="button" class="ghost-btn" onclick={() => (moved = null)}>Dismiss</button>
+        </div>
+        {#if moved.lan}
+          <p class="m-0 mt-3 text-[13.5px]">
+            The browser will warn that the certificate isn't trusted, because Woodpile made it itself. That's expected the first time: check the address is
+            this machine, then continue.
+          </p>
+        {/if}
+        {#if moved.lan && isWindows}
+          {@render firewall(moved.port)}
+        {/if}
       </div>
     {/if}
 
@@ -396,22 +457,65 @@
     <section class="card">
       <h2 class="sec">UI access</h2>
       <label class="flex items-start gap-3">
-        <input type="checkbox" bind:checked={form.lanMode} disabled aria-describedby="hint-lan err-ui.lan_mode" class="mt-1" />
+        <input
+          type="checkbox"
+          bind:checked={form.lanMode}
+          disabled={!passwordSet && !form.lanMode}
+          aria-invalid={!!err('ui.lan_mode')}
+          aria-describedby="hint-lan err-ui.lan_mode"
+          class="mt-1"
+        />
         <span>
           <span class="font-semibold">LAN mode</span>
-          <span class="ml-2 rounded-full bg-chip px-2 py-0.5 text-[12px] font-semibold text-accent-fg">Not available yet</span>
           <span class="hint block" id="hint-lan">
-            Lets other machines open this UI. It will need a password and switch the UI to HTTPS. Until then the UI is only reachable from
-            this machine, on 127.0.0.1:{saved?.ui.port}.
+            {#if saved?.ui.lan_mode}
+              On: other machines can open this UI over HTTPS, with the password.
+            {:else}
+              Off: the UI is only reachable from this machine, on localhost:{saved?.ui.port}.
+              {#if !passwordSet}Set a password below to turn it on.{/if}
+            {/if}
           </span>
         </span>
       </label>
       {@render fieldError('ui.lan_mode')}
+      {#if form.lanMode && !saved?.ui.lan_mode}
+        <div class="lanwarn" role="note">
+          <b>Before you turn this on:</b> anyone on your network who can reach this machine will see the Woodpile login page, and with the password,
+          all of your logs. Use a strong password. Browsers will warn about the certificate the first time, because Woodpile creates its own
+          (self-signed) certificate; that's expected, not an attack, as long as the address is this machine.
+          {#if isWindows}Windows also needs a firewall rule for the UI port; the command is shown after you save.{/if}
+        </div>
+      {/if}
+      {#if saved?.ui.lan_mode && isWindows}
+        {@render firewall(saved.ui.port)}
+      {/if}
+
       <label class="lbl mt-3 w-40">
         <span>UI port</span>
         <input class="field" type="number" bind:value={form.uiPort} aria-invalid={!!err('ui.port')} aria-describedby="err-ui.port" />
         {@render fieldError('ui.port')}
       </label>
+
+      <details class="adv mt-4" open={!!(form.certFile || form.keyFile || err('ui.cert_file') || err('ui.key_file'))}>
+        <summary class="cursor-pointer text-[14px] font-semibold">Advanced: use your own certificate</summary>
+        <p class="hint mt-2">
+          For LAN mode. Leave both empty to use the certificate Woodpile generates. Paths are on the machine running Woodpile (PEM files).
+        </p>
+        <div class="grid gap-4 sm:grid-cols-2">
+          <label class="lbl">
+            <span>Certificate file</span>
+            <input class="field font-mono" bind:value={form.certFile} placeholder="/path/to/cert.pem" spellcheck="false" aria-invalid={!!err('ui.cert_file')} aria-describedby="err-ui.cert_file" />
+            {@render fieldError('ui.cert_file')}
+          </label>
+          <label class="lbl">
+            <span>Private key file</span>
+            <input class="field font-mono" bind:value={form.keyFile} placeholder="/path/to/key.pem" spellcheck="false" aria-invalid={!!err('ui.key_file')} aria-describedby="err-ui.key_file" />
+            {@render fieldError('ui.key_file')}
+          </label>
+        </div>
+      </details>
+
+      <PasswordForm />
     </section>
 
     <section class="card">
@@ -449,6 +553,24 @@
     border: 1px solid var(--border);
     -webkit-backdrop-filter: blur(16px);
     backdrop-filter: blur(16px);
+  }
+  .moved {
+    padding: 16px 18px;
+    border-radius: 22px;
+    border: 1px solid var(--info-border);
+    background: var(--info-bg);
+  }
+  .lanwarn {
+    margin-top: 10px;
+    padding: 10px 14px;
+    border-radius: 14px;
+    border: 1px solid var(--warn-border);
+    background: var(--warn-bg);
+    font-size: 13.5px;
+    line-height: 1.5;
+  }
+  .adv summary::marker {
+    color: var(--muted);
   }
   .field[readonly] {
     background: transparent;
