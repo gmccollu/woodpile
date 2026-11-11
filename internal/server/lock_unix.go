@@ -45,3 +45,29 @@ func openLockFile(path string, create bool) (*os.File, error) {
 	}
 	return f, nil
 }
+
+// MatchOwner gives the lock file, through its descriptor, the data folder's owner,
+// when this process is root and created it there (re-test N10): a `sudo woodpile
+// reindex` must not leave a root-owned lock the service can't open.
+func (l *DirLock) MatchOwner(dataDir string) error {
+	if l == nil || l.f == nil || os.Geteuid() != 0 {
+		return nil
+	}
+	fd, err := syscall.Open(dataDir, syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_DIRECTORY|syscall.O_CLOEXEC, 0)
+	if err != nil {
+		return err
+	}
+	var dir, lock syscall.Stat_t
+	err = syscall.Fstat(fd, &dir)
+	syscall.Close(fd)
+	if err != nil {
+		return err
+	}
+	if err := syscall.Fstat(int(l.f.Fd()), &lock); err != nil {
+		return err
+	}
+	if lock.Uid == dir.Uid && lock.Gid == dir.Gid {
+		return nil
+	}
+	return l.f.Chown(int(dir.Uid), int(dir.Gid))
+}

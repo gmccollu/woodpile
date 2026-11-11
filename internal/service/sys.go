@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"os/exec"
 	"os/user"
@@ -70,87 +69,16 @@ type host struct {
 	runner
 	root string // prefix for every path ("" for the real machine)
 	out  io.Writer
-	// chown changes a path's owner without following a symlink (os.Lchown on the
-	// real machine; recorded in tests).
-	chown func(path string, uid, gid int) error
+	// fchown changes an open file's owner (f.Chown on the real machine; recorded
+	// in tests). The ownership code works through file descriptors, never names
+	// (re-test N10), see chown_unix.go.
+	fchown func(f *os.File, uid, gid int) error
 	// lookupIDs resolves a user and group name.
 	lookupIDs func(user, group string) (uid, gid int, err error)
 }
 
 func realHost(out io.Writer) *host {
-	return &host{runner: execRunner{}, out: out, chown: os.Lchown, lookupIDs: lookupIDs}
-}
-
-// chownTree gives dir and everything in it to user:group (security review M1c,
-// M1f): it never follows a symlink (they're skipped, and dir itself must not be
-// one) and skips any file with more than one link, which could be a hard link to
-// a file outside the folder. It returns how many entries it skipped.
-func (h *host) chownTree(dir, user, group string) (skipped int, err error) {
-	uid, gid, err := h.lookupIDs(user, group)
-	if err != nil {
-		return 0, err
-	}
-	root := h.path(dir)
-	fi, err := os.Lstat(root)
-	if err != nil {
-		return 0, err
-	}
-	if fi.Mode()&os.ModeSymlink != 0 || !fi.IsDir() {
-		return 0, fmt.Errorf("%s is a link or not a folder", dir)
-	}
-	err = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.Type()&fs.ModeSymlink != 0 {
-			skipped++
-			return nil
-		}
-		if !d.IsDir() {
-			info, err := d.Info()
-			if err != nil {
-				return err
-			}
-			if !info.Mode().IsRegular() || linkCount(info) > 1 {
-				skipped++
-				return nil
-			}
-		}
-		return h.chown(p, uid, gid)
-	})
-	return skipped, err
-}
-
-// chownFile gives one file (not a symlink, one link) to user:group.
-func (h *host) chownFile(path, user, group string) error {
-	uid, gid, err := h.lookupIDs(user, group)
-	if err != nil {
-		return err
-	}
-	fi, err := os.Lstat(h.path(path))
-	if err != nil {
-		return err
-	}
-	if fi.Mode()&os.ModeSymlink != 0 || !fi.Mode().IsRegular() || linkCount(fi) > 1 {
-		return fmt.Errorf("%s is a link or not a regular file; not changing its owner", path)
-	}
-	return h.chown(h.path(path), uid, gid)
-}
-
-// chownDir gives one folder (not a symlink) to user:group.
-func (h *host) chownDir(path, user, group string) error {
-	uid, gid, err := h.lookupIDs(user, group)
-	if err != nil {
-		return err
-	}
-	fi, err := os.Lstat(h.path(path))
-	if err != nil {
-		return err
-	}
-	if fi.Mode()&os.ModeSymlink != 0 || !fi.IsDir() {
-		return fmt.Errorf("%s is a link or not a folder; not changing its owner", path)
-	}
-	return h.chown(h.path(path), uid, gid)
+	return &host{runner: execRunner{}, out: out, fchown: func(f *os.File, uid, gid int) error { return f.Chown(uid, gid) }, lookupIDs: lookupIDs}
 }
 
 func (h *host) path(p string) string {

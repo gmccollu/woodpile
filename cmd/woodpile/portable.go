@@ -223,6 +223,13 @@ func runPortable(o portableOpts, stdout, stderr io.Writer) (code int) {
 		return failf("%v", err)
 	}
 	cfgPath := filepath.Join(dir, config.FileName)
+	// An existing folder, config or password hash must be this user's (re-test N13):
+	// someone else's woodpile-data could hold a config or password of theirs.
+	for _, p := range []string{dir, cfgPath, filepath.Join(dir, api.PasswordFile)} {
+		if err := checkOwnedByMe(p); err != nil {
+			return failf("%v", err)
+		}
+	}
 
 	// Another copy already running on this folder? Say so before touching the config.
 	if inUse, _ := server.DataDirInUse(dir); inUse {
@@ -307,7 +314,7 @@ func runPortable(o portableOpts, stdout, stderr io.Writer) (code int) {
 	}
 	fmt.Fprint(stdout, bannerText(info))
 	if runtime.GOOS == "windows" && cfg.Listeners.UDP.Enabled {
-		fmt.Fprint(stdout, windowsFirewallNotes())
+		fmt.Fprint(stdout, windowsFirewallNotes(cfg.Listeners.UDP.Port))
 	}
 	fmt.Fprintf(stdout, "\nPress Ctrl-C or close this window to stop. Your logs stay in %s\n\n", dir)
 

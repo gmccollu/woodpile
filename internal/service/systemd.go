@@ -258,7 +258,7 @@ func prepareFolders(h *host, goos, cfgPath, dataDir, user, group string) (notes 
 	}
 	cfgDir := filepath.Dir(cfgPath)
 	if cfgDir != dataDir {
-		if err := checkDataDir(goos, cfgDir, homes); err != nil {
+		if err := checkConfigDir(goos, cfgDir, homes); err != nil {
 			return nil, fmt.Errorf("the config's folder: %w", err)
 		}
 		if err := h.checkConfigDirContents(cfgDir); err != nil {

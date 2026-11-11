@@ -63,8 +63,8 @@ func fakeHost(t *testing.T, r *fakeRunner, dirs ...string) *host {
 	t.Helper()
 	h := &host{runner: r, root: t.TempDir(), out: io.Discard}
 	h.lookupIDs = func(u, g string) (int, int, error) { return 1001, 1001, nil }
-	h.chown = func(p string, uid, gid int) error {
-		rel, _ := filepath.Rel(h.root, p)
+	h.fchown = func(f *os.File, uid, gid int) error {
+		rel, _ := filepath.Rel(h.root, f.Name())
 		r.chowned = append(r.chowned, "/"+filepath.ToSlash(rel))
 		return nil
 	}

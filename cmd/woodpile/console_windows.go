@@ -3,7 +3,6 @@
 package main
 
 import (
-	"fmt"
 	"os"
 	"os/exec"
 	"strings"
@@ -25,7 +24,7 @@ func consoleProcessCount() int {
 // enabled inbound rule allows this program, gives the command an administrator
 // can run. (Windows adds a block rule when the dialog is dismissed, or shown
 // where nobody can answer it.)
-func windowsFirewallNotes() string {
+func windowsFirewallNotes(port int) string {
 	var s strings.Builder
 	s.WriteString("\n  Windows may ask whether to allow Woodpile through the firewall. Choose Allow so devices can\n")
 	s.WriteString("  reach it (it may need an administrator).\n")
@@ -52,6 +51,6 @@ func windowsFirewallNotes() string {
 	} else {
 		s.WriteString("  If devices can't reach it, run this in an administrator prompt:\n")
 	}
-	fmt.Fprintf(&s, "      netsh advfirewall firewall add rule name=\"Woodpile (portable)\" dir=in action=allow program=\"%s\" enable=yes\n", exe)
+	s.WriteString(firewallCommands(exe, port))
 	return s.String()
 }

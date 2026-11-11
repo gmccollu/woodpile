@@ -49,3 +49,6 @@ func openLockFile(path string, create bool) (*os.File, error) {
 	}
 	return f, nil
 }
+
+// MatchOwner is a no-op on Windows (the lock inherits the data folder's ACL).
+func (l *DirLock) MatchOwner(string) error { return nil }

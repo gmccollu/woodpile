@@ -187,3 +187,50 @@ func TestM1dWindowsFoldersRefused(t *testing.T) {
 		}
 	}
 }
+
+// Re-test N12: system folders are refused as prefixes too, with Woodpile's own
+// places allowed; Windows paths are normalized first.
+func TestN12SystemPrefixes(t *testing.T) {
+	for _, c := range []struct {
+		goos, dir string
+		ok        bool
+	}{
+		{"linux", "/usr/share/woodpile", false},
+		{"linux", "/etc/woodpile-data", false},
+		{"linux", "/lib64/x", false},
+		{"linux", "/boot/efi/x", false},
+		{"linux", "/var/log/woodpile", false},
+		{"linux", "/var/lib", false},
+		{"linux", "/var/lib/woodpile", true},
+		{"linux", "/var/lib/syslog-archive", true},
+		{"linux", "/var/lib/woodpile/sub", true},
+		{"linux", "/srv/woodpile", true},
+		{"linux", "/opt/woodpile/data", true},
+		{"darwin", "/Library/Application Support/Woodpile", true},
+		{"darwin", "/library/application support/woodpile", true},
+		{"darwin", "/Library/Application Support/Other", false},
+		{"darwin", "/Library/Logs/Woodpile", false},
+		{"darwin", "/System/Volumes/Data/x", false},
+		{"darwin", "/private/var/db/x", false},
+		{"windows", `C:\ProgramData\Woodpile`, true},
+		{"windows", `D:\syslog\woodpile`, true},
+		{"windows", `C:\Windows\Temp\wp`, false},
+		{"windows", `C:\Windows.\Temp`, false},
+		{"windows", `C:\Program Files\Woodpile\data`, false},
+		{"windows", `\\?\C:\Windows\System32\x`, false},
+		{"windows", `C:/Windows/x`, false},
+		{"windows", `C:\ProgramData`, false},
+		{"windows", `C:\ProgramData.`, false},
+		{"windows", `C:\Users\alice`, false},
+		{"windows", `C:\`, false},
+		{"windows", `C:\a\..\Windows`, false},
+	} {
+		err := checkDataDir(c.goos, c.dir, nil)
+		if (err == nil) != c.ok {
+			t.Errorf("%s %q: %v, want ok=%v", c.goos, c.dir, err, c.ok)
+		}
+	}
+	if got := winClean(`\\?\C:\Windows. \System32.\`); got != `C:\Windows\System32` {
+		t.Errorf("winClean = %q", got)
+	}
+}

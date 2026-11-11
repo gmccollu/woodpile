@@ -218,3 +218,21 @@ func TestFirewallRuleState(t *testing.T) {
 		}
 	}
 }
+
+// Re-test N17: the suggested rules open only the syslog port, UDP and TCP, on
+// Private and Domain networks.
+func TestFirewallCommands(t *testing.T) {
+	c := firewallCommands(`C:\w\woodpile.exe`, 514)
+	for _, want := range []string{
+		`program="C:\w\woodpile.exe" protocol=UDP localport=514 profile=private,domain`,
+		`program="C:\w\woodpile.exe" protocol=TCP localport=514 profile=private,domain`,
+		"Public",
+	} {
+		if !strings.Contains(c, want) {
+			t.Errorf("lacks %q:\n%s", want, c)
+		}
+	}
+	if strings.Count(c, "netsh") != 2 {
+		t.Errorf("want two rules:\n%s", c)
+	}
+}

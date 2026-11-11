@@ -4,4 +4,4 @@ package main
 
 func consoleProcessCount() int { return 0 }
 
-func windowsFirewallNotes() string { return "" }
+func windowsFirewallNotes(int) string { return "" }

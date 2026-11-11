@@ -337,6 +337,10 @@ data folder.`, stderr)
 		return fail(stderr, "reindex", adminErr(err))
 	}
 	defer lock.Unlock()
+	// Run as root, the lock it just created would be root's (re-test N10).
+	if err := lock.MatchOwner(dataDir); err != nil {
+		return fail(stderr, "reindex", fmt.Errorf("give the lock file the data folder's owner: %w", err))
+	}
 
 	idx, err := index.Open(filepath.Join(dataDir, index.FileName))
 	if err != nil {
@@ -414,15 +418,8 @@ way to do this over the network, by design.`, stderr)
 		cfg.UI.LANMode = false
 		// Run as root, Save would leave the config root-owned, and the service
 		// couldn't read it (security review L3): keep its owner and mode.
-		keep, err := fileOwnership(abs)
-		if err != nil {
-			return fail(stderr, "reset-password", err)
-		}
-		if err := config.Save(abs, cfg); err != nil {
+		if err := saveConfigKeepingOwner(abs, cfg); err != nil {
 			return fail(stderr, "reset-password", adminErr(err))
-		}
-		if err := keep.restore(abs); err != nil {
-			return fail(stderr, "reset-password", fmt.Errorf("restore the config's owner: %w", err))
 		}
 	}
 	switch {
