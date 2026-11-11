@@ -36,6 +36,7 @@ jobs:
     outputs:
       windows: ${{ steps.p.outputs.windows }}
       macos: ${{ steps.p.outputs.macos }}
+      portable_os: ${{ steps.p.outputs.portable_os }}
     steps:
       - id: p
         env:
@@ -50,6 +51,10 @@ jobs:
           echo "windows=$w" >>"$GITHUB_OUTPUT"
           echo "macos=$m" >>"$GITHUB_OUTPUT"
           echo "windows=$w macos=$m"
+          os='"ubuntu-latest"'
+          [ "$w" = true ] && os="$os,\"windows-latest\""
+          [ "$m" = true ] && os="$os,\"macos-latest\""
+          echo "portable_os=[$os]" >>"$GITHUB_OUTPUT"
 
   linux-packages:
     name: build deb and rpm
@@ -215,4 +220,41 @@ jobs:
         if: failure()
         with:
           name: logs-macos
+          path: ${{ runner.temp }}/smoke-logs
+
+  # Portable mode: the downloaded binary, no install, on the real port 514.
+  portable:
+    name: portable mode on ${{ matrix.os }}
+    needs: plan
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(needs.plan.outputs.portable_os) }}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Build woodpile, verifyseq and consoleclose
+        shell: bash
+        run: |
+          ext=""; [ "$RUNNER_OS" = Windows ] && ext=.exe
+          go build -o dist/woodpile$ext ./cmd/woodpile
+          go build -o dist/verifyseq$ext ./scripts/verifyseq
+          go build -o dist/consoleclose$ext ./scripts/smoke/consoleclose
+      - name: Portable mode (Linux, macOS)
+        if: runner.os != 'Windows'
+        env:
+          VERIFYSEQ: dist/verifyseq
+          SMOKE_LOGS: ${{ runner.temp }}/smoke-logs
+        run: scripts/smoke/portable.sh dist/woodpile
+      - name: Portable mode (Windows, closing the console window)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/smoke/portable.ps1 -Logs "$env:RUNNER_TEMP/smoke-logs"
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: logs-portable-${{ matrix.os }}
           path: ${{ runner.temp }}/smoke-logs
