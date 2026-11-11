@@ -9,6 +9,7 @@ SVC_USER=_woodpile
 SVC_GROUP=_woodpile
 DATA_DIR="/Library/Application Support/Woodpile"
 LOG_DIR=/Library/Logs/Woodpile
+LOG_FILE=$LOG_DIR/woodpile.log
 UI_URL=http://127.0.0.1:8514/
 
 log() {
@@ -77,4 +78,22 @@ ensure_service_account() {
 	if ! dscl . -read "/Groups/$SVC_GROUP" GroupMembership 2>/dev/null | grep -qw "$SVC_USER"; then
 		dscl . -append "/Groups/$SVC_GROUP" GroupMembership "$SVC_USER"
 	fi
+}
+
+# The daemon's own log (launchd's StandardOutPath/StandardErrorPath), rotated by newsyslog
+# as root. The folder is root-owned and not writable by _woodpile, so the daemon can't put
+# a symlink or other name there for root to follow when it rotates; only the log file
+# itself belongs to _woodpile. Idempotent; heals a folder from an older install that
+# _woodpile owned, deleting any symlinks it holds.
+prepare_log_dir() {
+	mkdir -p "$LOG_DIR"
+	chown root:wheel "$LOG_DIR"
+	chmod 0755 "$LOG_DIR"
+	find "$LOG_DIR" -mindepth 1 -type l -delete
+	if [ ! -f "$LOG_FILE" ]; then
+		rm -rf "$LOG_FILE"
+		: >"$LOG_FILE"
+	fi
+	chown -h "$SVC_USER:$SVC_GROUP" "$LOG_FILE"
+	chmod 0640 "$LOG_FILE"
 }

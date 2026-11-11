@@ -1,8 +1,8 @@
 # CI: test on Linux, Windows and macOS, fuzz the parser, and check that every package
 # (deb, rpm, MSI, pkg) still builds. Nothing is published.
 #
-# Uses only the standard actions/* actions and `go run` for tools, so it runs unchanged on
-# github.com and on GitHub Enterprise Server.
+# Uses only the standard actions/* actions (pinned by commit SHA, version in the comment) and
+# `go run` for tools.
 name: CI
 
 on:
@@ -45,15 +45,17 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: go.mod
 
       - name: Set up Node
         if: hashFiles('web/package.json') != ''
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
@@ -79,11 +81,64 @@ jobs:
           go build -trimpath -ldflags "-X main.version=0.0.0-ci+$short -X main.commit=$short" -o dist/ ./cmd/woodpile
           ./dist/woodpile version
 
+  # arm64 runners: free on public repos; a private repo may not have the labels, and a job
+  # asking for a missing label waits forever. So this runs on a public repo, or on a private
+  # one with the repo variable ARM_RUNNERS=true (Settings -> Secrets and variables -> Actions
+  # -> Variables) once its plan has them.
+  test-arm:
+    name: test (${{ matrix.os }})
+    if: ${{ !github.event.repository.private || vars.ARM_RUNNERS == 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04-arm
+            race: -race
+          - os: windows-11-arm
+            race: ""
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build the frontend
+        working-directory: web
+        run: |
+          npm ci --ignore-scripts
+          npm run build
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test
+        run: go test ${{ matrix.race }} ./...
+
+      - name: go build
+        run: |
+          go build -trimpath -o dist/ ./cmd/woodpile
+          ./dist/woodpile version
+
   fuzz:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: go.mod
       - name: Fuzz every target for 30 s
@@ -93,17 +148,18 @@ jobs:
     name: packaging (goreleaser, deb, rpm)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
+          persist-credentials: false
           fetch-depth: 0
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: go.mod
 
       - name: Set up Node
         if: hashFiles('web/package.json') != ''
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
@@ -111,6 +167,14 @@ jobs:
 
       - name: Lint the packaging scripts
         run: scripts/lint-packaging.sh
+
+      # Every archive and installer ships THIRD_PARTY_NOTICES.txt; regenerate it when a
+      # dependency changes: scripts/third_party_notices.py
+      - name: THIRD_PARTY_NOTICES.txt is current
+        run: scripts/third_party_notices.py --check
+
+      - name: CHANGELOG.md gives release notes
+        run: scripts/release-notes.sh v0.0.0-ci >/dev/null
 
       - name: goreleaser check
         run: go run github.com/goreleaser/goreleaser/v2@"$GORELEASER_VERSION" check
@@ -140,11 +204,13 @@ jobs:
     name: installer (windows msi)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: go.mod
-      - uses: actions/setup-dotnet@v5
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
         with:
           dotnet-version: 8.0.x
       - name: Install WiX
@@ -156,13 +222,20 @@ jobs:
       - name: List the MSI
         shell: pwsh
         run: Get-ChildItem dist/msi
+      # Installs it for real on this disposable runner: the data-folder ACL reset over a hostile
+      # pre-existing folder, and the service's reduced privileges.
+      - name: MSI hardening checks
+        shell: pwsh
+        run: ./scripts/smoke/msi-hardening.ps1 -Msi (Resolve-Path dist/msi/*.msi).Path
 
   macos-pkg:
     name: installer (macos pkg)
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: go.mod
       - name: Build the pkg

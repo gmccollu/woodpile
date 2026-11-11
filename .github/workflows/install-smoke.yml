@@ -15,7 +15,7 @@ on:
   workflow_dispatch:
     inputs:
       os:
-        description: "Which OSes: all, linux, windows or macos"
+        description: "Which OSes: all, linux, windows, macos or arm (the arm64 jobs)"
         default: all
 
 permissions:
@@ -37,11 +37,14 @@ jobs:
       windows: ${{ steps.p.outputs.windows }}
       macos: ${{ steps.p.outputs.macos }}
       portable_os: ${{ steps.p.outputs.portable_os }}
+      arm_linux: ${{ steps.p.outputs.arm_linux }}
+      arm_windows: ${{ steps.p.outputs.arm_windows }}
     steps:
       - id: p
         env:
           MSG: ${{ github.event.head_commit.message }}
           OS: ${{ inputs.os }}
+          PRIVATE: ${{ github.event.repository.private }}
         run: |
           w=false; m=false
           case "$OS" in all) w=true; m=true ;; windows) w=true ;; macos) m=true ;; esac
@@ -51,6 +54,17 @@ jobs:
           echo "windows=$w" >>"$GITHUB_OUTPUT"
           echo "macos=$m" >>"$GITHUB_OUTPUT"
           echo "windows=$w macos=$m"
+          # arm64 runners are free on public repos; a private repo may not have the labels, and a
+          # job asking for a missing label waits forever. So on a private repo they run only when
+          # asked for: "[smoke arm]" in the head commit, or os=arm by hand.
+          ask=false
+          case "$OS" in arm) ask=true ;; esac
+          case "$MSG" in *"[smoke arm]"*) ask=true ;; esac
+          al=$ask; aw=$ask
+          if [ "$PRIVATE" != true ]; then al=true; [ "$w" = true ] && aw=true; fi
+          echo "arm_linux=$al" >>"$GITHUB_OUTPUT"
+          echo "arm_windows=$aw" >>"$GITHUB_OUTPUT"
+          echo "arm_linux=$al arm_windows=$aw"
           os='"ubuntu-latest"'
           [ "$w" = true ] && os="$os,\"windows-latest\""
           [ "$m" = true ] && os="$os,\"macos-latest\""
@@ -87,6 +101,22 @@ jobs:
         with:
           name: linux-packages
           path: out/
+          retention-days: 3
+      # For the arm64 jobs: the arm64 deb, the release archives for Linux and Windows on arm64
+      # (the portable downloads) and the test helpers built for arm64.
+      - name: Collect arm64
+        run: |
+          mkdir -p out-arm64
+          cp dist/*_arm64.deb dist/*_linux_arm64.tar.gz dist/*_windows_arm64.zip out-arm64/
+          GOARCH=arm64 go build -o out-arm64/verifyseq ./scripts/verifyseq
+          GOOS=windows GOARCH=arm64 go build -o out-arm64/verifyseq.exe ./scripts/verifyseq
+          GOOS=windows GOARCH=arm64 go build -o out-arm64/consoleclose.exe ./scripts/smoke/consoleclose
+          GOOS=windows GOARCH=arm64 go build -trimpath -o out-arm64/woodpile-aclfix.exe ./packaging/windows/aclfix
+          ls -la out-arm64
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: linux-packages-arm64
+          path: out-arm64/
           retention-days: 3
 
   deb:
@@ -257,4 +287,107 @@ jobs:
         if: failure()
         with:
           name: logs-portable-${{ matrix.os }}
+          path: ${{ runner.temp }}/smoke-logs
+
+  # arm64 (SPEC §6): the deb on Ubuntu arm64, then the Linux arm64 release tarball's own binary
+  # (woodpile install, and portable mode); the arm64 MSI on Windows on Arm around the Windows
+  # arm64 release zip's woodpile.exe, then the MSI hardening checks, woodpile install and
+  # portable mode. Gated in `plan` (see arm_linux / arm_windows).
+  deb-arm64:
+    name: deb and tarball on ubuntu arm64
+    needs: [plan, linux-packages]
+    if: needs.plan.outputs.arm_linux == 'true'
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: linux-packages-arm64
+          path: dist
+      - name: Unpack the tarball
+        run: |
+          chmod +x dist/verifyseq
+          tar -xzf dist/*_linux_arm64.tar.gz -C dist
+          bin=$(ls dist/woodpile_*_linux_arm64/woodpile)
+          ls -la "$(dirname "$bin")"
+          file "$bin"
+          "$bin" version
+          echo "TARBALL_BIN=$bin" >>"$GITHUB_ENV"
+      - name: deb (apt install, restart, remove, purge)
+        env:
+          VERIFYSEQ: dist/verifyseq
+          SMOKE_LOGS: ${{ runner.temp }}/smoke-logs
+        run: scripts/smoke/unix.sh deb dist/*_arm64.deb
+      - name: the tarball's binary, woodpile install / uninstall
+        env:
+          VERIFYSEQ: dist/verifyseq
+          SMOKE_LOGS: ${{ runner.temp }}/smoke-logs
+        run: scripts/smoke/unix.sh manual "$TARBALL_BIN"
+      - name: the tarball's binary, portable mode
+        env:
+          VERIFYSEQ: dist/verifyseq
+          SMOKE_LOGS: ${{ runner.temp }}/smoke-logs
+        run: scripts/smoke/portable.sh "$TARBALL_BIN"
+      # Evidence for the unit's ProcSubset=pid question: what a hardened service can see of /proc.
+      - name: procfs under the unit's sandbox (informational)
+        run: |
+          for subset in all pid; do
+            echo "== ProcSubset=$subset"
+            sudo systemd-run --quiet --wait --pipe -p DynamicUser=yes -p ProtectProc=invisible -p ProcSubset=$subset \
+              sh -c 'for f in /proc/net/udp /proc/self/net/udp /proc/net/tcp; do if head -1 "$f" >/dev/null 2>&1; then echo "readable   $f"; else echo "unreadable $f"; fi; done' || true
+          done
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: failure()
+        with:
+          name: logs-deb-arm64
+          path: ${{ runner.temp }}/smoke-logs
+
+  windows-arm64:
+    name: msi (arm64) on windows on arm, then woodpile install and portable
+    needs: [plan, linux-packages]
+    if: needs.plan.outputs.arm_windows == 'true'
+    runs-on: windows-11-arm
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: linux-packages-arm64
+          path: dist
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
+        with:
+          dotnet-version: 8.0.x
+      - name: Install WiX
+        shell: pwsh
+        run: dotnet tool install --global wix --version $env:WIX_VERSION
+      - name: Build v0.0.1 and v0.0.2 arm64 MSIs around the release zip's woodpile.exe
+        shell: pwsh
+        run: |
+          Expand-Archive (Resolve-Path dist/*_windows_arm64.zip) -DestinationPath dist/zip
+          $exe = (Get-ChildItem dist/zip -Recurse -Filter woodpile.exe).FullName
+          Get-ChildItem (Split-Path $exe)
+          & $exe version
+          foreach ($v in "0.0.1", "0.0.2") {
+            ./packaging/windows/build-msi.ps1 -Version $v -Arch arm64 -Binary $exe -AclFix dist/woodpile-aclfix.exe -OutDir "dist/v$v"
+          }
+          Copy-Item $exe dist/woodpile.exe
+      - name: MSI hardening checks (ACL reset over a hostile folder, required privileges)
+        shell: pwsh
+        run: ./scripts/smoke/msi-hardening.ps1 -Msi (Resolve-Path dist/v0.0.1/*.msi).Path -Logs "$env:RUNNER_TEMP/smoke-logs"
+      - name: msi (install, upgrade, uninstall, DELETE_LOGS)
+        shell: pwsh
+        run: ./scripts/smoke/windows.ps1 -Mode msi -Msi (Resolve-Path dist/v0.0.1/*.msi) -UpgradeMsi (Resolve-Path dist/v0.0.2/*.msi) -VerifySeq dist/verifyseq.exe -Logs "$env:RUNNER_TEMP/smoke-logs"
+      - name: woodpile install / uninstall (no package)
+        shell: pwsh
+        run: ./scripts/smoke/windows.ps1 -Mode manual -Binary dist/woodpile.exe -VerifySeq dist/verifyseq.exe -Logs "$env:RUNNER_TEMP/smoke-logs"
+      - name: portable mode (closing the console window)
+        shell: pwsh
+        run: ./scripts/smoke/portable.ps1 -Binary dist/woodpile.exe -VerifySeq dist/verifyseq.exe -ConsoleClose dist/consoleclose.exe -Logs "$env:RUNNER_TEMP/smoke-logs"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: failure()
+        with:
+          name: logs-windows-arm64
           path: ${{ runner.temp }}/smoke-logs

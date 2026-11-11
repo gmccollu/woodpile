@@ -12,9 +12,12 @@ ensure_service_account
 # The data folder holds the config, index and logs; only the service account writes it.
 # Existing folders keep their contents; ownership is reasserted so an upgrade from a
 # broken install heals.
-mkdir -p "$DATA_DIR" "$LOG_DIR"
-chown "$SVC_USER:$SVC_GROUP" "$DATA_DIR" "$LOG_DIR"
-chmod 0750 "$DATA_DIR" "$LOG_DIR"
+mkdir -p "$DATA_DIR"
+chown "$SVC_USER:$SVC_GROUP" "$DATA_DIR"
+chmod 0750 "$DATA_DIR"
+
+# The daemon's own log: a root-owned folder holding one file the daemon can write.
+prepare_log_dir
 
 chown root:wheel "$PLIST"
 chmod 0644 "$PLIST"

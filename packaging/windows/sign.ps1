@@ -51,7 +51,9 @@ switch ($Provider) {
     "azure" {
         Require-Env @("AZURE_TENANT_ID", "AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET",
             "AZURE_SIGNING_ENDPOINT", "AZURE_SIGNING_ACCOUNT", "AZURE_SIGNING_PROFILE")
-        Install-Module -Name TrustedSigning -Scope CurrentUser -Force -Repository PSGallery
+        # Pinned: review the module before raising the version.
+        Install-Module -Name TrustedSigning -RequiredVersion 0.5.8 -Scope CurrentUser -Force -Repository PSGallery
+        Import-Module TrustedSigning -RequiredVersion 0.5.8
         Invoke-TrustedSigning `
             -Endpoint $env:AZURE_SIGNING_ENDPOINT `
             -CodeSigningAccountName $env:AZURE_SIGNING_ACCOUNT `
@@ -64,7 +66,9 @@ switch ($Provider) {
     "signpath" {
         Require-Env @("SIGNPATH_API_TOKEN", "SIGNPATH_ORGANIZATION_ID", "SIGNPATH_PROJECT_SLUG",
             "SIGNPATH_SIGNING_POLICY_SLUG")
-        Install-Module -Name SignPath -Scope CurrentUser -Force -Repository PSGallery
+        # Pinned: review the module before raising the version.
+        Install-Module -Name SignPath -RequiredVersion 4.4.6 -Scope CurrentUser -Force -Repository PSGallery
+        Import-Module SignPath -RequiredVersion 4.4.6
         foreach ($p in $paths) {
             Submit-SigningRequest `
                 -ApiToken $env:SIGNPATH_API_TOKEN `

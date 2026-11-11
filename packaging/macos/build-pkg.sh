@@ -3,10 +3,13 @@
 # package (pkgbuild) and the product archive (productbuild).
 #
 #   packaging/macos/build-pkg.sh [--version 1.2.3] [--commit abc1234] [--out dist/macos]
+#                                [--universal path/to/woodpile]
 #                                [--arm64 path/to/woodpile --amd64 path/to/woodpile]
 #
-# Without --arm64/--amd64 it builds both binaries with `go build`. Build the frontend
-# first (make web) so the real UI is embedded.
+# --universal packages a universal binary as is (the release uses GoReleaser's, so the pkg
+# and the darwin archive ship the same file). --arm64/--amd64 are combined with lipo. With
+# neither, it builds both with `go build`; build the frontend first (make web) so the real
+# UI is embedded.
 #
 # Optional signing, used only when the variables are set:
 #   MACOS_APP_SIGN_IDENTITY        "Developer ID Application: ..."  signs the binary (hardened runtime)
@@ -25,6 +28,7 @@ commit=""
 out="$repo/dist/macos"
 bin_arm64=""
 bin_amd64=""
+bin_universal=""
 
 while [ $# -gt 0 ]; do
 	case "$1" in
@@ -33,7 +37,8 @@ while [ $# -gt 0 ]; do
 		--out) out=$2; shift 2 ;;
 		--arm64) bin_arm64=$2; shift 2 ;;
 		--amd64) bin_amd64=$2; shift 2 ;;
-		-h | --help) sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+		--universal) bin_universal=$2; shift 2 ;;
+		-h | --help) sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
 		*) echo "build-pkg.sh: unknown option $1" >&2; exit 2 ;;
 	esac
 done
@@ -60,7 +65,7 @@ build_one() { # goarch output
 		-o "$2" ./cmd/woodpile
 }
 
-if [ -z "$bin_arm64" ] || [ -z "$bin_amd64" ]; then
+if [ -z "$bin_universal" ] && { [ -z "$bin_arm64" ] || [ -z "$bin_amd64" ]; }; then
 	echo "==> go build darwin/arm64 and darwin/amd64 ($version, $commit)"
 	bin_arm64="$work/woodpile-arm64"
 	bin_amd64="$work/woodpile-amd64"
@@ -74,8 +79,13 @@ mkdir -p "$root/usr/local/bin" \
 	"$root/Library/LaunchDaemons" \
 	"$root/private/etc/newsyslog.d"
 
-echo "==> lipo (universal binary)"
-lipo -create -output "$root/usr/local/bin/woodpile" "$bin_arm64" "$bin_amd64"
+if [ -n "$bin_universal" ]; then
+	echo "==> using the universal binary $bin_universal"
+	cp "$bin_universal" "$root/usr/local/bin/woodpile"
+else
+	echo "==> lipo (universal binary)"
+	lipo -create -output "$root/usr/local/bin/woodpile" "$bin_arm64" "$bin_amd64"
+fi
 archs=$(lipo -archs "$root/usr/local/bin/woodpile")
 case "$archs" in
 	*x86_64*arm64* | *arm64*x86_64*) echo "    archs: $archs" ;;
@@ -96,6 +106,12 @@ fi
 install -m 0644 "$here/com.woodpile.daemon.plist" "$root/Library/LaunchDaemons/com.woodpile.daemon.plist"
 install -m 0644 "$here/com.woodpile.daemon.newsyslog.conf" "$root/private/etc/newsyslog.d/com.woodpile.daemon.conf"
 install -m 0755 "$here/uninstall.sh" "$root/usr/local/share/woodpile/uninstall.sh"
+if [ ! -f "$repo/THIRD_PARTY_NOTICES.txt" ]; then
+	echo "build-pkg.sh: THIRD_PARTY_NOTICES.txt is missing; run scripts/third_party_notices.py" >&2
+	exit 1
+fi
+install -m 0644 "$repo/LICENSE" "$root/usr/local/share/woodpile/LICENSE"
+install -m 0644 "$repo/THIRD_PARTY_NOTICES.txt" "$root/usr/local/share/woodpile/THIRD_PARTY_NOTICES.txt"
 plutil -lint "$root/Library/LaunchDaemons/com.woodpile.daemon.plist" >/dev/null
 
 scripts="$work/scripts"

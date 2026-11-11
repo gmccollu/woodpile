@@ -4,9 +4,9 @@
 # Scoop manifest. The Windows MSI and macOS .pkg are built by separate jobs in
 # .github/workflows/release.yml (GoReleaser's MSI/pkg support is a paid feature).
 #
-# Where the repo lives is not decided yet. Everything that names it comes from
-# these environment variables, so nothing in this file has to change:
-#   WOODPILE_OWNER     user or org that owns the repo        (default: OWNER)
+# Everything that names the repo comes from these environment variables (the release
+# workflow sets them from the repo it runs in), so a fork or move needs no edit here:
+#   WOODPILE_OWNER     user or org that owns the repo        (default: gmccollu)
 #   WOODPILE_REPO      repo name                             (default: woodpile)
 #   GITHUB_SERVER_URL  set by Actions; https://github.com or a GitHub Enterprise Server URL
 #   TAP_GITHUB_TOKEN   token that can push to OWNER/homebrew-tap and OWNER/scoop-bucket.
@@ -19,7 +19,7 @@ version: 2
 project_name: woodpile
 
 env:
-  - WOODPILE_OWNER={{ envOrDefault "WOODPILE_OWNER" "OWNER" }}
+  - WOODPILE_OWNER={{ envOrDefault "WOODPILE_OWNER" "gmccollu" }}
   - WOODPILE_REPO={{ envOrDefault "WOODPILE_REPO" "woodpile" }}
   - WOODPILE_SERVER={{ envOrDefault "GITHUB_SERVER_URL" "https://github.com" }}
   - TAP_GITHUB_TOKEN={{ envOrDefault "TAP_GITHUB_TOKEN" "" }}
@@ -27,7 +27,9 @@ env:
 before:
   hooks:
     # The UI is embedded by Go, so it has to be built first. Skipped until web/ has a package.json.
-    - sh -c 'if [ -f web/package.json ]; then cd web && npm ci && npm run build; else echo "web/package.json not found; skipping the frontend build"; fi'
+    # The release workflow builds web/dist in its own job (no secrets, npm ci --ignore-scripts) and sets
+    # WOODPILE_WEB_PREBUILT=1, so no npm code runs where the release tokens are.
+    - sh -c 'if [ -n "$WOODPILE_WEB_PREBUILT" ]; then test -f web/dist/index.html && echo "using the prebuilt web/dist"; elif [ -f web/package.json ]; then cd web && npm ci && npm run build; else echo "web/package.json not found; skipping the frontend build"; fi'
 
 builds:
   - id: woodpile
@@ -43,6 +45,22 @@ builds:
     goarch: [amd64, arm64]
     mod_timestamp: "{{ .CommitTimestamp }}"
 
+  # The MSI's data-folder ACL reset (packaging/windows/aclfix), run by the MSI as a custom
+  # action. Built here so the release's Windows binaries all come from one build; it isn't
+  # archived or shipped on its own.
+  - id: aclfix
+    main: ./packaging/windows/aclfix
+    binary: woodpile-aclfix
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+    goos: [windows]
+    goarch: [amd64, arm64]
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
 universal_binaries:
   # One macOS binary for arm64 + x86_64; it replaces the per-arch darwin binaries.
   - id: woodpile-universal
@@ -50,6 +68,8 @@ universal_binaries:
     replace: true
     mod_timestamp: "{{ .CommitTimestamp }}"
 
+# The archives double as the portable downloads: unpack, double-click woodpile, and its
+# data goes in woodpile-data next to it. Each one unpacks into a folder of its own.
 archives:
   - id: woodpile
     ids: [woodpile, woodpile-universal]
@@ -59,10 +79,12 @@ archives:
         formats: [zip]
     name_template: >-
       {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ if eq .Arch "all" }}universal{{ else }}{{ .Arch }}{{ end }}
+    wrap_in_directory: true
     files:
+      - src: packaging/portable/README.txt
+        strip_parent: true
       - LICENSE
-      - README.md
-      - docs/install.md
+      - THIRD_PARTY_NOTICES.txt
 
 checksum:
   name_template: checksums.txt
@@ -109,6 +131,10 @@ nfpms:
           mode: 0644
       - src: LICENSE
         dst: /usr/share/doc/woodpile/LICENSE
+        file_info:
+          mode: 0644
+      - src: THIRD_PARTY_NOTICES.txt
+        dst: /usr/share/doc/woodpile/THIRD_PARTY_NOTICES.txt
         file_info:
           mode: 0644
       - src: docs/install.md
@@ -168,8 +194,18 @@ release:
   github:
     owner: "{{ .Env.WOODPILE_OWNER }}"
     name: "{{ .Env.WOODPILE_REPO }}"
+  # Created as a draft: the release workflow attaches the MSIs and the pkg, adds them to
+  # checksums.txt and only then publishes it, so nobody sees a half-filled release (and it
+  # works with GitHub's immutable releases, which forbid adding assets after publishing).
+  draft: true
+  replace_existing_draft: true
+  # Tags with a prerelease part (v0.9.0-rc1) become GitHub prereleases.
   prerelease: auto
+  # The body comes from CHANGELOG.md (--release-notes); this goes under it.
   footer: |-
-    The Windows MSI (`woodpile_*_windows_*.msi`) and macOS installer (`woodpile_*_macos_universal.pkg`)
-    are attached by separate jobs a few minutes after this release is created, and `checksums.txt`
-    is updated to include them. Installers are unsigned for now; see docs/install.md.
+    ---
+    **Downloads:** the MSI (Windows), `.pkg` (macOS), `.deb` / `.rpm` (Linux) install Woodpile as a service.
+    The `.zip` / `.tar.gz` archives are the portable version: unpack, double-click `woodpile`, and its data
+    goes in `woodpile-data` next to it. Verify downloads against `checksums.txt`.
+    The installers aren't signed yet, so expect a SmartScreen or Gatekeeper prompt the first time; see the
+    [user guide]({{ .Env.WOODPILE_SERVER }}/{{ .Env.WOODPILE_OWNER }}/{{ .Env.WOODPILE_REPO }}/blob/{{ .Tag }}/docs/user-guide.md).

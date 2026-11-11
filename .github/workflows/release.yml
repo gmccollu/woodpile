@@ -1,29 +1,47 @@
-# Release: on a v* tag, build everything and attach it to the GitHub release.
+# Release: on a v* tag, build everything, attach it to a draft GitHub release, then publish it.
 #
-#   goreleaser   archives, checksums.txt, deb/rpm, Homebrew cask, Scoop manifest; creates the release
-#   msi          Windows MSI (x64 + arm64) with WiX v5               -> attached to the release
-#   pkg          macOS universal .pkg                                -> attached to the release
-#   checksums    adds the MSI and pkg hashes to checksums.txt
+#   web         builds web/dist with `npm ci --ignore-scripts` and checks THIRD_PARTY_NOTICES.txt.
+#               No secrets and read-only, so no npm code ever runs next to a release token.
+#   goreleaser  archives (also the portable downloads), deb/rpm, checksums.txt and the cask/Scoop
+#               manifests from that web/dist; creates the release as a DRAFT with the notes from
+#               CHANGELOG.md; hands its Windows and macOS binaries to the installer jobs
+#   msi         Windows MSIs (x64 + arm64) around GoReleaser's own woodpile.exe -> the draft
+#   pkg         macOS .pkg around GoReleaser's own universal binary             -> the draft
+#   bench       `woodpile bench` on the release's linux/amd64 binary, 10 min at 10,000 msg/s
+#               (SPEC §7)                                                       -> the notes
+#   publish     adds the MSI and pkg hashes to checksums.txt, appends the bench results, attests
+#               build provenance (public repos), and publishes. Tags with a prerelease part
+#               (v0.9.0-rc1) become GitHub prereleases; the rest become the latest release.
 #
-# Runs on github.com and GitHub Enterprise Server: only standard actions/* actions, tools via
-# `go run` / `dotnet tool`, uploads with the gh CLI (preinstalled on hosted runners; self-hosted
-# runners need it on PATH).
+# One release ships one binary per platform: the MSI and pkg jobs package the files GoReleaser
+# built (checked against the SHA-256 GoReleaser's job reported), not rebuilds.
 #
-# Configuration (Settings -> Secrets and variables -> Actions). Everything is optional; with
-# nothing set, the release is built unsigned and the tap/bucket are not updated.
-#   secrets.TAP_GITHUB_TOKEN          push access to OWNER/homebrew-tap and OWNER/scoop-bucket
+# Works on a private repo (it uses only this run's GITHUB_TOKEN; provenance is skipped there,
+# since artifact attestations need a public repo on this plan) and with GitHub's immutable
+# releases (nothing is added after publishing). Re-running a failed job is safe: uploads use
+# --clobber and the checksum update is idempotent. Until publish runs, the draft is visible
+# only to the repo's maintainers.
+#
+# Hardening: read-only token by default, write only for the jobs that upload; no Go or npm
+# caches; checkout without persisted credentials; actions pinned by commit SHA (the version
+# is in the comment; update both together).
+#
+# Secrets live in the `release` environment (Settings -> Environments -> release, deployment
+# restricted to v* tags), used by the goreleaser, msi and pkg jobs. All optional; with nothing
+# set (the 1.0 setup) the release is unsigned and the Homebrew tap and Scoop bucket aren't updated.
+#   TAP_GITHUB_TOKEN                  push access to <owner>/homebrew-tap and <owner>/scoop-bucket
 #   Windows signing, Azure Trusted Signing:
-#     secrets.AZURE_TENANT_ID, secrets.AZURE_CLIENT_ID, secrets.AZURE_CLIENT_SECRET
-#     vars.AZURE_SIGNING_ENDPOINT, vars.AZURE_SIGNING_ACCOUNT, vars.AZURE_SIGNING_PROFILE
+#     secrets AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET
+#     vars AZURE_SIGNING_ENDPOINT, AZURE_SIGNING_ACCOUNT, AZURE_SIGNING_PROFILE
 #   Windows signing, SignPath (used if Azure isn't configured):
-#     secrets.SIGNPATH_API_TOKEN
-#     vars.SIGNPATH_ORGANIZATION_ID, vars.SIGNPATH_PROJECT_SLUG, vars.SIGNPATH_SIGNING_POLICY_SLUG
+#     secret SIGNPATH_API_TOKEN
+#     vars SIGNPATH_ORGANIZATION_ID, SIGNPATH_PROJECT_SLUG, SIGNPATH_SIGNING_POLICY_SLUG
 #   macOS signing and notarization:
-#     secrets.MACOS_CERTS_P12           base64 .p12 holding the Developer ID Application and Installer certs
-#     secrets.MACOS_CERTS_PASSWORD
-#     vars.MACOS_APP_SIGN_IDENTITY      "Developer ID Application: <name> (<team>)"
-#     vars.MACOS_INSTALLER_SIGN_IDENTITY "Developer ID Installer: <name> (<team>)"
-#     secrets.APPLE_ID, secrets.APPLE_APP_PASSWORD (app-specific password), vars.APPLE_TEAM_ID
+#     secrets MACOS_CERTS_P12 (base64 .p12 with the Developer ID Application and Installer certs),
+#       MACOS_CERTS_PASSWORD, APPLE_ID, APPLE_APP_PASSWORD (app-specific password)
+#     vars MACOS_APP_SIGN_IDENTITY, MACOS_INSTALLER_SIGN_IDENTITY, APPLE_TEAM_ID
+#   Note: signing changes the binary, so when it's turned on the MSI's and pkg's binaries will
+#   differ from the archives' until signing moves into the goreleaser job.
 name: Release
 
 on:
@@ -31,7 +49,7 @@ on:
     tags: ["v*"]
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release-${{ github.ref }}
@@ -43,78 +61,146 @@ env:
   WIX_VERSION: "5.0.2"
 
 jobs:
-  goreleaser:
+  web:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
-          fetch-depth: 0
+          persist-credentials: false
 
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-
-      - name: Set up Node
-        if: hashFiles('web/package.json') != ''
-        uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-          cache-dependency-path: web/package-lock.json
+          package-manager-cache: false
 
-      # The before hook in .goreleaser.yaml builds the frontend.
-      - name: GoReleaser
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      # No install scripts run (none of the UI's packages needs one).
+      - name: Build the UI
+        working-directory: web
+        run: |
+          npm ci --ignore-scripts
+          npm run build
+          test -f dist/index.html
+
+      # Every archive and installer ships this file, so it must match what's compiled in.
+      - name: THIRD_PARTY_NOTICES.txt is current
+        run: scripts/third_party_notices.py --check
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: web-dist
+          path: web/dist/
+          if-no-files-found: error
+          retention-days: 3
+
+  goreleaser:
+    needs: web
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+    outputs:
+      sha256: ${{ steps.collect.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # Fails a release tag whose CHANGELOG.md section is missing or undated, before anything is built.
+      - name: Release notes from CHANGELOG.md
+        run: |
+          scripts/release-notes.sh "$GITHUB_REF_NAME" >"$RUNNER_TEMP/notes.md"
+          cat "$RUNNER_TEMP/notes.md"
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: web-dist
+          path: web/dist
+
+      # WOODPILE_WEB_PREBUILT: the before hook uses web/dist as is instead of running npm.
+      - name: GoReleaser (creates the draft release)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           WOODPILE_OWNER: ${{ github.repository_owner }}
           WOODPILE_REPO: ${{ github.event.repository.name }}
+          WOODPILE_WEB_PREBUILT: "1"
           TAP_GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
-        run: go run github.com/goreleaser/goreleaser/v2@"$GORELEASER_VERSION" release --clean
+        run: >-
+          go run github.com/goreleaser/goreleaser/v2@"$GORELEASER_VERSION" release --clean
+          --release-notes "$RUNNER_TEMP/notes.md"
+
+      - name: Collect the binaries for the installers and the bench
+        id: collect
+        run: |
+          mkdir -p bins
+          pick() { # type goos goarch id -> path
+            jq -er --arg t "$1" --arg o "$2" --arg a "$3" --arg i "$4" \
+              '[.[] | select(.type == $t and .goos == $o and .goarch == $a and .extra.ID == $i) | .path][0]' dist/artifacts.json
+          }
+          for a in amd64 arm64; do
+            mkdir -p "bins/windows-$a"
+            cp "$(pick Binary windows "$a" woodpile)" "bins/windows-$a/woodpile.exe"
+            cp "$(pick Binary windows "$a" aclfix)" "bins/windows-$a/woodpile-aclfix.exe"
+          done
+          mkdir -p bins/darwin-universal bins/linux-amd64
+          cp "$(pick 'Universal Binary' darwin all woodpile-universal)" bins/darwin-universal/woodpile
+          cp "$(pick Binary linux amd64 woodpile)" bins/linux-amd64/woodpile
+          (cd bins && find . -type f | sort | xargs sha256sum) | tee "$RUNNER_TEMP/sha256.txt"
+          {
+            echo "sha256<<WOODPILE_SHA_EOF"
+            cat "$RUNNER_TEMP/sha256.txt"
+            echo "WOODPILE_SHA_EOF"
+          } >>"$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-binaries
+          path: bins/
+          if-no-files-found: error
+          retention-days: 3
 
   msi:
     needs: goreleaser
     runs-on: windows-latest
+    environment: release
+    permissions:
+      contents: write
     defaults:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v5
-
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
-          go-version-file: go.mod
+          persist-credentials: false
 
-      - name: Set up Node
-        if: hashFiles('web/package.json') != ''
-        uses: actions/setup-node@v5
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-          cache-dependency-path: web/package-lock.json
+          name: release-binaries
+          path: bins
 
-      - uses: actions/setup-dotnet@v5
+      - name: Check the binaries are GoReleaser's
+        env:
+          SHA256: ${{ needs.goreleaser.outputs.sha256 }}
+        run: cd bins && printf '%s\n' "$SHA256" | grep 'windows-' | sha256sum -c -
+
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
         with:
           dotnet-version: 8.0.x
 
       - name: Install WiX
         run: dotnet tool install --global wix --version "$WIX_VERSION"
-
-      - name: Build the frontend
-        if: hashFiles('web/package.json') != ''
-        working-directory: web
-        run: |
-          npm ci
-          npm run build
-
-      - name: Build woodpile.exe (amd64, arm64)
-        run: |
-          version=${GITHUB_REF_NAME#v}
-          commit=$(git rev-parse --short HEAD)
-          for arch in amd64 arm64; do
-            CGO_ENABLED=0 GOOS=windows GOARCH=$arch go build -trimpath \
-              -ldflags "-s -w -X main.version=$version -X main.commit=$commit" \
-              -o "dist/windows/$arch/woodpile.exe" ./cmd/woodpile
-          done
 
       # Secrets stay out of every step except the ones that sign.
       - name: Check for signing configuration
@@ -145,7 +231,7 @@ jobs:
           SIGNPATH_SIGNING_POLICY_SLUG: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
         run: >-
           ./packaging/windows/sign.ps1 -Provider ${{ steps.signing.outputs.provider }}
-          -Files dist/windows/amd64/woodpile.exe, dist/windows/arm64/woodpile.exe
+          -Files bins/windows-amd64/woodpile.exe, bins/windows-arm64/woodpile.exe
 
       - name: Build the MSIs
         shell: pwsh
@@ -153,8 +239,8 @@ jobs:
           $url = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY"
           foreach ($a in @(@{ Arch = "x64"; Go = "amd64" }, @{ Arch = "arm64"; Go = "arm64" })) {
             ./packaging/windows/build-msi.ps1 -Version $env:GITHUB_REF_NAME -Arch $a.Arch `
-              -Binary "dist/windows/$($a.Go)/woodpile.exe" -OutDir dist/msi -ProjectUrl $url `
-              -WixVersion $env:WIX_VERSION
+              -Binary "bins/windows-$($a.Go)/woodpile.exe" -AclFix "bins/windows-$($a.Go)/woodpile-aclfix.exe" `
+              -OutDir dist/msi -ProjectUrl $url -WixVersion $env:WIX_VERSION
           }
 
       - name: Sign the MSIs (optional)
@@ -175,38 +261,31 @@ jobs:
           ./packaging/windows/sign.ps1 -Provider ${{ steps.signing.outputs.provider }}
           -Files (Get-ChildItem dist/msi/*.msi).FullName
 
-      - name: Attach the MSIs to the release
+      - name: Attach the MSIs to the draft release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_ENTERPRISE_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          export GH_HOST=${GITHUB_SERVER_URL#https://}
-          gh release upload "$GITHUB_REF_NAME" dist/msi/*.msi --clobber -R "$GITHUB_REPOSITORY"
+        run: gh release upload "$GITHUB_REF_NAME" dist/msi/*.msi --clobber -R "$GITHUB_REPOSITORY"
 
   pkg:
     needs: goreleaser
     runs-on: macos-latest
+    environment: release
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v5
-
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
-          go-version-file: go.mod
+          persist-credentials: false
 
-      - name: Set up Node
-        if: hashFiles('web/package.json') != ''
-        uses: actions/setup-node@v5
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-          cache-dependency-path: web/package-lock.json
+          name: release-binaries
+          path: bins
 
-      - name: Build the frontend
-        if: hashFiles('web/package.json') != ''
-        working-directory: web
-        run: |
-          npm ci
-          npm run build
+      - name: Check the binary is GoReleaser's
+        env:
+          SHA256: ${{ needs.goreleaser.outputs.sha256 }}
+        run: cd bins && printf '%s\n' "$SHA256" | grep 'darwin-universal' | shasum -a 256 -c -
 
       - name: Check for signing configuration
         id: signing
@@ -236,6 +315,7 @@ jobs:
             -T /usr/bin/codesign -T /usr/bin/productbuild -T /usr/bin/productsign
           rm -f "$RUNNER_TEMP/certs.p12"
           security set-key-partition-list -S apple-tool:,apple: -s -k "$kc_pass" "$keychain" >/dev/null
+          # shellcheck disable=SC2046 # one keychain path per word
           security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
           echo "MACOS_KEYCHAIN=$keychain" >>"$GITHUB_ENV"
 
@@ -243,7 +323,9 @@ jobs:
         env:
           MACOS_APP_SIGN_IDENTITY: ${{ steps.signing.outputs.sign == 'true' && vars.MACOS_APP_SIGN_IDENTITY || '' }}
           MACOS_INSTALLER_SIGN_IDENTITY: ${{ steps.signing.outputs.sign == 'true' && vars.MACOS_INSTALLER_SIGN_IDENTITY || '' }}
-        run: packaging/macos/build-pkg.sh --version "$GITHUB_REF_NAME" --out dist/macos
+        run: >-
+          packaging/macos/build-pkg.sh --version "$GITHUB_REF_NAME"
+          --universal bins/darwin-universal/woodpile --out dist/macos
 
       - name: Notarize and staple (optional)
         if: steps.signing.outputs.notarize == 'true'
@@ -262,29 +344,109 @@ jobs:
         if: always() && steps.signing.outputs.sign == 'true'
         run: security delete-keychain "$RUNNER_TEMP/woodpile-signing.keychain-db" || true
 
-      - name: Attach the .pkg to the release
+      - name: Attach the .pkg to the draft release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_ENTERPRISE_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          export GH_HOST=${GITHUB_SERVER_URL#https://}
-          gh release upload "$GITHUB_REF_NAME" dist/macos/*.pkg --clobber -R "$GITHUB_REPOSITORY"
+        run: gh release upload "$GITHUB_REF_NAME" dist/macos/*.pkg --clobber -R "$GITHUB_REPOSITORY"
 
-  checksums:
-    needs: [msi, pkg]
+  bench:
+    needs: goreleaser
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      summary: ${{ steps.bench.outputs.summary }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-binaries
+          path: bins
+
+      - name: Check the binary is GoReleaser's
+        env:
+          SHA256: ${{ needs.goreleaser.outputs.sha256 }}
+        run: |
+          cd bins && printf '%s\n' "$SHA256" | grep 'linux-amd64' | sha256sum -c -
+          chmod +x linux-amd64/woodpile
+
+      # The same UDP buffer limit the deb/rpm sets (packaging/linux/60-woodpile.conf).
+      - name: Raise net.core.rmem_max as the packages do
+        run: sudo sysctl -w net.core.rmem_max=33554432
+
+      - name: woodpile bench (10 min, 10,000 msg/s, UDP)
+        id: bench
+        run: |
+          set +e
+          bins/linux-amd64/woodpile bench --duration 10m --rate 10000 --proto udp --json >"$RUNNER_TEMP/bench.json"
+          status=$?
+          set -e
+          cat "$RUNNER_TEMP/bench.json"
+          if [ "$status" -eq 0 ]; then verdict="every message stored exactly once"; else verdict="**FAILED** (exit $status)"; fi
+          {
+            echo "summary<<WOODPILE_BENCH_EOF"
+            echo "### Benchmark"
+            echo
+            echo "\`woodpile bench --duration 10m --rate 10000 --proto udp\` on a GitHub-hosted \`ubuntu-latest\` runner ($(nproc) vCPU, $(free -g | awk '/^Mem:/ {print $2}') GiB RAM): $verdict."
+            echo
+            echo "| Protocol | Sent | Stored | Missing | Duplicates | Dropped (store) | Kernel drops | Achieved rate |"
+            echo "|---|---:|---:|---:|---:|---:|---:|---:|"
+            jq -r '.[] | "| \(.Proto) | \(.Sent) | \(.Stored) | \(.Missing) | \(.Duplicates) | \(.StoreDropped) | \(if .KernelDropsVisible then .KernelDrops else "n/a" end) | \(.AchievedRate | floor) msg/s |"' "$RUNNER_TEMP/bench.json"
+            echo "WOODPILE_BENCH_EOF"
+          } >>"$GITHUB_OUTPUT"
+          exit "$status"
+
+  publish:
+    needs: [goreleaser, msi, pkg, bench]
+    # The bench result goes into the notes either way; a failed bench shows as a red job but
+    # doesn't hold the release (the owner decides).
+    if: ${{ !cancelled() && needs.goreleaser.result == 'success' && needs.msi.result == 'success' && needs.pkg.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write # build provenance
+      attestations: write
     steps:
       - name: Add the installers to checksums.txt
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_ENTERPRISE_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          export GH_HOST=${GITHUB_SERVER_URL#https://}
           mkdir release && cd release
-          gh release download "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" -p checksums.txt -p '*.msi' -p '*.pkg'
+          gh release download "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY"
           # Idempotent on re-runs: drop any earlier installer lines first.
           grep -v -E '\.(msi|pkg)$' checksums.txt >checksums.new || true
           sha256sum -- *.msi *.pkg >>checksums.new
           mv checksums.new checksums.txt
-          cat checksums.txt
+          # Every asset is now listed, and every listed file matches.
+          sha256sum -c checksums.txt
+          for f in *; do [ "$f" = checksums.txt ] || grep -q "  $f\$" checksums.txt || { echo "not in checksums.txt: $f"; exit 1; }; done
           gh release upload "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" checksums.txt --clobber
+
+      # Artifact attestations need a public repo (or GitHub Enterprise Cloud) on this plan.
+      - name: Build provenance for every file in checksums.txt
+        if: ${{ !github.event.repository.private }}
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-checksums: release/checksums.txt
+
+      - name: Append the benchmark to the notes
+        if: needs.bench.outputs.summary != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BENCH: ${{ needs.bench.outputs.summary }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" --json body -q .body >notes.md
+          if ! grep -q '^### Benchmark' notes.md; then
+            printf '\n\n%s\n' "$BENCH" >>notes.md
+            gh release edit "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" --notes-file notes.md
+          fi
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          case "$GITHUB_REF_NAME" in
+            *-*) gh release edit "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" --draft=false --prerelease ;;
+            *)   gh release edit "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" --draft=false --prerelease=false --latest ;;
+          esac
+          gh release view "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" --json url,isDraft,isPrerelease,assets \
+            -q '"\(.url) draft=\(.isDraft) prerelease=\(.isPrerelease) assets=\(.assets | length)"'

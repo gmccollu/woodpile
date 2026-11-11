@@ -1,0 +1,107 @@
+<#
+.SYNOPSIS
+  MSI hardening checks on a disposable Windows CI machine (installs Woodpile for real,
+  as an administrator; never run it on a machine you care about).
+
+.DESCRIPTION
+  Before installing, it plants what a non-administrator could leave in C:\ProgramData:
+  a Woodpile folder granting Everyone full control, a child with its own Everyone grant,
+  a junction to a folder outside, and a hard link to a file outside. Then it installs the
+  MSI and checks:
+    - the data folder: owner Administrators, protected DACL with only SYSTEM, Administrators
+      and NT SERVICE\Woodpile (modify);
+    - every child: owner Administrators, only inherited ACEs (no Everyone);
+    - the junction and the hard link are gone, and their targets and ACLs are untouched;
+    - the service's required privileges are SeChangeNotifyPrivilege only (no
+      SeImpersonatePrivilege), and it runs;
+  then uninstalls with DELETE_LOGS=1.
+
+.EXAMPLE
+  ./scripts/smoke/msi-hardening.ps1 -Msi dist/msi/woodpile_0.0.0_windows_amd64.msi
+#>
+param(
+    [Parameter(Mandatory = $true)][string]$Msi,
+    [string]$Logs = "$env:RUNNER_TEMP\smoke-logs"
+)
+$ErrorActionPreference = "Stop"
+New-Item -ItemType Directory -Force $Logs | Out-Null
+$Msi = (Resolve-Path $Msi).Path
+$Data = "C:\ProgramData\Woodpile"
+$Outside = Join-Path $env:RUNNER_TEMP "woodpile-outside"
+$ServiceSid = "S-1-5-80-276366627-2944175572-1807786847-528126453-1705305312"
+$WantDacl = "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1301bf;;;$ServiceSid)"  # "D:PAI(" counts too
+$passes = 0
+
+function Ok($m) { $script:passes++; Write-Host "PASS $m" }
+function Die($m) { Write-Host "FAIL $m"; exit 1 }
+function Msiexec([string[]]$a, [string]$log) {
+    $p = Start-Process msiexec.exe -Wait -PassThru -ArgumentList ($a + @("/qn", "/l*v", "`"$log`""))
+    if ($p.ExitCode -ne 0) { Copy-Item $log $Logs -ErrorAction SilentlyContinue; Die "msiexec $($a -join ' ') exited $($p.ExitCode)" }
+}
+function DaclOf([string]$path) { ("D:" + ((Get-Acl -LiteralPath $path).Sddl -split "D:", 2)[1]) -replace "^D:PAI\(", "D:P(" }
+
+if (Test-Path $Data) { Die "$Data exists before the test" }
+
+Write-Host "==> plant a hostile data folder"
+New-Item -ItemType Directory -Force "$Data\logs\10.0.0.1", $Outside | Out-Null
+Set-Content "$Data\logs\10.0.0.1\2026-11-11.log" "kept"
+Set-Content (Join-Path $Outside "secret.txt") "outside"
+icacls $Data /grant "*S-1-1-0:(OI)(CI)F" | Out-Null
+icacls "$Data\logs" /grant "*S-1-1-0:F" | Out-Null
+cmd /c mklink /J "$Data\evil" $Outside | Out-Null
+cmd /c mklink /H "$Data\woodpile.toml" (Join-Path $Outside "secret.txt") | Out-Null
+if (-not (Test-Path "$Data\evil") -or -not (Test-Path "$Data\woodpile.toml")) { Die "couldn't plant the junction and the hard link" }
+$outsideBefore = (Get-Acl $Outside).Sddl
+$secretBefore = (Get-Acl (Join-Path $Outside "secret.txt")).Sddl
+
+Write-Host "==> install $Msi"
+Msiexec @("/i", "`"$Msi`"") (Join-Path $Logs "hardening-install.log")
+
+$sd = Get-Acl $Data
+Write-Host "data folder: $($sd.Sddl)"
+if ($sd.Owner -ne "BUILTIN\Administrators") { Die "data folder owner is $($sd.Owner)" }
+if ((DaclOf $Data) -ne $WantDacl) { Die "data folder DACL is $(DaclOf $Data), want $WantDacl" }
+Ok "data folder: owner Administrators, exactly the protected DACL"
+
+# What was there before the install: reset to owner Administrators and inherited ACEs only.
+# (Files the service creates once it runs are owned by its own SID, which is fine.)
+$bad = @()
+foreach ($p in @("$Data\logs", "$Data\logs\10.0.0.1", "$Data\logs\10.0.0.1\2026-11-11.log")) {
+    $a = Get-Acl -LiteralPath $p
+    if ($a.Owner -ne "BUILTIN\Administrators" -or @($a.Access | Where-Object { -not $_.IsInherited }).Count -ne 0 -or $a.AreAccessRulesProtected) {
+        $bad += "${p}: $($a.Owner) $($a.Sddl)"
+    }
+}
+Get-ChildItem -LiteralPath $Data -Recurse -Force | ForEach-Object {
+    $a = Get-Acl -LiteralPath $_.FullName
+    if ($a.Sddl -match ";;;WD\)") { $bad += "$($_.FullName) still grants Everyone: $($a.Sddl)" }
+}
+if ($bad.Count) { Die "children not reset:`n$($bad -join "`n")" }
+Ok "existing children: owner Administrators, inherited ACEs only; nothing grants Everyone"
+
+if (Test-Path "$Data\evil") { Die "the junction is still there" }
+if (Test-Path "$Data\woodpile.toml") {
+    if ((Get-Content "$Data\woodpile.toml" -Raw) -match "outside") { Die "the hard link is still there" }
+}
+if ((Get-Content (Join-Path $Outside "secret.txt") -Raw) -notmatch "outside") { Die "the hard link's target was changed" }
+if ((Get-Acl $Outside).Sddl -ne $outsideBefore) { Die "the junction's target ACL changed" }
+if ((Get-Acl (Join-Path $Outside "secret.txt")).Sddl -ne $secretBefore) { Die "the hard link's target ACL changed" }
+if ((Get-Content "$Data\logs\10.0.0.1\2026-11-11.log" -Raw) -notmatch "kept") { Die "existing logs were lost" }
+Ok "junction and hard link removed; their targets untouched; existing logs kept"
+
+$privs = (sc.exe qprivs Woodpile) -join "`n"
+Write-Host $privs
+if ($privs -notmatch "SeChangeNotifyPrivilege" -or $privs -match "SeImpersonatePrivilege") { Die "required privileges: $privs" }
+Ok "required privileges: SeChangeNotifyPrivilege only"
+
+for ($i = 0; $i -lt 30 -and (Get-Service Woodpile).Status -ne "Running"; $i++) { Start-Sleep 1 }
+if ((Get-Service Woodpile).Status -ne "Running") { Die "the service isn't running" }
+Ok "the service runs with them"
+
+Write-Host "==> uninstall with DELETE_LOGS=1"
+Msiexec @("/x", "`"$Msi`"", "DELETE_LOGS=1") (Join-Path $Logs "hardening-uninstall.log")
+if (Test-Path $Data) { Die "$Data is still there after DELETE_LOGS=1" }
+if (-not (Test-Path (Join-Path $Outside "secret.txt"))) { Die "uninstall removed a file outside the data folder" }
+Ok "uninstall removed the data folder and nothing outside it"
+
+Write-Host "`n$passes checks passed"
