@@ -101,7 +101,7 @@ normalising (dedupe, sort). `listeners.allowlist` entries may be a bare IP or a 
                 "tcp": {"enabled": true, "addr": "0.0.0.0", "port": 514},
                 "allowlist": []},
   "storage": {"data_dir": "...", "retention_days": 30, "retention_bytes": 21474836480, "part_bytes": 104857600},
-  "ui": {"lan_mode": false, "port": 8514},
+  "ui": {"lan_mode": false, "port": 8514, "cert_file": "", "key_file": ""},   // empty = self-signed
   "quiet": {"quiet_after_seconds": 300, "offline_after_seconds": 3600}
 }
 ```
