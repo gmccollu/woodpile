@@ -1,11 +1,7 @@
 # Pages: publish the project website (site/) with GitHub Pages.
 #
-# Manual for now. Once the repo is public and Pages is enabled (Settings → Pages →
-# Source: GitHub Actions), publish on every change to the site by adding to `on:`
-#
-#   push:
-#     branches: [main]
-#     paths: [site/**]
+# Publishes on every change to site/ on main (Pages enabled 2026-11-11, source: GitHub Actions),
+# and on demand.
 #
 # site/ is static (no build step); only these files are uploaded, not the review
 # screenshots or the test and tool folders.
@@ -14,6 +10,9 @@
 name: Pages
 
 on:
+  push:
+    branches: [main]
+    paths: ["site/**", ".github/workflows/pages.yml"]
   workflow_dispatch:
 
 permissions:
