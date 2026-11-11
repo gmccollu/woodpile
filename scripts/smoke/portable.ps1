@@ -182,14 +182,23 @@ Write-Host "==> a data folder owned by another user, with a protected ACL naming
 New-LocalUser -Name "wpother" -NoPassword -Description "Woodpile smoke test" | Out-Null
 $foreign = "C:\wp-foreign"
 Write-TestConfig $foreign
-icacls $foreign /setowner wpother /T | Out-Null
-# On the folder only: its inheritable entries then propagate to the config file
-# ((OI)(CI) on a file itself is invalid and would leave it with no entries).
-icacls $foreign /inheritance:r /grant:r "wpother:(OI)(CI)F" "${env:USERNAME}:(OI)(CI)F" "*S-1-5-18:(OI)(CI)F" | Out-Null
-icacls (Join-Path $foreign "woodpile.toml") /reset | Out-Null
+# A deterministic, protected ACL from SDDL: only wpother, the runner and SYSTEM.
+# (icacls /inheritance:r left the inherited entries in place on the arm64 image.)
+$otherSid = (New-Object System.Security.Principal.NTAccount("wpother")).Translate([System.Security.Principal.SecurityIdentifier]).Value
+$meSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$acl = Get-Acl $foreign
+$acl.SetSecurityDescriptorSddlForm("D:P(A;OICI;FA;;;$otherSid)(A;OICI;FA;;;$meSid)(A;OICI;FA;;;SY)", [System.Security.AccessControl.AccessControlSections]::Access)
+Set-Acl $foreign $acl
+icacls (Join-Path $foreign "woodpile.toml") /reset | Out-Null   # inherits the folder's three entries
+icacls $foreign /setowner wpother /T | Out-Null                 # owner needs the restore privilege icacls uses
+foreach ($item in $foreign, (Join-Path $foreign "woodpile.toml")) {
+    $sd = (Get-Acl $item).Sddl
+    Write-Host "  $item ACL: $sd"
+    if ($sd -notmatch "^O:$otherSid") { Die "$item isn't owned by wpother" }
+}
 $before = (Get-Acl $foreign).Sddl
 Write-Host "  $foreign ACL: $before"
-if (Broad $foreign) { Die "the test ACL names a broad group" }
+if ((Broad $foreign) -or (Broad (Join-Path $foreign "woodpile.toml"))) { Die "the test ACL names a broad group" }
 $out = & $exe run --service --config (Join-Path $foreign "woodpile.toml") 2>&1 | Out-String
 Write-Host $out
 if ($out -notmatch "allow-shared-data-dir" -or $out -notmatch "wpother") { Die "--service accepted a folder owned by another user" }
