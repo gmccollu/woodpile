@@ -300,8 +300,8 @@ func TestRetentionFairness(t *testing.T) {
 			t.Fatalf("deleted %+v", h)
 		}
 	}
-	// The low-disk guard takes from the flooder too, while it has closed files.
-	e.s.SetLimits(Limits{RetentionBytes: 1 << 40})
+	// The low-disk guard takes from the flooder too (still over its share of the cap),
+	// while it has closed files.
 	e.disk.total = 1 << 30
 	used := uint64(duLogs(e.dir))
 	e.disk.setOther(1<<30 - used - (10<<20 - 100<<10)) // 100 KiB under the 10 MiB reserve

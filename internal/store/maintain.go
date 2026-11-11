@@ -318,7 +318,7 @@ func (s *Store) enforceRetention(now time.Time) {
 	if !over() {
 		return
 	}
-	s.fairDelete(now, index.ReasonCap, false, func(uint64) bool { return !over() })
+	s.fairDelete(now, index.ReasonCap, false, false, s.firstSeenMap(), func(uint64) bool { return !over() })
 }
 
 // deviceBytes returns each device's bytes on disk: closed files plus its active file.
@@ -356,6 +356,10 @@ func (s *Store) deleteEntry(e *catEntry, reason index.Reason, now time.Time) boo
 	s.catMu.Unlock()
 	s.pushOps(index.FileOp{Kind: index.OpDelete, File: index.File{DeviceID: e.deviceID, Path: e.rel},
 		Deletion: &index.Deletion{Time: now, File: e.rel, DeviceID: e.deviceID, Bytes: e.size, Reason: reason}})
+	if e.name.Day >= logfile.DayOf(now) {
+		s.event(index.LevelWarn, index.KindDelete, e.deviceID, fmt.Sprintf(
+			"deleted today's logs of %s: %s (%d lines, %d bytes), %s", e.deviceID, e.rel, e.lines, e.size, reasonText(reason)))
+	}
 	return true
 }
 
@@ -420,15 +424,26 @@ func (s *Store) guardDisk(now time.Time) {
 		thr = s.minFree(total)
 		return free >= thr
 	}
-	if free < thr {
-		s.fairDelete(now, index.ReasonLowDisk, true, enough)
-	}
-	// Still short: active and parked files can't be deleted, so close the largest as
-	// parts and delete again, rather than pausing until midnight. Only if that can
+	// In order, while short: closed files (not a device's newest day); the open files
+	// of devices over their share and of new devices, closed as parts; the newest days;
+	// then anyone's open files, largest first. Open files are closed only if that can
 	// reach the reserve: otherwise it would throw away today's logs and pause anyway.
-	canReach := diskOK && free < thr && uint64(s.deletableBytes()) >= thr-free
-	for tried := map[string]bool{}; canReach && diskOK && free < thr && s.closeLargestOpen(tried); {
-		s.fairDelete(now, index.ReasonLowDisk, true, enough)
+	short := func() bool { return diskOK && free < thr }
+	var seen map[string]time.Time
+	if short() {
+		seen = s.firstSeenMap()
+		s.fairDelete(now, index.ReasonLowDisk, true, false, seen, enough)
+	}
+	canReach := short() && uint64(s.deletableBytes()) >= thr-free
+	tried := map[string]bool{}
+	for canReach && short() && s.closeOpen(now, tried, false, seen) {
+		s.fairDelete(now, index.ReasonLowDisk, true, false, seen, enough)
+	}
+	if short() {
+		s.fairDelete(now, index.ReasonLowDisk, true, true, seen, enough)
+	}
+	for canReach && short() && s.closeOpen(now, tried, true, seen) {
+		s.fairDelete(now, index.ReasonLowDisk, true, true, seen, enough)
 	}
 	if !diskOK {
 		return
@@ -590,4 +605,14 @@ func (s *Store) pruneDevices(now time.Time) {
 		}
 	}
 	s.log.Info("store: forgot devices with no logs left", "devices", len(ids), "folders_removed", removed)
+}
+
+func reasonText(r index.Reason) string {
+	switch r {
+	case index.ReasonLowDisk:
+		return "low disk space"
+	case index.ReasonCap:
+		return "over the storage cap"
+	}
+	return "older than the retention period"
 }

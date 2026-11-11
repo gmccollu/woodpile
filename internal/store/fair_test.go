@@ -174,3 +174,78 @@ func TestPruneEmptyDevices(t *testing.T) {
 		t.Fatalf("%+v %v", d, err)
 	}
 }
+
+// TestLowDiskFairOrderForOpenFiles: 200 small new senders and one busy established
+// device, all with only open files for today, and low disk. The new senders' open
+// files are closed and deleted first; the real device keeps today's file as long as
+// anything else can be deleted, and every device that lost today's data is named in
+// a warn event.
+func TestLowDiskFairOrderForOpenFiles(t *testing.T) {
+	e := newEnv(t, func(o *Options) { o.MinFreeBytes = 1 << 20; o.MinFreePercent = 1 })
+	e.disk.total = 1 << 30 // reserve 10 MiB
+	r := rand.New(rand.NewSource(9))
+	real := ip(1)
+	// The real device has a few days of history (closed and compressed) and is busy today.
+	for d := 3; d >= 1; d-- {
+		e.clock.Set(day0.Add(-time.Duration(d) * 24 * time.Hour))
+		e.write(real, fmt.Sprintf("day -%d %s", d, randText(r, 1000)))
+		e.maintain()
+	}
+	e.clock.Set(day0)
+	e.maintain()
+	for i := 0; i < 400; i++ {
+		e.write(real, "today "+randText(r, 1000))
+	}
+	for i := 0; i < 200; i++ {
+		for j := 0; j < 3; j++ {
+			e.s.Write(model.Message{Received: e.clock.Now(), Sender: spread(i), Raw: []byte(randText(r, 1000))})
+		}
+	}
+	e.maintain()
+	used := uint64(duLogs(e.dir))
+	// Short by 200 KiB: well under what the new senders' ~600 KiB of open files can free.
+	e.disk.setOther(1<<30 - used - (10<<20 - 200<<10))
+	e.maintain()
+	if e.s.Paused() {
+		t.Fatal("paused")
+	}
+	// Its older closed days may go (closed files older than a device's newest day come
+	// before anyone's open files); its newest closed day and today's file stay.
+	if got := strings.Join(e.files(real), ","); got != "2026-11-09.log.gz,2026-11-10.log" {
+		t.Fatalf("real device files %s", got)
+	}
+	hist, _ := e.idx.Deletions(bg, time.Time{}, time.Time{}, 0)
+	if len(hist) == 0 {
+		t.Fatal("nothing deleted")
+	}
+	named := map[string]bool{}
+	for _, ev := range eventsOf(t, e.idx, index.KindDelete) {
+		if ev.Level == index.LevelWarn && strings.Contains(ev.Text, "today's logs") {
+			named[ev.DeviceID] = true
+		}
+	}
+	for _, h := range hist {
+		if h.DeviceID == "192.0.2.1" && !strings.Contains(h.File, "2026-11-07") && !strings.Contains(h.File, "2026-11-08") {
+			t.Fatalf("the real device lost %s while new senders had open files", h.File)
+		}
+		if strings.Contains(h.File, "2026-11-10") && !named[h.DeviceID] {
+			t.Fatalf("no warn event for %s losing today's %s", h.DeviceID, h.File)
+		}
+	}
+	// Only when nothing else is left does the real device's today file go.
+	e.disk.setOther(1<<30 - uint64(duLogs(e.dir)) - (10<<20 - uint64(duLogs(e.dir))/2))
+	e.maintain()
+	if !named["192.0.2.1"] {
+		for _, ev := range eventsOf(t, e.idx, index.KindDelete) {
+			if ev.Level == index.LevelWarn && ev.DeviceID == "192.0.2.1" {
+				named["192.0.2.1"] = true
+			}
+		}
+	}
+	hist, _ = e.idx.Deletions(bg, time.Time{}, time.Time{}, 0)
+	for _, h := range hist {
+		if h.DeviceID == "192.0.2.1" && strings.Contains(h.File, "2026-11-10") && !named["192.0.2.1"] {
+			t.Fatal("the real device's today file went without a warn event")
+		}
+	}
+}

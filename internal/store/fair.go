@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -19,8 +20,28 @@ type fairDev struct {
 	protectAt time.Time   // files whose newest line is at or after this are its newest day
 }
 
+// firstSeenMap returns each device's first-seen time from the index. It must come
+// from there, not from the oldest data still on disk: once retention deletes a
+// device's older files, its data would look new.
+func (s *Store) firstSeenMap() map[string]time.Time {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	devs, err := s.idx.ListDevices(ctx)
+	if err != nil {
+		s.log.Warn("store: reading first-seen times failed", "err", err)
+		return nil
+	}
+	out := make(map[string]time.Time, len(devs))
+	for _, d := range devs {
+		out[d.ID] = d.FirstSeen
+	}
+	return out
+}
+
 // fairDevices collects every device with data, and its deletable closed files.
-func (s *Store) fairDevices(now time.Time, uncompressed bool) map[string]*fairDev {
+// firstSeen (from firstSeenMap) decides which devices are new; a device missing from
+// it (not in the index yet) falls back to its oldest data on disk.
+func (s *Store) fairDevices(now time.Time, uncompressed bool, firstSeen map[string]time.Time) map[string]*fairDev {
 	devs := map[string]*fairDev{}
 	first := map[string]time.Time{}
 	get := func(id string) *fairDev {
@@ -59,7 +80,11 @@ func (s *Store) fairDevices(now time.Time, uncompressed bool) map[string]*fairDe
 	}
 	for id, fd := range devs {
 		fd.protectAt = fd.protectAt.Add(-24 * time.Hour)
-		fd.isNew = !first[id].IsZero() && !first[id].Before(now.Add(-24*time.Hour))
+		f, ok := firstSeen[id]
+		if !ok || f.IsZero() {
+			f = first[id]
+		}
+		fd.isNew = !f.IsZero() && !f.Before(now.Add(-24*time.Hour))
 	}
 	return devs
 }
@@ -78,33 +103,32 @@ func (fd *fairDev) oldest(allowProtected bool) int {
 }
 
 // fairDelete deletes closed files until done reports true (given the bytes freed so
-// far), in fair-share order. Each device's fair share is the budget divided by the
-// devices with data on disk; the budget is RetentionBytes, or what's on disk if
-// that's less (under the low-disk guard the cap may be far above what fits).
+// far), in fair-share order. Each device's fair share is RetentionBytes divided by
+// the devices with data on disk.
 //
 //  1. Devices over their share, the most over first, oldest file first.
 //  2. Devices first seen in the last 24 h, oldest file first.
 //  3. Everyone, oldest file first.
-//  4. Only for the low-disk guard (uncompressed set), when nothing else is left:
+//  4. Only for the low-disk guard (lowDisk, newestDays), when nothing else is left:
 //     each device's newest day too, oldest first.
 //
 // Steps 1–3 never take a device's newest day of closed files (step 2's devices have
 // no older data). Active and parked files are never taken. So neither one flooding
 // device nor a flood spread over many new senders can wipe an established device's
 // recent history.
-func (s *Store) fairDelete(now time.Time, reason index.Reason, lowDisk bool, done func(freed uint64) bool) {
-	devs := s.fairDevices(now, lowDisk)
-	withData, total := 0, int64(0)
+func (s *Store) fairDelete(now time.Time, reason index.Reason, lowDisk, newestDays bool, firstSeen map[string]time.Time,
+	done func(freed uint64) bool) {
+	devs := s.fairDevices(now, lowDisk, firstSeen)
+	withData := 0
 	for _, fd := range devs {
 		if fd.bytes > 0 {
 			withData++
-			total += fd.bytes
 		}
 	}
 	if withData == 0 {
 		return
 	}
-	share := min(s.retentionBytes.Load(), total) / int64(withData)
+	share := s.retentionBytes.Load() / int64(withData)
 	var freed uint64
 	for !done(freed) {
 		var pick *fairDev
@@ -141,7 +165,7 @@ func (s *Store) fairDelete(now time.Time, reason index.Reason, lowDisk bool, don
 				consider(fd, i, olderFirst(fd, i))
 			}
 		}
-		if pick == nil && lowDisk { // 4: newest days too
+		if pick == nil && lowDisk && newestDays { // 4: newest days too
 			for _, fd := range devs {
 				i := fd.oldest(true)
 				consider(fd, i, olderFirst(fd, i))
@@ -160,33 +184,82 @@ func (s *Store) fairDelete(now time.Time, reason index.Reason, lowDisk bool, don
 	}
 }
 
-// closeLargestOpen closes the largest active or parked file (not yet in tried) as a
-// numbered part, so the low-disk guard can delete it. It reports whether it closed one.
-func (s *Store) closeLargestOpen(tried map[string]bool) bool {
-	var bestDev *device
-	var bestParked *catEntry
-	var bestSize int64
+// openFile is an active or parked file the low-disk guard could close as a part.
+type openFile struct {
+	dev    *device   // a live device's active file, or
+	parked *catEntry // a parked file
+	id     string
+	key    string // its path, for tried
+	size   int64
+}
+
+// closeOpen closes one active or parked file (not yet in tried) as a numbered part,
+// so the low-disk guard can delete it, picked in the fair-share order:
+//
+//  1. devices over their share, the most over first;
+//  2. devices first seen in the last 24 h;
+//  3. (only with anyone) the largest file of any device.
+//
+// Within a device, its largest open file. So a flood spread over many new senders
+// loses its own open files before an established device loses today's logs. It
+// reports whether it closed (or tried) one.
+func (s *Store) closeOpen(now time.Time, tried map[string]bool, anyone bool, firstSeen map[string]time.Time) bool {
+	devs := s.fairDevices(now, true, firstSeen)
+	withData := 0
+	for _, fd := range devs {
+		if fd.bytes > 0 {
+			withData++
+		}
+	}
+	if withData == 0 {
+		return false
+	}
+	share := s.retentionBytes.Load() / int64(withData)
+	var open []openFile
 	s.catMu.Lock()
 	for _, e := range s.cat {
-		if e.parked && !tried[e.rel] && e.size > bestSize {
-			bestParked, bestSize = e, e.size
+		if e.parked && !tried[e.rel] {
+			open = append(open, openFile{parked: e, id: e.deviceID, key: e.rel, size: e.size})
 		}
 	}
 	s.catMu.Unlock()
 	for _, d := range s.allDevices() {
 		d.mu.Lock()
-		if d.day != "" && !tried[d.rel] && d.w.size > bestSize {
-			bestDev, bestParked, bestSize = d, nil, d.w.size
+		if d.day != "" && d.w.size > 0 && !tried[d.rel] {
+			open = append(open, openFile{dev: d, id: d.id, key: d.rel, size: d.w.size})
 		}
 		d.mu.Unlock()
 	}
-	switch {
-	case bestDev != nil:
-		d := bestDev
+	rank := func(f openFile) (int, int64) { // lower tier first; within it, higher score first
+		fd := devs[f.id]
+		switch {
+		case fd != nil && fd.bytes > share:
+			return 1, fd.bytes - share
+		case fd != nil && fd.isNew:
+			return 2, f.size
+		default:
+			return 3, f.size
+		}
+	}
+	var best *openFile
+	bt, bs := 0, int64(0)
+	for i := range open {
+		t, sc := rank(open[i])
+		if t == 3 && !anyone {
+			continue
+		}
+		if best == nil || t < bt || (t == bt && (sc > bs || (sc == bs && open[i].size > best.size))) {
+			best, bt, bs = &open[i], t, sc
+		}
+	}
+	if best == nil {
+		return false
+	}
+	tried[best.key] = true
+	if d := best.dev; d != nil {
 		d.mu.Lock()
 		defer d.mu.Unlock()
-		tried[d.rel] = true
-		if d.day == "" || d.closed {
+		if d.day == "" || d.closed || d.rel != best.key {
 			return true // changed meanwhile; let the caller look again
 		}
 		if e := d.rotateLocked(rotLowDisk); e != nil {
@@ -195,31 +268,28 @@ func (s *Store) closeLargestOpen(tried map[string]bool) bool {
 			s.catMu.Unlock()
 		}
 		return true
-	case bestParked != nil:
-		s.catMu.Lock()
-		defer s.catMu.Unlock()
-		e := bestParked
-		tried[e.rel] = true
-		if !e.parked || s.cat[e.rel] != e {
-			return true
-		}
-		dir := filepath.Dir(e.abs)
-		nn := logfile.Name{Day: e.name.Day, Part: nextPart(dir, e.name.Day)}
-		nabs := filepath.Join(dir, nn.String())
-		if err := os.Rename(e.abs, nabs); err != nil {
-			s.log.Warn("store: couldn't close a parked file for the low-disk guard", "file", e.rel, "err", err)
-			return true
-		}
-		oldRel := e.rel
-		delete(s.cat, oldRel)
-		e.name, e.abs, e.rel, e.parked, e.syncing = nn, nabs, s.rel(nabs), false, false
-		s.cat[e.rel] = e
-		s.pushOps(index.FileOp{Kind: index.OpRename, OldPath: oldRel, File: e.row()})
-		s.event(index.LevelInfo, index.KindRotate, e.deviceID, fmt.Sprintf("closed %s (closed early: low disk space, %d lines, %d bytes)",
-			e.rel, e.lines, e.size))
+	}
+	s.catMu.Lock()
+	defer s.catMu.Unlock()
+	e := best.parked
+	if !e.parked || s.cat[e.rel] != e {
 		return true
 	}
-	return false
+	dir := filepath.Dir(e.abs)
+	nn := logfile.Name{Day: e.name.Day, Part: nextPart(dir, e.name.Day)}
+	nabs := filepath.Join(dir, nn.String())
+	if err := os.Rename(e.abs, nabs); err != nil {
+		s.log.Warn("store: couldn't close a parked file for the low-disk guard", "file", e.rel, "err", err)
+		return true
+	}
+	oldRel := e.rel
+	delete(s.cat, oldRel)
+	e.name, e.abs, e.rel, e.parked, e.syncing = nn, nabs, s.rel(nabs), false, false
+	s.cat[e.rel] = e
+	s.pushOps(index.FileOp{Kind: index.OpRename, OldPath: oldRel, File: e.row()})
+	s.event(index.LevelInfo, index.KindRotate, e.deviceID, fmt.Sprintf("closed %s (closed early: low disk space, %d lines, %d bytes)",
+		e.rel, e.lines, e.size))
+	return true
 }
 
 // deletableBytes is everything the low-disk guard could free by deleting closed files
