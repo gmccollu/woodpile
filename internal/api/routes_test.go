@@ -57,7 +57,8 @@ func docExamples(t *testing.T) map[string]any {
 	if err != nil {
 		t.Fatal(err)
 	}
-	doc := string(raw)
+	// A Windows checkout may convert the doc to CRLF; the parser expects LF.
+	doc := strings.ReplaceAll(string(raw), "\r\n", "\n")
 	out := map[string]any{}
 	// A route line starting "`GET /api/x`" owns the next ```json block, unless
 	// another route line comes first.
