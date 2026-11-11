@@ -106,3 +106,41 @@ func TestResetDataDir(t *testing.T) {
 		t.Error("a linked data folder was accepted")
 	}
 }
+
+// N6: a data folder an ordinary user created (here owned by BUILTIN\Users) is moved
+// aside with its contents, and a fresh one with the protected ACL takes its place.
+func TestPrepareDataDirSetsAsideUntrusted(t *testing.T) {
+	if !windows.GetCurrentProcessToken().IsElevated() {
+		t.Skip("needs an elevated administrator")
+	}
+	base := t.TempDir()
+	data := filepath.Join(base, "Woodpile")
+	if err := os.MkdirAll(filepath.Join(data, "logs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(data, "logs", "kept.log"), []byte("kept\n"), 0o644)
+	if out, err := exec.Command("icacls", data, "/setowner", "*S-1-5-32-545").CombinedOutput(); err != nil {
+		t.Fatalf("icacls /setowner: %v %s", err, out)
+	}
+	if err := PrepareDataDir(data, nil); err != nil {
+		t.Fatal(err)
+	}
+	moved, _ := filepath.Glob(data + ".untrusted-*")
+	if len(moved) != 1 {
+		t.Fatalf("moved-aside folders: %v", moved)
+	}
+	if b, err := os.ReadFile(filepath.Join(moved[0], "logs", "kept.log")); err != nil || string(b) != "kept\n" {
+		t.Errorf("the old contents weren't kept in %s: %v", moved[0], err)
+	}
+	if _, err := os.Stat(filepath.Join(data, "logs")); !os.IsNotExist(err) {
+		t.Errorf("the new folder isn't fresh: %v", err)
+	}
+	var owner, dacl windows.SECURITY_INFORMATION = windows.OWNER_SECURITY_INFORMATION, windows.DACL_SECURITY_INFORMATION
+	if got := sddlOf(t, data, owner|dacl); got != strings.Replace(DataSDDL, "G:SY", "", 1) {
+		t.Errorf("new data folder: %s, want %s", got, DataSDDL)
+	}
+	// A trusted folder (this one now) is left where it is.
+	if moved, err := SetAsideUntrusted(data, nil); err != nil || moved != "" {
+		t.Errorf("trusted folder moved: %q %v", moved, err)
+	}
+}

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -62,9 +63,7 @@ func OwnedByAdmins(path string) (bool, string, error) {
 	if a, d, _, err := o.LookupAccount(""); err == nil {
 		name = d + `\` + a
 	}
-	ok := o.IsWellKnown(windows.WinLocalSystemSid) || o.IsWellKnown(windows.WinBuiltinAdministratorsSid) ||
-		o.String() == "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464" // TrustedInstaller
-	return ok, name, nil
+	return trustedOwner(o), name, nil
 }
 
 // ResetDataDir makes the data folder dir and everything in it safe for the service:
@@ -220,4 +219,129 @@ func enablePrivileges(names ...string) {
 		tp.Privileges[0] = windows.LUIDAndAttributes{Luid: luid, Attributes: windows.SE_PRIVILEGE_ENABLED}
 		_ = windows.AdjustTokenPrivileges(tok, false, &tp, 0, nil, nil)
 	}
+}
+
+// PrepareDataDir is what the MSI runs (packaging/windows/aclfix), before the installer
+// creates the folder: SetAsideUntrusted, then create dir if needed, then ResetDataDir.
+func PrepareDataDir(dir string, logf func(format string, args ...any)) error {
+	if _, err := SetAsideUntrusted(dir, logf); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return err
+	}
+	return ResetDataDir(dir, logf)
+}
+
+// SetAsideUntrusted moves dir out of the way if it exists and isn't owned by SYSTEM,
+// Administrators or TrustedInstaller (security review N6: a folder an ordinary user
+// created before the install, whose open handles would keep their rights through an ACL
+// reset). It's renamed, not deleted, to "<dir>.untrusted-<UTC time>", so whatever is in
+// it is kept, and the caller makes a fresh one. It returns the new name, or "" when dir
+// doesn't exist or is trusted. A dir that is a link is refused; a rename that's blocked
+// (the folder is in use) is an error saying so.
+func SetAsideUntrusted(dir string, logf func(format string, args ...any)) (string, error) {
+	if logf == nil {
+		logf = func(string, ...any) {}
+	}
+	enablePrivileges("SeBackupPrivilege", "SeRestorePrivilege", "SeTakeOwnershipPrivilege")
+	h, info, err := openNoFollow(dir)
+	if errors.Is(err, windows.ERROR_FILE_NOT_FOUND) || errors.Is(err, windows.ERROR_PATH_NOT_FOUND) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("data folder %s: %w", dir, err)
+	}
+	defer windows.CloseHandle(h)
+	if info.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 || info.FileAttributes&windows.FILE_ATTRIBUTE_DIRECTORY == 0 {
+		return "", fmt.Errorf("data folder %s is a link or not a folder; remove it and install again", dir)
+	}
+	sd, err := windows.GetSecurityInfo(h, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION)
+	if err != nil {
+		return "", fmt.Errorf("data folder %s: %w", dir, err)
+	}
+	owner, _, err := sd.Owner()
+	if err != nil {
+		return "", fmt.Errorf("data folder %s: %w", dir, err)
+	}
+	if trustedOwner(owner) {
+		return "", nil
+	}
+	who := owner.String()
+	if a, d, _, err := owner.LookupAccount(""); err == nil {
+		who = d + `\` + a
+	}
+	stamp := time.Now().UTC().Format("20060102T150405Z")
+	for i := 0; i < 100; i++ {
+		target := dir + ".untrusted-" + stamp
+		if i > 0 {
+			target += fmt.Sprintf("-%d", i)
+		}
+		err = renameByHandle(h, target)
+		if err == nil {
+			logf("%s was owned by %s, not SYSTEM or Administrators: moved it to %s (its contents are kept there) and made a new one", dir, who, target)
+			return target, nil
+		}
+		if !errors.Is(err, windows.ERROR_ALREADY_EXISTS) && !errors.Is(err, windows.ERROR_FILE_EXISTS) {
+			break
+		}
+	}
+	return "", fmt.Errorf("%s is owned by %s, not SYSTEM or Administrators, and couldn't be moved aside (%v); "+
+		"close whatever is using it (or delete it, or take ownership as an administrator) and install again", dir, who, err)
+}
+
+// trustedOwner reports whether o is SYSTEM, Administrators or TrustedInstaller.
+func trustedOwner(o *windows.SID) bool {
+	return o.IsWellKnown(windows.WinLocalSystemSid) || o.IsWellKnown(windows.WinBuiltinAdministratorsSid) ||
+		o.String() == "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464" // TrustedInstaller
+}
+
+// renameByHandle renames the file or folder open as h to the absolute path target,
+// without replacing anything there (FILE_RENAME_INFO through SetFileInformationByHandle;
+// the handle was opened with DELETE and backup semantics, so a hostile DACL can't stop it).
+func renameByHandle(h windows.Handle, target string) error {
+	name, err := windows.UTF16FromString(target)
+	if err != nil {
+		return err
+	}
+	type fileRenameInfo struct {
+		ReplaceIfExists uint32
+		RootDirectory   windows.Handle
+		FileNameLength  uint32
+		FileName        [1]uint16
+	}
+	var hdr fileRenameInfo
+	off := int(unsafe.Offsetof(hdr.FileName))
+	buf := make([]byte, off+len(name)*2) // name includes the terminating NUL
+	info := (*fileRenameInfo)(unsafe.Pointer(&buf[0]))
+	info.FileNameLength = uint32((len(name) - 1) * 2)
+	copy(unsafe.Slice((*uint16)(unsafe.Pointer(&buf[off])), len(name)), name)
+	return windows.SetFileInformationByHandle(h, windows.FileRenameInfo, &buf[0], uint32(len(buf)))
+}
+
+// SharedAccess returns the broad groups (Everyone, Users, Authenticated Users,
+// Interactive) that path's DACL allows any access (re-test N2).
+func SharedAccess(path string) ([]string, error) {
+	sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+	if err != nil {
+		return nil, err
+	}
+	return SharedTrustees(sd.String()), nil
+}
+
+// OwnedByCurrentUser reports whether path's owner is this process's user.
+func OwnedByCurrentUser(path string) (bool, error) {
+	sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION)
+	if err != nil {
+		return false, err
+	}
+	o, _, err := sd.Owner()
+	if err != nil {
+		return false, err
+	}
+	tu, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil {
+		return false, err
+	}
+	return windows.EqualSid(o, tu.User.Sid), nil
 }

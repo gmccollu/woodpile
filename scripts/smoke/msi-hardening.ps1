@@ -14,7 +14,9 @@
     - the junction and the hard link are gone, and their targets and ACLs are untouched;
     - the service's required privileges are SeChangeNotifyPrivilege only (no
       SeImpersonatePrivilege), and it runs;
-  then uninstalls with DELETE_LOGS=1.
+  then uninstalls with DELETE_LOGS=1. Then (security review N6) it plants a data folder
+  owned by BUILTIN\Users and checks the install moves it aside to Woodpile.untrusted-*,
+  contents kept, and makes a fresh protected one.
 
 .EXAMPLE
   ./scripts/smoke/msi-hardening.ps1 -Msi dist/msi/woodpile_0.0.0_windows_amd64.msi
@@ -103,5 +105,24 @@ Msiexec @("/x", "`"$Msi`"", "DELETE_LOGS=1") (Join-Path $Logs "hardening-uninsta
 if (Test-Path $Data) { Die "$Data is still there after DELETE_LOGS=1" }
 if (-not (Test-Path (Join-Path $Outside "secret.txt"))) { Die "uninstall removed a file outside the data folder" }
 Ok "uninstall removed the data folder and nothing outside it"
+
+Write-Host "==> N6: a data folder an ordinary user created (owned by BUILTIN\Users)"
+New-Item -ItemType Directory -Force "$Data\logs\10.0.0.2" | Out-Null
+Set-Content "$Data\logs\10.0.0.2\2026-11-11.log" "from before"
+icacls $Data /setowner "*S-1-5-32-545" | Out-Null
+if ((Get-Acl $Data).Owner -ne "BUILTIN\Users") { Die "couldn't make BUILTIN\Users the owner" }
+Msiexec @("/i", "`"$Msi`"") (Join-Path $Logs "hardening-install-untrusted.log")
+$aside = @(Get-ChildItem C:\ProgramData -Directory -Filter "Woodpile.untrusted-*")
+if ($aside.Count -ne 1) { Die "expected one Woodpile.untrusted-* folder, found $($aside.Count)" }
+if ((Get-Content (Join-Path $aside[0].FullName "logs\10.0.0.2\2026-11-11.log") -Raw) -notmatch "from before") { Die "the old folder's contents weren't kept" }
+if (Test-Path "$Data\logs\10.0.0.2") { Die "the new data folder still has the old contents" }
+$sd = Get-Acl $Data
+if ($sd.Owner -ne "BUILTIN\Administrators" -or (DaclOf $Data) -ne $WantDacl) { Die "new data folder: $($sd.Sddl)" }
+for ($i = 0; $i -lt 30 -and (Get-Service Woodpile).Status -ne "Running"; $i++) { Start-Sleep 1 }
+if ((Get-Service Woodpile).Status -ne "Running") { Die "the service isn't running" }
+Ok "user-owned folder moved aside to $($aside[0].Name) with its contents; a fresh protected one replaced it"
+Msiexec @("/x", "`"$Msi`"", "DELETE_LOGS=1") (Join-Path $Logs "hardening-uninstall-untrusted.log")
+Remove-Item -Recurse -Force $aside[0].FullName
+if (Test-Path $Data) { Die "$Data is still there after DELETE_LOGS=1" }
 
 Write-Host "`n$passes checks passed"

@@ -134,15 +134,19 @@
          a folder someone created before the install): owner Administrators, the protected DACL above
          on the folder, and only inherited ACEs below it. Links and extra hard-link names inside are
          deleted, never followed, and a data folder that is itself a link fails the install.
-         woodpile-aclfix.exe is winacl.ResetDataDir (internal/winacl), the same code and SDDL as `woodpile install`;
-         it runs from the Binary table as SYSTEM after CreateFolders and before the service starts,
+         A folder that exists but isn't owned by SYSTEM, Administrators or TrustedInstaller (an ordinary
+         user created it first) is renamed aside to Woodpile.untrusted-<UTC time>, contents kept, and a
+         fresh one is made; if it can't be moved (in use), the install fails saying so.
+         woodpile-aclfix.exe is winacl.PrepareDataDir (internal/winacl), the same code and SDDL as
+         `woodpile install`. It runs from the Binary table as SYSTEM before CreateFolders (whose
+         PermissionEx would already make Administrators the owner) and so before the service starts,
          on install, upgrade and repair, but not on uninstall. -->
     <Binary Id="WoodpileAclFix" SourceFile="$(var.BinDir)\woodpile-aclfix.exe" />
     <CustomAction Id="WoodpileResetDataAcl" BinaryRef="WoodpileAclFix"
                   ExeCommand="&quot;[CommonAppDataFolder]Woodpile&quot;"
                   Execute="deferred" Impersonate="no" Return="check" />
     <InstallExecuteSequence>
-      <Custom Action="WoodpileResetDataAcl" After="CreateFolders" Condition="NOT (REMOVE~=&quot;ALL&quot;)" />
+      <Custom Action="WoodpileResetDataAcl" Before="CreateFolders" Condition="NOT (REMOVE~=&quot;ALL&quot;)" />
     </InstallExecuteSequence>
 
     <StandardDirectory Id="ProgramMenuFolder">

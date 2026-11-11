@@ -1,8 +1,10 @@
 //go:build windows
 
 // Command woodpile-aclfix resets the ACL of Woodpile's Windows data folder and everything
-// in it (winacl.ResetDataDir, the same reset `woodpile install` runs). The MSI runs it from its Binary table as a deferred
-// custom action, as SYSTEM, after the files are installed and before the service starts:
+// in it (winacl.PrepareDataDir: a folder an ordinary user created is moved aside first, then
+// the same reset `woodpile install` runs). The MSI runs it from its Binary table as a deferred
+// custom action, as SYSTEM, before the installer creates its folders (so it still sees who
+// created an existing one) and before the service starts:
 //
 //	woodpile-aclfix.exe "C:\ProgramData\Woodpile"
 //
@@ -22,7 +24,7 @@ func main() {
 		os.Exit(2)
 	}
 	logf := func(f string, a ...any) { fmt.Printf("woodpile-aclfix: "+f+"\n", a...) }
-	if err := winacl.ResetDataDir(os.Args[1], logf); err != nil {
+	if err := winacl.PrepareDataDir(os.Args[1], logf); err != nil {
 		fmt.Fprintln(os.Stderr, "woodpile-aclfix:", err)
 		os.Exit(1)
 	}

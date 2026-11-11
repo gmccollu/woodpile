@@ -48,26 +48,22 @@ func windowsExe() string {
 const paramsKey = `SYSTEM\CurrentControlSet\Services\` + WindowsName + `\Parameters`
 
 // prepareWindowsDataDir checks the data folder (security review M1d, M2, M3):
-// not a system or home folder, not a reparse point, empty or Woodpile's, and if
-// it already exists, owned by SYSTEM or Administrators. Then it gets the MSI's
+// not a system or home folder, not a reparse point, empty or Woodpile's; one that
+// isn't owned by SYSTEM or Administrators is moved aside first. Then it gets the MSI's
 // protected ACL, and everything inside loses any explicit entries (a planted
 // Everyone:F) and inherits it; links inside are removed (winacl.ResetDataDir).
 func prepareWindowsDataDir(h *host, dir string) error {
 	if err := checkDataDir("windows", dir, homeDirs()); err != nil {
 		return err
 	}
-	if err := h.checkDataDirContents(dir); err != nil {
+	// Like the MSI (security review N6): a folder that isn't owned by SYSTEM, Administrators
+	// or TrustedInstaller is moved aside to <dir>.untrusted-<time> (contents kept) and a
+	// fresh one is made, so its creator's open handles don't reach the new one.
+	if _, err := winacl.SetAsideUntrusted(dir, h.say); err != nil {
 		return err
 	}
-	if _, err := os.Lstat(dir); err == nil {
-		ok, owner, err := winacl.OwnedByAdmins(dir)
-		if err != nil {
-			return err
-		}
-		if !ok {
-			return fmt.Errorf("%s already exists and is owned by %s, not SYSTEM or Administrators; "+
-				"delete it (or take ownership as an administrator) and install again", dir, owner)
-		}
+	if err := h.checkDataDirContents(dir); err != nil {
+		return err
 	}
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return err

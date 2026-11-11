@@ -76,13 +76,13 @@ jobs:
     name: build deb and rpm
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 0
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: go.mod
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
@@ -99,7 +99,7 @@ jobs:
           cp "$(ls -d dist/woodpile_linux_amd64*/ | head -1)woodpile" out/woodpile
           go build -o out/verifyseq ./scripts/verifyseq
           ls -la out
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: linux-packages
           path: out/
@@ -128,8 +128,8 @@ jobs:
     needs: linux-packages
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: linux-packages
           path: dist
@@ -144,7 +144,7 @@ jobs:
           VERIFYSEQ: dist/verifyseq
           SMOKE_LOGS: ${{ runner.temp }}/smoke-logs
         run: scripts/smoke/unix.sh manual dist/woodpile
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()
         with:
           name: logs-deb
@@ -155,8 +155,8 @@ jobs:
     needs: linux-packages
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: linux-packages
           path: dist
@@ -182,7 +182,7 @@ jobs:
         run: docker exec -e VERIFYSEQ=dist/verifyseq -e SMOKE_LOGS=/src/smoke-logs fedora scripts/smoke/unix.sh rpm "$(ls dist/*.x86_64.rpm)"
       - name: woodpile install / uninstall (no package)
         run: docker exec -e VERIFYSEQ=dist/verifyseq -e SMOKE_LOGS=/src/smoke-logs fedora scripts/smoke/unix.sh manual dist/woodpile
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()
         with:
           name: logs-rpm
@@ -194,11 +194,11 @@ jobs:
     if: needs.plan.outputs.windows == 'true'
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: go.mod
-      - uses: actions/setup-dotnet@v5
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
         with:
           dotnet-version: 8.0.x
       - name: Install WiX
@@ -218,7 +218,7 @@ jobs:
       - name: woodpile install / uninstall (no package)
         shell: pwsh
         run: ./scripts/smoke/windows.ps1 -Mode manual -Binary dist/woodpile.exe -Logs "$env:RUNNER_TEMP/smoke-logs"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()
         with:
           name: logs-windows
@@ -230,8 +230,8 @@ jobs:
     if: needs.plan.outputs.macos == 'true'
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: go.mod
       - name: Build the pkg, the binary and verifyseq
@@ -250,7 +250,7 @@ jobs:
           VERIFYSEQ: dist/verifyseq
           SMOKE_LOGS: ${{ runner.temp }}/smoke-logs
         run: scripts/smoke/unix.sh manual dist/woodpile
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()
         with:
           name: logs-macos
@@ -266,8 +266,8 @@ jobs:
         os: ${{ fromJSON(needs.plan.outputs.portable_os) }}
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: go.mod
       - name: Build woodpile, verifyseq and consoleclose
@@ -287,7 +287,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: ./scripts/smoke/portable.ps1 -Logs "$env:RUNNER_TEMP/smoke-logs"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()
         with:
           name: logs-portable-${{ matrix.os }}
