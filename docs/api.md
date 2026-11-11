@@ -54,7 +54,8 @@ because this copy holds the UI port.
 `devices` counts exclude hidden devices.
 
 `GET /api/rejected` → `[{"ip": "198.51.100.7", "count_24h": 120, "last_seen": "...", "reason": "allowlist"}]` (refused
-senders). `reason` is the latest refusal's reason: `allowlist` or `per_source` (over the TCP connections-per-source limit).
+senders). `reason` is the latest refusal's reason: `allowlist`, `blocked` (on the blocklist) or `per_source` (over the TCP
+connections-per-source limit).
 Sorted by `count_24h` descending, at most 200 entries. The server tracks at most 10,000 refused IPs and evicts the
 least recently seen.
 Banner kind `device_limit` (warn): new senders are being refused because the active-device cap
@@ -71,7 +72,7 @@ as dropped. Senders that already have logs on disk are exempt from the rate. All
 id, IP or name (case-insensitive substring); `hidden` defaults to `include`. Each device:
 ```json
 [{"id": "10.1.0.1", "ip": "10.1.0.1", "name": "edge-fw-01", "group": "HQ", "hidden": false,
-  "first_seen": "...", "last_heard": "...", "status": "online",   // online | quiet | offline
+  "first_seen": "...", "last_heard": "...", "status": "online", "blocked": false,   // status: online | quiet | offline | blocked
   "msgs_per_min": 36720, "total_msgs": 9123456, "bytes_on_disk": 123456789}]
 ```
 
@@ -80,7 +81,16 @@ Hidden devices are included, with `"hidden": true`.
 `GET /api/groups` → `[{"name": "HQ", "devices": 12}]`, sorted by name, with the number of non-hidden devices in each
 (ungrouped devices aren't listed).
 
-`PATCH /api/devices/{id}` body `{"name": "...", "group": "...", "hidden": true}` (any subset) → the updated device.
+`PATCH /api/devices/{id}` body `{"name": "...", "group": "...", "hidden": true, "blocked": true}` (any subset) → the
+updated device. `blocked: true` adds the device's exact address (`/32` or `/128`) to `listeners.blocklist`;
+`blocked: false` removes that exact entry (a broader CIDR that also covers it stays, and the device stays blocked:
+the response says so with `"blocked_by": "198.51.100.0/24"`).
+
+**Blocklist** (`listeners.blocklist`, IPs or CIDRs, editable in Settings): messages and TCP connections from a
+matching sender are refused at the listener, before parsing or storage, and counted as refusals with reason
+`blocked`. The blocklist is checked before the allowlist and wins over it. A blocked device's existing logs, search
+and export are unaffected; its `status` is `blocked`, and it isn't counted as online, quiet or offline in
+`/api/stats`. Validation errors use `listeners.blocklist[i]` like the allowlist.
 
 ## Live tail
 
@@ -190,7 +200,7 @@ normalising (dedupe, sort). `listeners.allowlist` entries may be a bare IP or a 
 {
   "listeners": {"udp": {"enabled": true, "addr": "0.0.0.0", "port": 514},
                 "tcp": {"enabled": true, "addr": "0.0.0.0", "port": 514},
-                "allowlist": [],
+                "allowlist": [], "blocklist": [],
                 "max_devices": 10000, "new_device_burst": 5000, "new_devices_per_minute": 200},
   "storage": {"data_dir": "...", "retention_days": 30, "retention_bytes": 21474836480, "part_bytes": 104857600},
   "ui": {"lan_mode": false, "port": 8514, "cert_file": "", "key_file": "", "require_login_local": false},
