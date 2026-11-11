@@ -410,6 +410,10 @@ function sevFilter(u: URLSearchParams): Set<string> | null {
   const list = u.get('severities');
   if (list) {
     const parts = list.split(',').map((x) => x.trim()).filter(Boolean);
+    if (parts.includes('none')) {
+      if (parts.length > 1) throw new Error('"none" can\'t be combined with other severities');
+      return new Set(); // matches nothing
+    }
     for (const x of parts) if (!/^[0-7]$/.test(x) && x !== 'unknown') throw new Error(`invalid severity "${x}"`);
     return parts.length ? new Set(parts) : null;
   }
@@ -659,31 +663,34 @@ const H = 60 * MIN;
 const EXPIRE_MS = 24 * H;
 
 interface MockExport extends ExportInfo {
-  severities?: unknown[];
-  q?: string;
   estimate: number;
 }
 
+const noFilters = (): ExportInfo['filters'] => ({ group: '', ungrouped: false, severities: [], q: '', regex: false, case: false });
+const ago = (ms: number) => new Date(Date.now() - ms).toISOString();
+
 const exportsList: MockExport[] = [
   {
-    id: 'exp_7Hq2', created: new Date(Date.now() - 23 * H - 10 * MIN).toISOString(),
-    ready_at: new Date(Date.now() - 23 * H).toISOString(),
-    devices: ['10.1.0.1', '10.1.0.2'], from: new Date(Date.now() - 48 * H).toISOString(), to: new Date(Date.now() - 24 * H).toISOString(),
+    id: 'exp_7Hq2', created: ago(23 * H + 10 * MIN), ready_at: ago(23 * H), expires_at: ago(23 * H - EXPIRE_MS),
+    devices: ['10.1.0.1', '10.1.0.2'], from: ago(48 * H), to: ago(24 * H),
     state: 'ready', progress: 1, lines: 1_204_332, size_bytes: 48 * MiB, error: '', estimate: 0,
+    filters: { ...noFilters(), severities: [3, 4], q: 'deny' },
   },
   {
-    id: 'exp_3kPz', created: new Date(Date.now() - 5 * H).toISOString(),
-    devices: ['10.2.0.1'], from: new Date(Date.now() - 7 * 24 * H).toISOString(), to: new Date(Date.now() - 5 * H).toISOString(),
+    id: 'exp_3kPz', created: ago(5 * H), ready_at: null, expires_at: null,
+    devices: [], from: ago(7 * 24 * H), to: ago(5 * H),
     state: 'failed', progress: 0.4, lines: 0, size_bytes: 0, error: 'Not enough free disk space to build the zip.', estimate: 0,
+    filters: { ...noFilters(), group: 'DMZ' },
   },
   {
-    id: 'exp_9aLm', created: new Date(Date.now() - 30 * H).toISOString(), ready_at: new Date(Date.now() - 29.9 * H).toISOString(),
-    devices: ['10.8.0.1'], from: new Date(Date.now() - 32 * H).toISOString(), to: new Date(Date.now() - 31 * H).toISOString(),
+    id: 'exp_9aLm', created: ago(30 * H), ready_at: ago(29.9 * H), expires_at: ago(5.9 * H),
+    devices: ['10.8.0.1'], from: ago(32 * H), to: ago(31 * H),
     state: 'expired', progress: 1, lines: 8_812, size_bytes: 0, error: '', estimate: 0,
+    filters: { ...noFilters(), q: 'link (up|down)', regex: true },
   },
 ];
 
-function estimate(b: { devices: string[]; from: string; to: string; severities?: unknown[]; q?: string }) {
+function estimate(b: { devices: string[]; from: string; to: string; severities?: unknown[] }) {
   const span = Math.max(0, Date.parse(b.to) - Date.parse(b.from));
   let lines = Math.round((span / STEP) * shareOf(b.devices));
   // An upper bound from the index: severity and text filters can only shrink it.
@@ -695,7 +702,7 @@ function estimate(b: { devices: string[]; from: string; to: string; severities?:
 /** One build at a time; the rest wait in the queue. */
 function exportTick() {
   const now = Date.now();
-  for (const e of exportsList) if (e.state === 'ready' && e.ready_at && now - Date.parse(e.ready_at) > EXPIRE_MS) e.state = 'expired';
+  for (const e of exportsList) if (e.state === 'ready' && e.expires_at && now > Date.parse(e.expires_at)) e.state = 'expired';
   let cur = exportsList.find((e) => e.state === 'building');
   if (!cur) {
     cur = [...exportsList].reverse().find((e) => e.state === 'queued');
@@ -711,15 +718,14 @@ function exportTick() {
   } else if (cur.progress >= 1) {
     cur.state = 'ready';
     cur.ready_at = new Date(now).toISOString();
+    cur.expires_at = new Date(now + EXPIRE_MS).toISOString();
   }
 }
 setInterval(exportTick, 250);
 
 const exportJSON = (e: MockExport): ExportInfo => {
-  const { estimate: _e, severities: _s, q: _q, ...rest } = e;
+  const { estimate: _e, ...rest } = e;
   void _e;
-  void _s;
-  void _q;
   return rest;
 };
 
@@ -925,19 +931,42 @@ async function route(method: string, url: URL, body: unknown, csrf: string | nul
     const hi: number[] = [];
     for (let j = i + 1; hi.length < after && j <= lastIdx; j++) if (deviceAt(j).ip === ip) hi.push(j);
     const idx = [...lo.reverse(), i, ...hi];
-    return json({ lines: idx.map((j) => ({ ...lineAt(j), ref: `h${j}` })), hit_index: lo.length });
+    // History starts 40 days back in the mock; the newest stored line is "now".
+    const firstIdx = Math.ceil((now - 40 * 24 * H) / STEP);
+    let older = false;
+    for (let j = (idx[0] ?? i) - 1; j >= firstIdx && j > (idx[0] ?? i) - 400_000; j--) if (deviceAt(j).ip === ip) { older = true; break; }
+    let newer = false;
+    for (let j = idx[idx.length - 1] + 1; j <= lastIdx; j++) if (deviceAt(j).ip === ip) { newer = true; break; }
+    return json({ lines: idx.map((j) => ({ ...lineAt(j), ref: `h${j}` })), hit_index: lo.length, at_start: !older, at_end: !newer });
   }
   if (method === 'POST' && (p === '/api/exports' || p === '/api/exports/estimate')) {
-    const b = (body ?? {}) as { devices?: string[]; from?: string; to?: string; severities?: unknown[]; q?: string };
-    if (!b.devices?.length) return err(400, 'Pick at least one device.');
+    const b = (body ?? {}) as {
+      devices?: string[]; group?: string; ungrouped?: boolean; from?: string; to?: string;
+      severities?: unknown[]; q?: string; regex?: boolean; case?: boolean;
+    };
+    // devices, group or ungrouped: resolved as the build would (hidden devices only when named).
+    const f: MockFilters = { devices: b.devices, group: b.group || undefined, ungrouped: !!b.ungrouped, sev: null };
+    const ids = FLEET.map((d) => d.ip).filter((ip) => deviceMatches(ip, f, true));
+    if (!ids.length) return err(400, 'Pick at least one device (by list, group or ungrouped).');
     if (!b.from || !b.to || !(Date.parse(b.from) < Date.parse(b.to))) return err(400, '"from" must be before "to".');
     for (const x of b.severities ?? []) if (!(x === 'unknown' || (Number.isInteger(x) && (x as number) >= 0 && (x as number) <= 7))) return err(400, `invalid severity ${JSON.stringify(x)}`);
-    const req = { devices: b.devices, from: b.from, to: b.to, severities: b.severities, q: b.q };
-    const est = estimate(req);
+    if (b.regex && b.q) {
+      try {
+        new RegExp(b.q);
+      } catch (e) {
+        return err(400, `error parsing regexp: ${(e as Error).message.replace(/^Invalid regular expression: /, '')}`);
+      }
+    }
+    const est = estimate({ devices: ids, from: b.from, to: b.to, severities: b.severities });
     if (p === '/api/exports/estimate') return json(est);
     const e: MockExport = {
-      id: `exp_${Math.random().toString(36).slice(2, 6)}`, created: new Date(now).toISOString(), ...req,
-      state: 'queued', progress: 0, lines: 0, size_bytes: 0, error: '', estimate: est.lines,
+      id: `exp_${Math.random().toString(36).slice(2, 6)}`, created: new Date(now).toISOString(),
+      devices: b.devices?.length ? b.devices : [], from: b.from, to: b.to,
+      state: 'queued', progress: 0, lines: 0, size_bytes: 0, error: '', estimate: est.lines, ready_at: null, expires_at: null,
+      filters: {
+        group: b.group ?? '', ungrouped: !!b.ungrouped, severities: (b.severities ?? []) as ExportInfo['filters']['severities'],
+        q: b.q ?? '', regex: !!b.regex, case: !!b.case,
+      },
     };
     exportsList.unshift(e);
     return json({ id: e.id }, 202);

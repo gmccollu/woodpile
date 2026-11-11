@@ -46,13 +46,14 @@
   let rows = $state.raw<Row[]>([]);
   let heldCount = $state(0);
   let sampled = $state<SampledNotice | null>(null);
-  let conn = $state<'connecting' | 'open' | 'error' | 'closed' | 'off'>('connecting');
+  let conn = $state<'connecting' | 'open' | 'error' | 'closed'>('connecting');
   /** Bumped to reopen a stream the browser closed for good (it won't retry after a 401 or 5xx). */
   let attempt = $state(0);
   let qDebounced = $state('');
   // String keys, so a new array with the same values doesn't reconnect.
   const devKey = $derived(devices.join(','));
   const sevKey = $derived(prefs.tailSev.join(','));
+  const noLevels = $derived(!prefs.tailSev.length);
   let scroller: HTMLDivElement | undefined = $state();
 
   let pending: Row[] = [];
@@ -104,11 +105,7 @@
     pending = [];
     heldCount = 0;
     sampled = null;
-    if (!sev.length) {
-      // The API reads an empty set as "all", so "None" means: don't connect.
-      conn = 'off';
-      return;
-    }
+    // Nothing selected is sent as severities=none: the stream stays open and sends nothing.
     conn = 'connecting';
     const close = openLive(
       {
@@ -177,7 +174,7 @@
       <div class="flex min-w-0 grow basis-40 items-center gap-2">
         <span
           class="inline-block size-2 shrink-0 rounded-full"
-          style:background={paused || conn === 'off' ? 'var(--sev-warn)' : conn === 'open' ? 'var(--sev-info)' : 'var(--sev-err)'}
+          style:background={paused || noLevels ? 'var(--sev-warn)' : conn === 'open' ? 'var(--sev-info)' : 'var(--sev-err)'}
           aria-hidden="true"
         ></span>
         <b class="text-white">Live tail</b>
@@ -223,7 +220,7 @@
   >
     {#if !rows.length}
       <p class="m-0 py-6 text-center font-sans text-log-dim">
-        {conn === 'off' ? 'No severities selected. Pick some above.' : conn === 'connecting' ? 'Connecting…' : paused ? 'Paused.' : 'Waiting for messages…'}
+        {noLevels ? 'No levels selected. Pick some above.' : conn === 'connecting' ? 'Connecting…' : paused ? 'Paused.' : 'Waiting for messages…'}
       </p>
     {/if}
     {#each rows as r (r.k)}

@@ -84,11 +84,6 @@
     e?.preventDefault();
     cancel();
     qError = rangeError = error = '';
-    if (!sev.length) {
-      error = 'Pick at least one severity.';
-      status = 'error';
-      return;
-    }
     const { from, to } = resolveRange(range);
     if (!from || !to || !(Date.parse(from) < Date.parse(to))) {
       rangeError = '"From" must be before "To".';
@@ -112,16 +107,19 @@
     const my = ++gen;
     ctrl = new AbortController();
     status = 'running';
+    let got = 0;
     try {
       for (;;) {
-        const res = await search({ ...active, cursor: cursor || undefined }, ctrl.signal);
+        // After a partial scan, ask only for what this page still needs (limit may change per page).
+        const res = await search({ ...active, limit: PAGE - got, cursor: cursor || undefined }, ctrl.signal);
         if (my !== gen) return;
         const fresh = res.results.filter((r) => !seen.has(r.ref));
         for (const r of fresh) seen.add(r.ref);
         if (fresh.length) results = results.concat(fresh);
+        got += fresh.length;
         cursor = res.next_cursor;
         scanned = { bytes: scanned.bytes + res.scanned_bytes, files: scanned.files + res.scanned_files };
-        if (!(res.partial && res.next_cursor)) break;
+        if (!(res.partial && res.next_cursor) || got >= PAGE) break;
       }
       status = 'done';
     } catch (x) {
@@ -148,6 +146,8 @@
     after: number;
     lines: SearchResult[];
     hit: number;
+    atStart: boolean;
+    atEnd: boolean;
     loading: boolean;
     error: string;
   }
@@ -156,20 +156,29 @@
 
   async function openContext(ref: string, before = 50, after = 50) {
     const same = ctx?.ref === ref;
-    ctx = { ref, before, after, lines: same ? ctx!.lines : [], hit: same ? ctx!.hit : -1, loading: true, error: '' };
+    ctx = {
+      ref,
+      before,
+      after,
+      lines: same ? ctx!.lines : [],
+      hit: same ? ctx!.hit : -1,
+      atStart: same ? ctx!.atStart : false,
+      atEnd: same ? ctx!.atEnd : false,
+      loading: true,
+      error: '',
+    };
     try {
       const res = await getContext(ref, before, after);
       if (ctx?.ref !== ref) return;
-      ctx = { ...ctx, lines: res.lines, hit: res.hit_index, loading: false };
+      ctx = { ...ctx, lines: res.lines, hit: res.hit_index, atStart: res.at_start, atEnd: res.at_end, loading: false };
       if (!same) requestAnimationFrame(() => ctxBox?.querySelector('.hit')?.scrollIntoView({ block: 'center' }));
     } catch (x) {
       if (ctx?.ref === ref) ctx = { ...ctx, loading: false, error: (x as Error).message };
     }
   }
   const ctxHit = $derived(ctx && ctx.hit >= 0 ? ctx.lines[ctx.hit] : undefined);
-  // Fewer lines than asked for means the stored log ends there.
-  const ctxTop = $derived(!!ctx && ctx.hit >= 0 && ctx.hit < ctx.before);
-  const ctxBottom = $derived(!!ctx && ctx.hit >= 0 && ctx.lines.length - ctx.hit - 1 < ctx.after);
+  const ctxTop = $derived(!!ctx?.atStart);
+  const ctxBottom = $derived(!!ctx?.atEnd);
 
   $effect(() => {
     if (!ctx) return;
@@ -183,12 +192,16 @@
   // ----- export these results -----
   function exportThese() {
     if (!active) return;
+    // Same devices (groups stay groups), range and filters, so the zip holds what the search showed.
     const p = new URLSearchParams();
-    p.set('dev', scopeDeviceIds(activeScope, live.devices ?? []).join(','));
+    if (activeScope.mode === 'all') p.set('dev', scopeDeviceIds(activeScope, live.devices ?? []).join(','));
+    else scopeToQuery(activeScope, p);
     p.set('from', active.from!);
     p.set('to', active.to!);
     sevToQuery(active.severities ?? [...ALL_SEVS], p);
     if (active.q) p.set('q', active.q);
+    if (active.regex) p.set('re', '1');
+    if (active.case) p.set('cs', '1');
     go('export', p.toString());
   }
 
@@ -257,8 +270,8 @@
         type="button"
         class="tail-btn"
         onclick={exportThese}
-        disabled={!active || !results.length || !!active.regex}
-        title={active?.regex ? 'Exports filter on plain text only, not regular expressions' : 'Open Export with these devices, range, severities and text'}
+        disabled={!active || !results.length}
+        title="Open Export with these devices, range, severities and text"
       >
         <Icon name="export" size={14} />Export these results
       </button>
@@ -273,7 +286,11 @@
         <p class="m-0 py-6 text-center font-sans text-log-dim">Searching…</p>
       {:else if (status === 'done' || status === 'cancelled') && !results.length}
         <p class="m-0 py-6 text-center font-sans text-log-dim">
-          {status === 'cancelled' ? 'Cancelled before anything matched.' : 'No matches in this range. Try a longer range, fewer filters, or other words.'}
+          {status === 'cancelled'
+            ? 'Cancelled before anything matched.'
+            : !active?.severities?.length
+              ? 'No levels selected, so nothing matches. Pick some severities above.'
+              : 'No matches in this range. Try a longer range, fewer filters, or other words.'}
         </p>
       {/if}
       {#each results as r (r.ref)}

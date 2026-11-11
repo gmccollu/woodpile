@@ -104,12 +104,12 @@ export type SevKey = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 'unknown';
 export const ALL_SEVS: SevKey[] = [0, 1, 2, 3, 4, 5, 6, 7, 'unknown'];
 
 /**
- * The `severities=` value (docs/api.md → Severity filters). All selected → undefined, which
- * the server reads as "all". The caller must not send an empty set: the API reads that as
- * "all" too, so an empty selection has to be handled in the UI (show nothing).
+ * The `severities=` value (docs/api.md → Severity filters): all selected → undefined (the
+ * server's default is all), nothing selected → "none".
  */
 export function sevParam(sel: SevKey[]): string | undefined {
-  if (!sel.length || ALL_SEVS.every((k) => sel.includes(k))) return undefined;
+  if (!sel.length) return 'none';
+  if (ALL_SEVS.every((k) => sel.includes(k))) return undefined;
   return ALL_SEVS.filter((k) => sel.includes(k)).join(',');
 }
 
@@ -157,14 +157,31 @@ export interface SearchResponse {
 export interface ContextResponse {
   lines: SearchResult[];
   hit_index: number;
+  /** No older / newer stored lines for that device. */
+  at_start: boolean;
+  at_end: boolean;
 }
 
+/** Devices by list, group or ungrouped (at least one must select a device); filters as for search. */
 export interface ExportRequest {
-  devices: string[];
+  devices?: string[];
+  group?: string;
+  ungrouped?: boolean;
   from: string;
   to: string;
   severities?: SevKey[];
   q?: string;
+  regex?: boolean;
+  case?: boolean;
+}
+
+export interface ExportFilters {
+  group: string;
+  ungrouped: boolean;
+  severities: SevKey[];
+  q: string;
+  regex: boolean;
+  case: boolean;
 }
 
 export interface ExportEstimate {
@@ -187,8 +204,11 @@ export interface ExportInfo {
   lines: number;
   size_bytes: number;
   error: string;
-  /** Not in the contract yet (see the report); used for the expiry countdown when present. */
-  ready_at?: string;
+  /** Set once the export is ready. */
+  ready_at: string | null;
+  expires_at: string | null;
+  /** Echoes the request's filters. */
+  filters: ExportFilters;
 }
 
 export interface ListenerSettings {
@@ -386,11 +406,18 @@ export const search = (p: SearchParams, signal?: AbortSignal) =>
 export const getContext = (ref: string, before = 50, after = 50) =>
   request<ContextResponse>('GET', `/api/context${query({ ref, before, after })}`);
 
-/** Severities are sent only when they narrow the export (all = no filter). */
+/** Optional filters are sent only when they narrow the export (all severities = no filter). */
 function exportBody(r: ExportRequest): ExportRequest {
-  const b: ExportRequest = { devices: r.devices, from: r.from, to: r.to };
-  if (r.severities && sevParam(r.severities)) b.severities = ALL_SEVS.filter((k) => r.severities!.includes(k));
-  if (r.q) b.q = r.q;
+  const b: ExportRequest = { from: r.from, to: r.to };
+  if (r.devices?.length) b.devices = r.devices;
+  if (r.group) b.group = r.group;
+  if (r.ungrouped) b.ungrouped = true;
+  if (r.severities && r.severities.length && sevParam(r.severities)) b.severities = ALL_SEVS.filter((k) => r.severities!.includes(k));
+  if (r.q) {
+    b.q = r.q;
+    if (r.regex) b.regex = true;
+    if (r.case) b.case = true;
+  }
   return b;
 }
 export const createExport = (r: ExportRequest) => request<{ id: string }>('POST', '/api/exports', exportBody(r));

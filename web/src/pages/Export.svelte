@@ -19,6 +19,7 @@
   import { router } from '../lib/router.svelte';
   import { scopeDeviceIds, scopeFromQuery, sevFromQuery, type Scope } from '../lib/scope';
   import { deviceName, live } from '../lib/status.svelte';
+  import { SEVERITIES } from '../lib/severity';
   import DevicePicker from '../components/DevicePicker.svelte';
   import Icon from '../components/Icon.svelte';
   import SeverityChips from '../components/SeverityChips.svelte';
@@ -31,6 +32,8 @@
   let range = $state<Range>(defaultRange());
   let sev = $state<SevKey[]>([...ALL_SEVS]);
   let q = $state('');
+  let regex = $state(false);
+  let cs = $state(false);
   let fromSearch = $state(false);
 
   $effect(() => {
@@ -41,6 +44,8 @@
     range = rangeFromQuery(p);
     sev = sevFromQuery(p);
     q = p.get('q') ?? '';
+    regex = p.get('re') === '1';
+    cs = p.get('cs') === '1';
     fromSearch = true;
   });
 
@@ -49,9 +54,12 @@
     !ids.length ? 'Pick at least one device.' : !sev.length ? 'Pick at least one severity, or All.' : '',
   );
 
+  // Groups stay groups (the server resolves them when it builds); "all devices" is sent as the list.
   function request(): ExportRequest {
     const { from, to } = resolveRange(range);
-    return { devices: ids, from, to, severities: sev, q: q.trim() };
+    const who =
+      scope.mode === 'group' ? { group: scope.group } : scope.mode === 'ungrouped' ? { ungrouped: true } : { devices: ids };
+    return { ...who, from, to, severities: sev, q: q.trim(), regex, case: cs };
   }
 
   // ----- estimate (an upper bound from the index, before building) -----
@@ -59,7 +67,7 @@
   let estError = $state('');
   let estBusy = $state(false);
   $effect(() => {
-    const key = JSON.stringify({ ids, range, sev, q, e: formError });
+    const key = JSON.stringify({ ids, scope, range, sev, q, regex, cs, e: formError });
     void key;
     if (formError) {
       est = null;
@@ -152,10 +160,32 @@
     transportDownload(exportDownloadUrl(e.id));
   }
 
-  const names = (devs: string[]) => devs.slice(0, 3).map(deviceName).join(', ');
+  // A group export may list no devices (the server resolves the group when it builds).
+  const names = (e: ExportInfo) =>
+    e.devices.length
+      ? e.devices.slice(0, 3).map(deviceName).join(', ')
+      : e.filters?.group
+        ? `Group: ${e.filters.group}`
+        : e.filters?.ungrouped
+          ? 'Ungrouped devices'
+          : 'No devices';
   const more = (devs: string[]) => (devs.length > 3 ? `+${devs.length - 3}` : '');
-  // docs/api.md: deleted 24 h after they're ready. Without a ready time, count from creation.
-  const expiresIn = (e: ExportInfo) => Date.parse(e.ready_at ?? e.created) + DAY - now;
+  const expiresIn = (e: ExportInfo) => (e.expires_at ? Date.parse(e.expires_at) - now : DAY);
+
+  /** "Group: HQ · warn, err · “deny” (regex, case)": what the export was asked to include. */
+  function filterText(e: ExportInfo): string {
+    const f = e.filters;
+    if (!f) return '';
+    const bits: string[] = [];
+    if (e.devices.length && f.group) bits.push(`Group: ${f.group}`);
+    if (e.devices.length && f.ungrouped) bits.push('Ungrouped devices');
+    if (f.severities?.length) bits.push(f.severities.map((k) => (k === 'unknown' ? 'unknown' : SEVERITIES[k].short)).join(', '));
+    if (f.q) {
+      const how = [f.regex ? 'regex' : '', f.case ? 'case' : ''].filter(Boolean).join(', ');
+      bits.push(`“${f.q}”${how ? ` (${how})` : ''}`);
+    }
+    return bits.join(' · ');
+  }
   const STATE: Record<string, string> = { queued: 'Queued', building: 'Building', ready: 'Ready', failed: 'Failed', expired: 'Expired' };
 </script>
 
@@ -182,10 +212,18 @@
         <span class="lbl">Severities</span>
         <div class="sevbar"><SeverityChips bind:value={sev} label="Export severities" /></div>
       </div>
-      <label class="row">
-        <span class="lbl">Only lines containing</span>
-        <input class="field max-w-md font-mono" bind:value={q} placeholder="Optional text (case-insensitive)" spellcheck="false" />
-      </label>
+      <div class="row">
+        <label class="lbl" for="exq">Only lines matching</label>
+        <input
+          id="exq"
+          class="field w-auto min-w-0 grow basis-40 font-mono"
+          bind:value={q}
+          placeholder={regex ? 'Regular expression (RE2)' : 'Optional text'}
+          spellcheck="false"
+        />
+        <button type="button" class="toggle" aria-pressed={regex} onclick={() => (regex = !regex)} title="Regular expression (RE2 syntax)">.* Regex</button>
+        <button type="button" class="toggle" aria-pressed={cs} onclick={() => (cs = !cs)} title="Match upper and lower case exactly">Aa Case</button>
+      </div>
 
       <div class="estimate" aria-live="polite">
         {#if formError}
@@ -236,9 +274,10 @@
               <div class="min-w-0 grow">
                 <div class="flex min-w-0 items-center gap-2">
                   <span class="shrink-0 badge {e.state}">{STATE[e.state] ?? e.state}</span>
-                  <b class="min-w-0 truncate text-[14px]" title={e.devices.map(deviceName).join(', ')}>{names(e.devices)}</b>
+                  <b class="min-w-0 truncate text-[14px]" title={e.devices.map(deviceName).join(', ')}>{names(e)}</b>
                   {#if more(e.devices)}<span class="shrink-0 text-[13px] text-muted">{more(e.devices)}</span>{/if}
                 </div>
+                {#if filterText(e)}<div class="mt-1 truncate font-mono text-[12px]" title={filterText(e)}>{filterText(e)}</div>{/if}
                 <div class="mt-1 text-[12.5px] text-muted">
                   {stamp(e.from, prefs.utc).slice(0, 11)} → {stamp(e.to, prefs.utc).slice(0, 11)}{prefs.utc ? ' UTC' : ''} · created {ago(e.created, now)}
                 </div>
@@ -295,6 +334,22 @@
     border-radius: 14px;
     background: var(--log-bar);
     border: 1px solid var(--log-border);
+  }
+  .toggle {
+    padding: 7px 11px;
+    border-radius: 12px;
+    border: 1px solid var(--input-border);
+    background: var(--input);
+    color: var(--fg);
+    font-size: 13px;
+    font-family: var(--font-mono);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .toggle[aria-pressed='true'] {
+    background: var(--btn);
+    color: var(--btn-fg);
+    border-color: var(--btn);
   }
   .estimate {
     padding: 10px 14px;

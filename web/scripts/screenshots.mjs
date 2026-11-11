@@ -254,9 +254,11 @@ const SHOTS = [
     mode: 'light',
     url: '/?mock_panel=0#/search?q=deny&r=24h',
     wait: 2500,
-    act: `document.querySelectorAll('.logline.clickable')[3].click();`,
+    act: `document.querySelectorAll('.logline.clickable')[60].click();`,
     after: 1500,
-    check: `!!document.querySelector('[role=dialog] .logline.hit mark.hl') && document.querySelectorAll('[role=dialog] .logline').length > 60`,
+    check: `(() => { const n = document.querySelectorAll('[role=dialog] .logline').length;
+      const atEnd = document.querySelector('[role=dialog]').innerText.includes('Newest stored line');
+      return !!document.querySelector('[role=dialog] .logline.hit mark.hl') && n >= 51 && (n === 101 || atEnd); })()`,
   },
   {
     name: 'search-regex-error-light',
@@ -301,8 +303,37 @@ const SHOTS = [
     wait: 2000,
     act: `__btn('Export these results').click();`,
     after: 1500,
-    check: `location.hash.startsWith('#/export?') && document.querySelector('input[placeholder^="Optional text"]').value === 'deny'
-      && document.body.innerText.includes('Filled in from your search')`,
+    check: `location.hash.startsWith('#/export?') && document.querySelector('#exq').value === 'deny'
+      && document.body.innerText.includes('Filled in from your search') && document.body.innerText.includes('Group: HQ')`,
+  },
+  {
+    name: 'search-export-keeps-regex-and-case',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/search?q=deny%20(tcp%7Cudp)&re=1&cs=1&r=1h',
+    wait: 2000,
+    act: `if (__btn('Export these results').disabled) throw new Error('export disabled for a regex search'); __btn('Export these results').click();`,
+    after: 1500,
+    check: `document.querySelector('#exq').value === 'deny (tcp|udp)' && __btn('.* Regex').getAttribute('aria-pressed') === 'true'
+      && __btn('Aa Case').getAttribute('aria-pressed') === 'true' && /Up to [\\d,]+ lines/.test(document.body.innerText)`,
+  },
+  {
+    name: 'search-none-selected',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/search?r=1h&sev=none',
+    wait: 1500,
+    check: `document.querySelectorAll('.logline.clickable').length === 0 && document.body.innerText.includes('No levels selected')`,
+  },
+  {
+    name: 'tail-none-sends-none',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/dashboard',
+    act: `window.__woodpileMock.livePaths.length = 0; __btn('None').click();`,
+    after: 1500,
+    check: `(() => { const p = window.__woodpileMock.livePaths; return p.length > 0 && /[?&]severities=none(&|$)/.test(p[p.length - 1])
+      && document.querySelectorAll('[role=log] .logline').length === 0 && document.body.innerText.includes('No levels selected'); })()`,
   },
 
   // ---- Export ----
@@ -328,7 +359,8 @@ const SHOTS = [
     wait: 1500,
     act: `__btn('Build the zip').click();`,
     after: 5000,
-    check: `document.querySelectorAll('li[data-state=ready] a[download]').length >= 2 && document.body.innerText.includes('expires in')`,
+    check: `document.querySelectorAll('li[data-state=ready] a[download]').length >= 2 && document.body.innerText.includes('expires in 23 h')
+      && document.body.innerText.includes('err, warn · “deny”') && document.body.innerText.includes('Group: DMZ')`,
   },
   {
     name: 'export-lifecycle',

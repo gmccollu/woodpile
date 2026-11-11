@@ -77,7 +77,7 @@ export function agoShort(iso: string, now = Date.now(), nowWithin = 2): string {
 
 /** Remaining time like "23 h 12 min" or "4 min". */
 export function remaining(ms: number): string {
-  const m = Math.max(0, Math.round(ms / 60000));
+  const m = Math.max(0, Math.floor(ms / 60000));
   if (m >= 60) return `${Math.floor(m / 60)} h ${m % 60} min`;
   return `${m} min`;
 }
