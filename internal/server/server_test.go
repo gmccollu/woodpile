@@ -360,7 +360,7 @@ func TestBanners(t *testing.T) {
 		{Proto: "udp", Addr: "0.0.0.0", Port: 514, Error: "listen udp 0.0.0.0:514: bind: address already in use", Holder: "syslogd (pid 312)"},
 		{Proto: "tcp", Addr: "0.0.0.0", Port: 514, OK: true},
 	}
-	bs := buildBanners(down, store.Usage{VolumeBytes: 100 << 30, FreeBytes: 50 << 30, MinFreeBytes: 5 << 30}, "/data")
+	bs := buildBanners(down, store.Usage{VolumeBytes: 100 << 30, FreeBytes: 50 << 30, ReserveBytes: 5 << 30}, "/data")
 	if len(bs) != 1 || bs[0].Kind != "listener_bind" || bs[0].Action != "retry_listeners" || !strings.Contains(bs[0].Text, "UDP 514 isn't listening: another program") {
 		t.Errorf("one down: %+v", bs)
 	}
@@ -369,11 +369,11 @@ func TestBanners(t *testing.T) {
 	if len(bs) != 1 || !strings.Contains(bs[0].Text, "UDP 514 and TCP 514 aren't listening") {
 		t.Errorf("two down: %+v", bs)
 	}
-	bs = buildBanners(nil, store.Usage{WritesPaused: true, FreeBytes: 10 << 20, VolumeBytes: 100 << 30, MinFreeBytes: 5 << 30, Dropped: 42}, "/data")
+	bs = buildBanners(nil, store.Usage{WritesPaused: true, FreeBytes: 10 << 20, VolumeBytes: 100 << 30, ReserveBytes: 5 << 30, Dropped: 42}, "/data")
 	if len(bs) != 1 || bs[0].Kind != "writes_paused" || bs[0].Level != "error" || !strings.Contains(bs[0].Text, "42") {
 		t.Errorf("paused: %+v", bs)
 	}
-	bs = buildBanners(nil, store.Usage{FreeBytes: 1 << 30, VolumeBytes: 100 << 30, MinFreeBytes: 5 << 30}, "/data")
+	bs = buildBanners(nil, store.Usage{FreeBytes: 1 << 30, VolumeBytes: 100 << 30, ReserveBytes: 5 << 30}, "/data")
 	if len(bs) != 1 || bs[0].Kind != "low_disk" || bs[0].Level != "warn" {
 		t.Errorf("low disk: %+v", bs)
 	}

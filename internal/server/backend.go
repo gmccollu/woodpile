@@ -274,9 +274,9 @@ func buildBanners(ls []listen.ListenerStatus, u store.Usage, dataDir string) []a
 		text := fmt.Sprintf("Writing is paused: the disk holding %s is nearly full (%s free) and there are no old logs left to delete. "+
 			"New messages are being dropped (%d so far). Free up space on that disk.", dataDir, formatBytes(int64(u.FreeBytes)), u.Dropped)
 		out = append(out, api.Banner{Kind: "writes_paused", Level: api.LevelError, Text: text})
-	} else if u.VolumeBytes > 0 && u.FreeBytes < u.MinFreeBytes {
+	} else if u.VolumeBytes > 0 && u.FreeBytes < u.ReserveBytes {
 		text := fmt.Sprintf("Disk space is low: %s free on the disk holding %s. Woodpile is deleting the oldest logs to keep %s free.",
-			formatBytes(int64(u.FreeBytes)), dataDir, formatBytes(int64(u.MinFreeBytes)))
+			formatBytes(int64(u.FreeBytes)), dataDir, formatBytes(int64(u.ReserveBytes)))
 		out = append(out, api.Banner{Kind: "low_disk", Level: api.LevelWarn, Text: text})
 	}
 	return out
