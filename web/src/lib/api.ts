@@ -80,10 +80,10 @@ export interface RejectedSender {
   count_24h: number;
   last_seen: string;
   /** The latest refusal's reason: not on the allowlist, or over the TCP connections-per-source limit. */
-  reason: 'allowlist' | 'per_source' | (string & {});
+  reason: 'allowlist' | 'blocked' | 'per_source' | (string & {});
 }
 
-export type DeviceStatus = 'online' | 'quiet' | 'offline';
+export type DeviceStatus = 'online' | 'quiet' | 'offline' | 'blocked';
 
 export interface Device {
   id: string;
@@ -97,9 +97,13 @@ export interface Device {
   msgs_per_min: number;
   total_msgs: number;
   bytes_on_disk: number;
+  /** On the blocklist: its messages are refused and counted; its existing logs stay searchable. */
+  blocked: boolean;
+  /** On a PATCH that unblocked the device's own address: the broader blocklist entry that still covers it. */
+  blocked_by?: string;
 }
 
-export type DevicePatch = Partial<Pick<Device, 'name' | 'group' | 'hidden'>>;
+export type DevicePatch = Partial<Pick<Device, 'name' | 'group' | 'hidden' | 'blocked'>>;
 
 export interface LogLine {
   received: string;
@@ -239,6 +243,8 @@ export interface Settings {
     udp: ListenerSettings;
     tcp: ListenerSettings;
     allowlist: string[];
+    /** Senders refused at the listener (IPs or CIDRs); checked before the allowlist and wins. */
+    blocklist: string[];
     /** Sender limits against floods of fake source addresses (docs/api.md). */
     max_devices: number;
     new_device_burst: number;
@@ -441,6 +447,8 @@ export interface DeviceQuery {
   ungrouped?: boolean;
   /** Server default is include. */
   hidden?: 'include' | 'only' | 'exclude';
+  /** The server takes this like hidden (default include); not in docs/api.md yet, see the report. */
+  blocked?: 'include' | 'only' | 'exclude';
 }
 
 export interface DevicePage {

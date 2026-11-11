@@ -9,6 +9,7 @@
   import Icon, { type IconName } from './components/Icon.svelte';
   import Logo from './components/Logo.svelte';
   import Banners from './components/Banners.svelte';
+  import BlockUi from './components/BlockUi.svelte';
   import Welcome from './pages/Welcome.svelte';
   import Dashboard from './pages/Dashboard.svelte';
   import Devices from './pages/Devices.svelte';
@@ -150,6 +151,8 @@
     {/if}
   </div>
 </div>
+
+<BlockUi />
 
 <style>
   .skip {

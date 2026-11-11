@@ -6,6 +6,7 @@
   import { ui } from '../lib/ui.svelte';
   import Icon from '../components/Icon.svelte';
   import StatusDot from '../components/StatusDot.svelte';
+  import { askBlock, blockUi, unblock } from '../lib/block.svelte';
 
   type Col = 'name' | 'ip' | 'group' | 'status' | 'first_seen' | 'last_heard' | 'msgs_per_min' | 'total_msgs' | 'bytes_on_disk';
 
@@ -16,6 +17,8 @@
   const SORT_HINT: Record<DeviceSort, string> = { name: 'A to Z', rate: 'busiest first', last_heard: 'most recent first', first_seen: 'newest first' };
 
   let showHidden = $state(false);
+  /** All devices, or only the blocked ones. */
+  let view = $state<'all' | 'blocked'>('all');
   let sortBy = $state<DeviceSort>('name');
   let offset = $state(0);
   let rows = $state<Device[] | null>(null);
@@ -41,20 +44,30 @@
   });
 
   $effect(() => {
-    const params = { limit: PAGE, offset, sort: sortBy, q, hidden: showHidden ? ('include' as const) : ('exclude' as const) };
+    void blockUi.version; // reload after a block or unblock
+    const params = {
+      limit: PAGE,
+      offset,
+      sort: sortBy,
+      q,
+      hidden: showHidden ? ('include' as const) : ('exclude' as const),
+      blocked: view === 'blocked' ? ('only' as const) : ('include' as const),
+    };
     let stop = false;
     const ctrl = new AbortController();
     const load = async () => {
       // Don't overwrite a row while it's being edited.
       if (editing) return;
+      const seq = changes;
       try {
         const [page, hid] = await Promise.all([
           getDevices(params, ctrl.signal),
           getDevices({ limit: 1, hidden: 'only' }, ctrl.signal),
         ]);
-        if (stop) return;
+        // A rename, group or hide saved while this was in flight wins over these older rows.
+        if (stop || seq !== changes) return;
         remember(page.devices);
-        rows = page.devices;
+        rows = view === 'blocked' ? page.devices.filter((d) => d.blocked) : page.devices;
         total = page.total;
         hiddenCount = hid.total;
         loadError = '';
@@ -78,7 +91,11 @@
     offset = 0;
   }
 
+  /** Bumped on every saved change, so a poll that started before it can't undo it on screen. */
+  let changes = 0;
+
   function replaceRow(d: Device) {
+    changes++;
     replaceDevice(d);
     if (rows) rows = rows.map((x) => (x.id === d.id ? d : x));
   }
@@ -142,6 +159,10 @@
       <p class="mt-1 mb-0 text-[13px] text-muted">
         Every sender, by source IP. Click a name or group to change it. Hiding a device keeps its logs until retention deletes them.
       </p>
+    </div>
+    <div class="seg" role="radiogroup" aria-label="Which devices">
+      <button role="radio" aria-checked={view === 'all'} onclick={() => ((view = 'all'), (offset = 0))}>All</button>
+      <button role="radio" aria-checked={view === 'blocked'} onclick={() => ((view = 'blocked'), (offset = 0))}>Blocked</button>
     </div>
     {#if hiddenCount}
       <label class="flex items-center gap-2 text-[14px]">
@@ -238,6 +259,11 @@
               >
                 <Icon name={d.hidden ? 'eye' : 'eyeOff'} size={15} />{d.hidden ? 'Show' : 'Hide'}
               </button>
+              {#if d.blocked}
+                <button class="ghost-btn whitespace-nowrap" onclick={() => unblock(d.id)} title="Accept this sender's messages again">Unblock</button>
+              {:else}
+                <button class="ghost-btn whitespace-nowrap" onclick={() => askBlock(d.id)} title="Refuse and count this sender's messages; its logs stay searchable">Block</button>
+              {/if}
             </td>
           </tr>
         {/each}
@@ -284,6 +310,27 @@
   th:last-child,
   td:last-child {
     padding-right: 16px;
+  }
+  .seg {
+    display: inline-flex;
+    background: var(--glass);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 3px;
+  }
+  .seg button {
+    border: 0;
+    background: transparent;
+    color: var(--fg);
+    padding: 5px 12px;
+    border-radius: 999px;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  .seg button[aria-checked='true'] {
+    background: var(--chip);
+    font-weight: 600;
+    box-shadow: var(--shadow-chip);
   }
   .pager {
     display: flex;

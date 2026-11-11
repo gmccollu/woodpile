@@ -26,6 +26,7 @@
     tcpAddr: string;
     tcpPort: number;
     allowlist: string;
+    blocklist: string;
     maxDevices: number;
     burst: number;
     perMinute: number;
@@ -53,8 +54,8 @@
   let moved = $state<{ url: string; lan: boolean; port: number } | null>(null);
   let history = $state<StorageHistoryEntry[] | null>(null);
   let rejected = $state<RejectedSender[] | null>(null);
-  /** The allowlist as last sent, so "listeners.allowlist[2]" errors can name the entry. */
-  let sentAllowlist = $state<string[]>([]);
+  /** The lists as last sent, so "listeners.allowlist[2]" errors can name the entry. */
+  let sentLists = $state<Record<string, string[]>>({});
 
   const round = (n: number, d = 2) => Math.round(n * 10 ** d) / 10 ** d;
 
@@ -67,6 +68,7 @@
       tcpAddr: s.listeners.tcp.addr,
       tcpPort: s.listeners.tcp.port,
       allowlist: s.listeners.allowlist.join('\n'),
+      blocklist: (s.listeners.blocklist ?? []).join('\n'),
       maxDevices: s.listeners.max_devices,
       burst: s.listeners.new_device_burst,
       perMinute: s.listeners.new_devices_per_minute,
@@ -93,6 +95,7 @@
         udp: { enabled: f.udpEnabled, addr: f.udpAddr.trim(), port: n(f.udpPort) },
         tcp: { enabled: f.tcpEnabled, addr: f.tcpAddr.trim(), port: n(f.tcpPort) },
         allowlist: parseAllowlist(f.allowlist),
+        blocklist: parseAllowlist(f.blocklist),
         max_devices: n(f.maxDevices),
         new_device_burst: n(f.burst),
         new_devices_per_minute: n(f.perMinute),
@@ -173,12 +176,14 @@
     }
   });
 
-  // The device_limit banner links to #/settings?section=limits.
+  // Banners and toasts link to a section: #/settings?section=limits or section=blocklist.
   let scrolled = false;
   $effect(() => {
-    if (scrolled || !form || !router.query.includes('section=limits')) return;
+    const m = /section=(limits|blocklist)/.exec(router.query);
+    if (scrolled || !form || !m) return;
     scrolled = true;
-    requestAnimationFrame(() => document.getElementById('sender-limits')?.scrollIntoView({ block: 'start', behavior: 'instant' }));
+    const id = m[1] === 'limits' ? 'sender-limits' : 'blocklist';
+    requestAnimationFrame(() => document.getElementById(id)?.scrollIntoView({ block: 'start', behavior: 'instant' }));
   });
 
   const dirty = $derived(!!form && !!saved && JSON.stringify(fromForm(form)) !== JSON.stringify(saved));
@@ -192,6 +197,7 @@
     'listeners.tcp.addr',
     'listeners.tcp.port',
     'listeners.allowlist',
+    'listeners.blocklist',
     'listeners.max_devices',
     'listeners.new_device_burst',
     'listeners.new_devices_per_minute',
@@ -220,7 +226,7 @@
       const m = k.startsWith(`${path}[`) ? /^\[(\d+)\]$/.exec(k.slice(path.length)) : null;
       if (m) {
         const i = Number(m[1]);
-        const v = path === 'listeners.allowlist' ? sentAllowlist[i] : undefined;
+        const v = sentLists[path]?.[i];
         out.push(`Entry ${i + 1}${v ? ` (${v})` : ''}: ${errors[k]}`);
       } else if (k.startsWith(`${path}.`) || (k.startsWith(`${path}[`) && k !== path)) {
         out.push(errors[k]);
@@ -238,7 +244,7 @@
     errors = {};
     formError = '';
     const body = fromForm(form);
-    sentAllowlist = body.listeners.allowlist;
+    sentLists = { 'listeners.allowlist': body.listeners.allowlist, 'listeners.blocklist': body.listeners.blocklist };
     const before = saved?.ui;
     const prevSettings = saved ? $state.snapshot(saved) : null;
     const failingBefore = failingNow();
@@ -290,7 +296,29 @@
     `netsh advfirewall firewall add rule name="Woodpile UI" dir=in action=allow protocol=TCP localport=${port}`;
   const passwordSet = $derived(!!auth.session?.password_set);
   const isMac = $derived(live.status?.os.startsWith('darwin') ?? false);
-  const REASON: Record<string, string> = { allowlist: 'not on the allowlist', per_source: 'too many TCP connections' };
+  const REASON: Record<string, string> = { allowlist: 'not on the allowlist', blocked: 'blocked', per_source: 'too many TCP connections' };
+
+  // A refused sender with reason "blocked": Unblock takes its own entry out of the draft
+  // blocklist; a broader range that covers it is named instead (only the user can judge it).
+  const draftBlocklist = $derived(form ? parseAllowlist(form.blocklist) : []);
+  const ownEntry = (ip: string) => draftBlocklist.find((c) => c === ip || c === hostCidr(ip));
+  function coveringRange(ip: string): string {
+    const v4 = (a: string) => (/^\d+\.\d+\.\d+\.\d+$/.test(a) ? a.split('.').reduce((n, p) => n * 256 + Number(p), 0) : null);
+    const n = v4(ip);
+    for (const c of draftBlocklist) {
+      const [net, bits] = c.split('/');
+      const b = v4(net);
+      if (n === null || b === null || bits === undefined) continue;
+      const k = Number(bits);
+      const span = 2 ** (32 - k);
+      if (Math.floor(n / span) === Math.floor(b / span)) return c;
+    }
+    return '';
+  }
+  function unblockInDraft(ip: string) {
+    if (!form) return;
+    form.blocklist = parseAllowlist(form.blocklist).filter((c) => c !== ip && c !== hostCidr(ip)).join('\n');
+  }
   const reasonText = { age: 'older than the retention period', cap: 'disk cap reached', low_disk: 'low disk space' };
 </script>
 
@@ -409,7 +437,8 @@
           <div class="basis-full">{@render fieldError(`listeners.${l.p}.enabled`)}</div>
         </fieldset>
       {/each}
-      <label class="lbl mt-4">
+      <div class="lists mt-4">
+      <label class="lbl">
         <span>Sender allowlist</span>
         <textarea
           class="field min-h-[84px] font-mono"
@@ -422,6 +451,20 @@
         {@render fieldError('listeners.allowlist')}
         <span class="hint">Empty means every sender is accepted. Changes apply when you save.</span>
       </label>
+      <label class="lbl" id="blocklist">
+        <span>Blocklist</span>
+        <textarea
+          class="field min-h-[84px] font-mono"
+          bind:value={form.blocklist}
+          placeholder="Senders to refuse: one IP or CIDR per line, such as 198.51.100.0/24"
+          aria-invalid={!!err('listeners.blocklist')}
+          aria-describedby="err-listeners.blocklist"
+          spellcheck="false"
+        ></textarea>
+        {@render fieldError('listeners.blocklist')}
+        <span class="hint">Refused at the listener and counted; checked before the allowlist. Existing logs stay searchable.</span>
+      </label>
+      </div>
 
       <fieldset class="limits" id="sender-limits">
         <legend class="text-[14px] font-semibold">Sender limits</legend>
@@ -481,6 +524,14 @@
                       <button type="button" class="ghost-btn whitespace-nowrap" onclick={() => allow(r.ip)} disabled={inDraft(r.ip)} aria-label="Allow {r.ip}">
                         {inDraft(r.ip) ? 'Added, save to apply' : 'Allow'}
                       </button>
+                    {:else if r.reason === 'blocked'}
+                      {#if ownEntry(r.ip)}
+                        <button type="button" class="ghost-btn whitespace-nowrap" onclick={() => unblockInDraft(r.ip)} aria-label="Unblock {r.ip}">Unblock</button>
+                      {:else if coveringRange(r.ip)}
+                        <span class="text-[12.5px] text-muted">Blocked by {coveringRange(r.ip)}</span>
+                      {:else}
+                        <span class="text-[12.5px] text-muted">Removed, save to apply</span>
+                      {/if}
                     {/if}
                   </td>
                 </tr>
@@ -693,6 +744,19 @@
     border-radius: 22px;
     border: 1px solid var(--info-border);
     background: var(--info-bg);
+  }
+  .lists {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+  }
+  @media (max-width: 720px) {
+    .lists {
+      grid-template-columns: 1fr;
+    }
+  }
+  #blocklist {
+    scroll-margin-top: 90px;
   }
   .limits {
     /* Land below the sticky save bar when the device_limit banner links here. */

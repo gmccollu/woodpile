@@ -14,6 +14,7 @@
   import SeverityChips from '../components/SeverityChips.svelte';
   import TimeRange from '../components/TimeRange.svelte';
   import LogText from '../components/LogText.svelte';
+  import { openMenu } from '../lib/block.svelte';
   import { tip } from '../lib/logtext';
 
   const PAGE = 500;
@@ -303,6 +304,7 @@
           title={tip(r.raw)}
           aria-label="Show the lines around this one"
           onclick={() => openContext(r.ref)}
+          oncontextmenu={(e) => { e.preventDefault(); openMenu(r.device_id, e.clientX, e.clientY); }}
           onkeydown={(e) => rowKey(e, r.ref)}
         >
           <span class="c t">{stamp(r.received, prefs.utc)}</span><span class="c h">{deviceName(r.device_id)}</span><span class="c s {sevClass(r.severity)}"

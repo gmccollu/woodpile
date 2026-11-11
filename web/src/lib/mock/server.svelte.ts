@@ -26,6 +26,7 @@
 //   mock_service_514=1 the installed Woodpile service holds UDP and TCP 514; this copy starts on 15514
 //   mock_listen_514=1  with mock_service_514: start on 514 (so the clash shows straight away)
 //   mock_ui_port_busy=1 the installed service can't open its UI because this copy holds the UI port
+//   mock_blocked=LIST  start with this blocklist (comma-separated IPs or CIDRs)
 
 import type {
   Device,
@@ -300,12 +301,16 @@ function devicesRoute(u: URLSearchParams, now: number): Response {
   const sort = u.get('sort') || 'rate';
   if (!['rate', 'name', 'last_heard', 'first_seen'].includes(sort)) return err(400, `invalid sort "${sort}"`);
   const hidden = u.get('hidden') || 'include';
+  const blocked = u.get('blocked') || 'include';
+  if (!['include', 'only', 'exclude'].includes(blocked)) return err(400, `blocked must be include, only or exclude, not "${blocked}"`);
   const q = (u.get('q') ?? '').toLowerCase();
   const group = u.get('group');
   const ungrouped = u.get('ungrouped') === 'true';
   let list = [...devs.values()].filter((d) => {
     if (hidden === 'exclude' && d.hidden) return false;
     if (hidden === 'only' && !d.hidden) return false;
+    if (blocked === 'exclude' && blockedBy(d.def.ip)) return false;
+    if (blocked === 'only' && !blockedBy(d.def.ip)) return false;
     if (group && d.group !== group) return false;
     if (ungrouped && d.group) return false;
     if (q && !d.def.ip.toLowerCase().includes(q) && !d.name.toLowerCase().includes(q)) return false;
@@ -334,6 +339,7 @@ let settings: Settings = {
     tcp: { enabled: true, addr: '0.0.0.0', port: SYSLOG_PORT },
     // Non-empty so the rejected-senders list has something to show.
     allowlist: ['10.0.0.0/8', '192.0.2.44/32', 'fd00:1::/64'],
+    blocklist: (P.get('mock_blocked') ?? '').split(',').map((x) => x.trim()).filter(Boolean),
     max_devices: 10_000,
     new_device_burst: 5_000,
     new_devices_per_minute: 200,
@@ -373,6 +379,15 @@ function validate(s: Settings): Record<string, string> {
   }
   if (!s.listeners.udp.enabled && !s.listeners.tcp.enabled)
     e['listeners.udp.enabled'] = 'Keep at least one listener on, or Woodpile receives nothing.';
+  (s.listeners.blocklist ?? []).forEach((c, i) => {
+    const [ip, bits, extra] = c.split('/');
+    let bad = extra !== undefined || !isIP(ip);
+    if (!bad && bits !== undefined) {
+      const b = Number(bits);
+      bad = bits === '' || !Number.isInteger(b) || b < 0 || b > (isIPv4(ip) ? 32 : 128);
+    }
+    if (bad) e[`listeners.blocklist[${i}]`] = 'Not an IP address or CIDR.';
+  });
   s.listeners.allowlist.forEach((c, i) => {
     const [ip, bits, extra] = c.split('/');
     let bad = extra !== undefined || !isIP(ip);
@@ -478,6 +493,14 @@ function tick() {
   trueThisSecond += whole;
   for (let i = 0; i < whole; i++) {
     const d = pick();
+    if (blockedBy(d.def.ip)) {
+      // Refused at the listener: counted, not stored, not in the live tail.
+      const c = blockedCounts.get(d.def.ip) ?? { n: 0, last: 0 };
+      c.n++;
+      c.last = now;
+      blockedCounts.set(d.def.ip, c);
+      continue;
+    }
     d.lastHeard = now;
     d.total++;
     d.bytes += 140;
@@ -717,7 +740,8 @@ function sendingWeight(now: number): number {
 }
 
 function deviceJSON(d: Dev, now: number): Device {
-  const running = d.sending && !mock.firstRun;
+  // A blocked sender's messages are refused, so nothing is received from it.
+  const running = d.sending && !mock.firstRun && !blockedBy(d.def.ip);
   const share = d.def.weight / sendingWeight(now);
   return {
     id: d.def.ip,
@@ -727,7 +751,8 @@ function deviceJSON(d: Dev, now: number): Device {
     hidden: d.hidden,
     first_seen: new Date(d.firstSeen).toISOString(),
     last_heard: new Date(d.lastHeard).toISOString(),
-    status: status(d, now),
+    status: blockedBy(d.def.ip) ? 'blocked' : status(d, now),
+    blocked: !!blockedBy(d.def.ip),
     msgs_per_min: running ? Math.round(share * mock.rate * 60 * (0.9 + Math.random() * 0.2)) : 0,
     total_msgs: d.total,
     bytes_on_disk: d.bytes,
@@ -805,7 +830,7 @@ function statusJSON(): Status {
 }
 
 function statsJSON(now: number): Stats {
-  const visible = [...devs.values()].filter((d) => !d.hidden);
+  const visible = [...devs.values()].filter((d) => !d.hidden && !blockedBy(d.def.ip));
   const st = visible.map((d) => status(d, now));
   const used = [...devs.values()].reduce((s, d) => s + d.bytes, 0);
   return {
@@ -842,6 +867,24 @@ function v4(ip: string): number | null {
   return ip.split('.').reduce((n, p) => n * 256 + Number(p), 0);
 }
 
+/** The blocklist entry that covers ip, or '' (IPv4 CIDRs; IPv6 by exact address). */
+function blockedBy(ip: string): string {
+  for (const c of settings.listeners.blocklist ?? []) {
+    const [net, bits] = c.split('/');
+    if (net === ip && (bits === undefined || bits === '32' || bits === '128')) return c;
+    const n = v4(ip);
+    const base = v4(net);
+    if (n === null || base === null || bits === undefined) continue;
+    const b = Number(bits);
+    const mask = b === 0 ? 0 : (0xffffffff << (32 - b)) >>> 0;
+    if (((n & mask) >>> 0) === ((base & mask) >>> 0)) return c;
+  }
+  return '';
+}
+
+/** Messages refused per blocked sender (mock counters). */
+const blockedCounts = new Map<string, { n: number; last: number }>();
+
 function allowed(ip: string): boolean {
   const n = v4(ip);
   return settings.listeners.allowlist.some((c) => {
@@ -865,6 +908,9 @@ function rejected(now: number): RejectedSender[] {
         reason: 'allowlist',
       }))
     : [];
+  for (const [ip, c] of blockedCounts) {
+    if (blockedBy(ip)) out.push({ ip, count_24h: c.n, last_seen: new Date(c.last).toISOString(), reason: 'blocked' });
+  }
   // One host opening more TCP connections than the per-source limit allows.
   out.push({ ip: '10.9.0.66', count_24h: Math.round(2_310 + 40 * mins), last_seen: new Date(now - 9000).toISOString(), reason: 'per_source' });
   return out.sort((a, b) => b.count_24h - a.count_24h);
@@ -1140,6 +1186,17 @@ async function route(method: string, url: URL, body: unknown, header: string | n
     if (b.name !== undefined) d.name = b.name.trim();
     if (b.group !== undefined) d.group = b.group.trim();
     if (b.hidden !== undefined) d.hidden = b.hidden;
+    if (b.blocked !== undefined) {
+      if (typeof b.blocked !== 'boolean') return err(400, 'blocked must be true or false.');
+      const ip = d.def.ip;
+      const own = (c: string) => c === ip || c === `${ip}/32` || c === `${ip}/128`;
+      const list = settings.listeners.blocklist;
+      if (b.blocked && !list.some(own)) list.push(`${ip}/${ip.includes(':') ? 128 : 32}`);
+      if (!b.blocked) settings.listeners.blocklist = list.filter((c) => !own(c));
+      const dev = deviceJSON(d, now);
+      const by = blockedBy(ip);
+      return json(!b.blocked && by ? { ...dev, blocked_by: by } : dev);
+    }
     return json(deviceJSON(d, now));
   }
   if (method === 'GET' && p === '/api/settings') return json(settings);

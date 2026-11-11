@@ -146,6 +146,7 @@ const SHOTS = [
       i.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));`,
     after: 800,
     check: `document.body.innerText.includes('edge-fw-01a')`,
+    report: `JSON.stringify({ err: [...document.querySelectorAll('[role=alert]')].map((x) => x.textContent), input: !!document.getElementById('edit-name-10.1.0.1'), rows: [...document.querySelectorAll('tbody tr')].slice(0, 3).map((r) => r.textContent.slice(0, 60)) })`,
   },
   {
     name: 'dashboard-group-paused-light',
@@ -246,6 +247,7 @@ const SHOTS = [
     after: 4000,
     check: `(() => { const l = [...document.querySelectorAll('[role=log] .logline')];
       return l.length > 0 && l.every((x) => x.offsetHeight <= 24 && x.textContent.includes('\\\\r\\\\n')); })()`,
+    report: `JSON.stringify([...document.querySelectorAll('[role=log] .logline')].slice(0, 6).map((x) => [x.offsetHeight, x.textContent.slice(0, 140)]))`,
   },
   {
     name: 'search-embedded-break-light',
@@ -485,6 +487,103 @@ const SHOTS = [
     act: `document.querySelector('.banner.error [aria-label="Hide this alert"]').click(); await __tick();`,
     after: 300,
     check: `!document.body.innerText.includes('TCP 514 is in use') && !(sessionStorage.getItem('woodpile.dismissed') ?? '').includes('listener_bind')`,
+  },
+
+  // ---- Blocking a sender ----
+  {
+    name: 'block-from-dashboard-light',
+    mode: 'light',
+    url: '/?mock_panel=0&mock_rate=120#/dashboard',
+    wait: 2500,
+    act: `document.querySelector('[aria-label="More for edge-fw-02"]').click(); await __tick();
+      [...document.querySelectorAll('[role=menuitem]')].find((b) => b.textContent.startsWith('Block this sender')).click(); await __tick();
+      const dlg = document.querySelector('[role=alertdialog]');
+      if (!dlg || !dlg.textContent.includes('Block 10.1.0.2 (edge-fw-02)?') || !dlg.textContent.includes("Woodpile will refuse and count its messages. Its existing logs stay searchable.")) throw new Error('no confirmation');
+      [...dlg.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Block').click();
+      await new Promise((r) => setTimeout(r, 1500));
+      window.__n0 = [...document.querySelectorAll('[role=log] .logline .c.h')].filter((h) => h.textContent === 'edge-fw-02').length;
+      await new Promise((r) => setTimeout(r, 3000));`,
+    after: 100,
+    check: `(() => { const n1 = [...document.querySelectorAll('[role=log] .logline .c.h')].filter((h) => h.textContent === 'edge-fw-02').length;
+      return n1 === window.__n0 && ![...document.querySelectorAll('.strip .chip')].some((c) => c.textContent.includes('edge-fw-02'))
+        && document.body.innerText.includes('Blocked 10.1.0.2 (edge-fw-02).') && !!__btn('Undo') && /Show blocked \\(1\\)/.test(document.body.innerText); })()`,
+  },
+  {
+    name: 'block-undo-restores-chip',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/dashboard',
+    wait: 2000,
+    act: `document.querySelector('[aria-label="More for edge-fw-02"]').click(); await __tick();
+      [...document.querySelectorAll('[role=menuitem]')].find((b) => b.textContent.startsWith('Block this sender')).click(); await __tick();
+      [...document.querySelector('[role=alertdialog]').querySelectorAll('button')].find((b) => b.textContent.trim() === 'Block').click();
+      await new Promise((r) => setTimeout(r, 1200));
+      __btn('Undo').click();`,
+    after: 1500,
+    check: `[...document.querySelectorAll('.strip .chip')].some((c) => c.textContent.includes('edge-fw-02')) && !/Show blocked/.test(document.body.innerText)`,
+  },
+  {
+    name: 'block-from-tail-line-menu',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/dashboard',
+    wait: 2500,
+    act: `const line = [...document.querySelectorAll('[role=log] .logline')].find((l) => l.querySelector('.c.h').textContent === 'edge-fw-01');
+      line.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 400, clientY: 400 })); await __tick();`,
+    after: 300,
+    check: `[...document.querySelectorAll('[role=menuitem]')].some((b) => b.textContent.startsWith('Block this sender')) && document.querySelector('[role=menu]').textContent.includes('10.1.0.1 (edge-fw-01)')`,
+  },
+  {
+    name: 'devices-blocked-filter-light',
+    mode: 'light',
+    url: '/?mock_panel=0&mock_blocked=10.1.0.2/32,10.8.0.1#/devices',
+    wait: 1500,
+    act: `[...document.querySelectorAll('[role=radio]')].find((b) => b.textContent === 'Blocked').click();`,
+    after: 1500,
+    check: `(() => { const rows = [...document.querySelectorAll('tbody tr')]; return rows.length === 2
+      && rows.every((r) => r.textContent.includes('Blocked') && !!r.querySelector('button') && [...r.querySelectorAll('button')].some((b) => b.textContent.trim() === 'Unblock')); })()`,
+  },
+  {
+    name: 'unblock-still-covered-by-cidr',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0&mock_blocked=10.1.0.2/32,10.1.0.0/30#/devices',
+    wait: 1500,
+    act: `[...document.querySelectorAll('[role=radio]')].find((b) => b.textContent === 'Blocked').click(); await new Promise((r) => setTimeout(r, 1200));
+      const row = [...document.querySelectorAll('tbody tr')].find((r) => r.textContent.includes('edge-fw-02'));
+      [...row.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Unblock').click();`,
+    after: 1200,
+    check: `document.body.innerText.includes('Still blocked by 10.1.0.0/30 in Settings → Blocklist.')
+      && document.querySelector('a[href="#/settings?section=blocklist"]')?.textContent === 'Open the blocklist'
+      && [...document.querySelectorAll('tbody tr')].some((r) => r.textContent.includes('edge-fw-02'))`,
+  },
+  {
+    name: 'settings-blocklist-round-trip',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/settings',
+    act: `const t = __field('Blocklist');
+      __set(t, '203.0.113.0/24' + String.fromCharCode(10) + '10.1.0.300'); await __tick(); __btn('Save').click();
+      await new Promise((r) => setTimeout(r, 800));
+      const e = document.getElementById('err-listeners.blocklist');
+      if (!e || !e.textContent.includes('Entry 2 (10.1.0.300)')) throw new Error('no blocklist entry error: ' + (e && e.textContent));
+      __set(t, '203.0.113.0/24' + String.fromCharCode(10) + '10.1.0.2'); await __tick(); __btn('Save').click();
+      await new Promise((r) => setTimeout(r, 800));
+      location.hash = '#/about'; await new Promise((r) => setTimeout(r, 500)); location.hash = '#/settings';`,
+    after: 1500,
+    check: `__field('Blocklist').value === '203.0.113.0/24' + String.fromCharCode(10) + '10.1.0.2'`,
+  },
+  {
+    name: 'refused-blocked-sender-unblock',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0&mock_blocked=10.1.0.2/32#/settings',
+    wait: 4000,
+    act: `const row = [...document.querySelectorAll('tr')].find((r) => r.textContent.includes('10.1.0.2') && r.textContent.includes('blocked'));
+      if (!row) throw new Error('no blocked refusal row');
+      row.querySelector('[aria-label="Unblock 10.1.0.2"]').click();`,
+    after: 300,
+    check: `!__field('Blocklist').value.includes('10.1.0.2')`,
   },
 
   // ---- Search ----

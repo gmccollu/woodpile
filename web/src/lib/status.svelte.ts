@@ -105,6 +105,9 @@ export function deviceName(id: string): string {
   return id;
 }
 
+/** The last known state of a device, if any device response included it. */
+export const knownDevice = (id: string) => known.get(id);
+
 /** Group names, from GET /api/groups. */
 export function groupsSeen(): string[] {
   return live.groups.map((g) => g.name);

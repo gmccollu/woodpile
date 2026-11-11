@@ -6,6 +6,7 @@
   import LiveTail from '../components/LiveTail.svelte';
   import Sparkline from '../components/Sparkline.svelte';
   import StatusDot from '../components/StatusDot.svelte';
+  import { blockUi, openMenu } from '../lib/block.svelte';
   import Icon from '../components/Icon.svelte';
 
   const ALL = '\u0000all';
@@ -41,11 +42,16 @@
   // plus the total (docs/api.md: sort=rate is busiest first).
   let strip = $state<Device[] | null>(null);
   let stripTotal = $state(0);
+  // Blocked devices are left out unless asked for; N comes from the server.
+  let showBlocked = $state(false);
+  let blockedCount = $state(0);
   $effect(() => {
+    void blockUi.version; // a block or unblock reloads the strip at once
     const p = {
       sort: 'rate' as const,
       limit: STRIP_MAX,
       hidden: 'exclude' as const,
+      blocked: showBlocked ? ('include' as const) : ('exclude' as const),
       q: filterText,
       group: tab !== ALL && tab !== UNGROUPED ? tab : undefined,
       ungrouped: tab === UNGROUPED,
@@ -54,11 +60,17 @@
     const ctrl = new AbortController();
     const loadStrip = async () => {
       try {
-        const page = await getDevices(p, ctrl.signal);
+        const [page, blk] = await Promise.all([
+          getDevices(p, ctrl.signal),
+          getDevices({ blocked: 'only', hidden: 'exclude', limit: 1 }, ctrl.signal),
+        ]);
         if (stop) return;
         remember(page.devices);
-        strip = page.devices;
+        // The server filters by blocked; checking here too keeps a server that ignores the
+        // parameter from showing blocked devices by default.
+        strip = showBlocked ? page.devices : page.devices.filter((d) => !d.blocked);
         stripTotal = page.total;
+        blockedCount = blk.devices.length ? blk.total : 0;
       } catch {
         /* keep the last strip */
       }
@@ -201,6 +213,11 @@
     <button role="tab" class="tab" aria-selected={tab === UNGROUPED} onclick={() => setTab(UNGROUPED)}>Ungrouped</button>
   {/if}
   <a class="tab" href="#/devices" title="Set groups on the Devices page" aria-label="Add a group on the Devices page"><Icon name="plus" size={16} /></a>
+  {#if blockedCount}
+    <label class="ml-auto flex items-center gap-2 text-[14px]">
+      <input type="checkbox" bind:checked={showBlocked} /> Show blocked ({num(blockedCount)})
+    </label>
+  {/if}
 </div>
 
 <div class="strip mb-4" role="group" aria-label="Devices: click to show one in the live tail, Cmd or Ctrl-click for several">
@@ -211,16 +228,21 @@
     </p>
   {/if}
   {#each chips as d (d.id)}
-    <button
-      class="chip"
-      aria-pressed={picked.includes(d.id)}
-      onclick={(e) => pick(d.id, e)}
-      title="{label(d)}{d.name ? ` (${d.ip})` : ''} · {d.status} · last heard {ago(d.last_heard, live.now, NOW_WITHIN_S)} · {rate(d.msgs_per_min)}"
-    >
-      <StatusDot status={d.status} />
-      <span class="nm">{label(d)}</span>
-      <span class="meta">{d.status === 'online' ? rate(d.msgs_per_min) : agoShort(d.last_heard, live.now, NOW_WITHIN_S)}</span>
-    </button>
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <span class="chipwrap" oncontextmenu={(e) => { e.preventDefault(); openMenu(d.id, e.clientX, e.clientY); }}>
+      <button
+        class="chip"
+        class:isblocked={d.blocked}
+        aria-pressed={picked.includes(d.id)}
+        onclick={(e) => pick(d.id, e)}
+        title="{label(d)}{d.name ? ` (${d.ip})` : ''} · {d.status} · last heard {ago(d.last_heard, live.now, NOW_WITHIN_S)} · {rate(d.msgs_per_min)}"
+      >
+        <StatusDot status={d.status} />
+        <span class="nm">{label(d)}</span>
+        {#if d.blocked}<span class="badge">blocked</span>{:else}<span class="meta">{d.status === 'online' ? rate(d.msgs_per_min) : agoShort(d.last_heard, live.now, NOW_WITHIN_S)}</span>{/if}
+      </button>
+      <button class="dots" aria-label="More for {label(d)}" title="Block or unblock" onclick={(e) => { const r = e.currentTarget.getBoundingClientRect(); openMenu(d.id, r.left, r.bottom + 4); }}>⋯</button>
+    </span>
   {/each}
   {#if stripTotal > STRIP_MAX}
     <a class="chip more" href="#/devices">All {num(stripTotal)} devices →</a>
@@ -264,6 +286,44 @@
     overflow-x: auto;
     padding: 2px 2px 6px;
     scrollbar-width: thin;
+  }
+  .chipwrap {
+    position: relative;
+    flex: none;
+    display: inline-flex;
+  }
+  .chipwrap .chip {
+    padding-right: 34px;
+  }
+  .dots {
+    position: absolute;
+    right: 6px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    border: 0;
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+    line-height: 1;
+  }
+  .dots:hover,
+  .dots:focus-visible {
+    background: var(--glass-strong);
+    color: var(--fg);
+  }
+  .chip.isblocked .nm {
+    color: var(--muted);
+  }
+  .badge {
+    font-size: 11.5px;
+    font-weight: 600;
+    padding: 1px 7px;
+    border-radius: 999px;
+    border: 1px solid var(--input-border);
+    color: var(--muted);
   }
   .chip {
     flex: none;
