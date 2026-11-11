@@ -329,7 +329,9 @@ func SharedAccess(path string) ([]string, error) {
 	return SharedTrustees(sd.String()), nil
 }
 
-// OwnedByCurrentUser reports whether path's owner is this process's user.
+// OwnedByCurrentUser reports whether path's owner is this process's user, or
+// Administrators when this process is elevated (an elevated administrator's new
+// files are owned by the Administrators group).
 func OwnedByCurrentUser(path string) (bool, error) {
 	sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION)
 	if err != nil {
@@ -343,5 +345,8 @@ func OwnedByCurrentUser(path string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	return windows.EqualSid(o, tu.User.Sid), nil
+	if windows.EqualSid(o, tu.User.Sid) {
+		return true, nil
+	}
+	return windows.GetCurrentProcessToken().IsElevated() && o.IsWellKnown(windows.WinBuiltinAdministratorsSid), nil
 }

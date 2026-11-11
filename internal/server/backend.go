@@ -27,6 +27,9 @@ import (
 
 // backend implements api.Backend on top of the real packages.
 type backend struct {
+	// startupBanners are shown for the whole run (a data folder others can read).
+	startupBanners []api.Banner
+
 	cfgPath string
 	idx     *index.DB
 	store   *store.Store
@@ -209,7 +212,7 @@ func (b *backend) Status(ctx context.Context) (api.Status, error) {
 			Proto: l.Proto, Addr: l.Addr, Port: l.Port, OK: l.OK, Error: l.Error, Holder: l.Holder,
 		})
 	}
-	st.Banners = buildBanners(ls.Listeners, b.store.Usage(), cfg.Storage.DataDir)
+	st.Banners = append(buildBanners(ls.Listeners, b.store.Usage(), cfg.Storage.DataDir), b.startupBanners...)
 	return st, nil
 }
 

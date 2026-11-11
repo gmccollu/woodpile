@@ -27,13 +27,14 @@ daemon, and needs administrator rights on Linux), the server still starts: the
 UI shows a banner with the error and a Retry button.`, stderr)
 	cfg := configFlag(fs)
 	asService := fs.Bool("service", false, "run under the OS service manager (used by the installed service)")
+	allowShared := fs.Bool("allow-shared-data-dir", false, "with --service: start even if Everyone, Users or Authenticated Users can open the data folder (Windows)")
 	if code, done := parse(fs, args, stdout); done {
 		return code
 	}
 
 	if *asService {
 		err := service.Run(*cfg, server.DefaultShutdownTimeout, func(ctx context.Context, log *slog.Logger) error {
-			return serve(ctx, *cfg, log, nil)
+			return serve(ctx, *cfg, log, nil, serveOpts{service: true, allowShared: *allowShared})
 		})
 		if err != nil {
 			return fail(stderr, "run", err)
@@ -44,7 +45,7 @@ UI shows a banner with the error and a Retry button.`, stderr)
 	log := slog.New(slog.NewTextHandler(stderr, nil))
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	if err := serve(ctx, *cfg, log, stdout); err != nil {
+	if err := serve(ctx, *cfg, log, stdout, serveOpts{allowShared: *allowShared}); err != nil {
 		return fail(stderr, "run", err)
 	}
 	return 0
@@ -52,12 +53,16 @@ UI shows a banner with the error and a Retry button.`, stderr)
 
 // serve opens and runs the server until ctx is done. With hello set, it prints
 // where the UI is once the server is open.
-func serve(ctx context.Context, cfgPath string, log *slog.Logger, hello io.Writer) error {
+type serveOpts struct{ service, allowShared bool }
+
+func serve(ctx context.Context, cfgPath string, log *slog.Logger, hello io.Writer, so serveOpts) error {
 	srv, err := server.Open(cfgPath, server.Options{
-		Version:     version,
-		Commit:      commit,
-		ReleasesURL: releasesURL,
-		Logger:      log,
+		Version:            version,
+		Commit:             commit,
+		ReleasesURL:        releasesURL,
+		Logger:             log,
+		Service:            so.service,
+		AllowSharedDataDir: so.allowShared,
 	})
 	if err != nil {
 		if errors.Is(err, os.ErrPermission) {

@@ -117,5 +117,65 @@ if (-not (Close-Console $p (Join-Path $data "woodpile.log") $data $run 10000)) {
         Write-Host "NOTE even conhost.exe gives a pseudo console here; CTRL_CLOSE_EVENT is unproven on this runner"
     }
 }
+# ---- re-test N2: data-folder ACLs for `woodpile run` ----
+function Broad($dir) { $sddl = (Get-Acl $dir).Sddl; Write-Host "  $dir ACL: $sddl"; return ($sddl -match ";;;(BU|AU|WD|IU)\)" -or $sddl -match ";;;S-1-5-32-545\)") }
+function Wait-UI($port) {
+    for ($i = 0; $i -lt 30; $i++) { try { Invoke-RestMethod -TimeoutSec 2 "http://127.0.0.1:$port/healthz" | Out-Null; return $true } catch { Start-Sleep 1 } }
+    return $false
+}
+function Write-TestConfig($dir) {
+    New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    $d = $dir -replace '\\', '\\'
+    Set-Content -Encoding ascii (Join-Path $dir "woodpile.toml") @"
+[listeners.udp]
+enabled = true
+addr = "127.0.0.1"
+port = 15514
+[listeners.tcp]
+enabled = true
+addr = "127.0.0.1"
+port = 15514
+[storage]
+data_dir = "$d"
+[ui]
+port = 18514
+"@
+}
+
+Write-Host "==> woodpile run with the default config creates C:\ProgramData\Woodpile with a protected ACL"
+$pd = Join-Path $env:ProgramData "Woodpile"
+if (Test-Path $pd) { Die "$pd exists already on this runner" }
+$r = Start-Process -FilePath $exe -ArgumentList "run" -PassThru -RedirectStandardOutput (Join-Path $work "run-default.out") -RedirectStandardError (Join-Path $work "run-default.err.out")
+if (-not (Wait-UI 8514)) { Die "woodpile run didn't come up" }
+if (Broad $pd) { Die "$pd lets Users, Authenticated Users or Everyone in" }
+if ((Get-Acl $pd).Sddl -notmatch "D:P") { Die "$pd's ACL isn't protected" }
+Ok "a new C:\ProgramData\Woodpile is protected (no Users, Authenticated Users or Everyone)"
+Stop-Process -Id $r.Id -Force; $r.WaitForExit(10000) | Out-Null
+
+# C:\ grants Authenticated Users modify and Users read to new folders: a shared folder.
+$shared = "C:\wp-shared"
+Write-TestConfig $shared
+if (-not (Broad $shared)) { Die "the test folder $shared isn't shared to begin with" }
+Write-Host "==> under the service, a shared data folder stops the start"
+$out = & $exe run --service --config (Join-Path $shared "woodpile.toml") 2>&1 | Out-String
+Write-Host $out
+if ($LASTEXITCODE -eq 0 -or $out -notmatch "allow-shared-data-dir") { Die "--service started on a shared data folder (exit $LASTEXITCODE)" }
+Ok "--service refuses a data folder Users can open, and names --allow-shared-data-dir"
+Write-Host "==> --allow-shared-data-dir starts it, with a banner"
+$r = Start-Process -FilePath $exe -ArgumentList "run","--service","--allow-shared-data-dir","--config",(Join-Path $shared "woodpile.toml") -PassThru `
+    -RedirectStandardOutput (Join-Path $work "run-shared.out") -RedirectStandardError (Join-Path $work "run-shared.err.out")
+if (-not (Wait-UI 18514)) { Die "--allow-shared-data-dir didn't start" }
+$st = Invoke-RestMethod "http://127.0.0.1:18514/api/status"
+if (-not ($st.banners | Where-Object { $_.kind -eq "shared_data_dir" })) { Die "no shared_data_dir banner" }
+Ok "with --allow-shared-data-dir it starts and shows the shared_data_dir banner"
+Stop-Process -Id $r.Id -Force; $r.WaitForExit(10000) | Out-Null
+Write-Host "==> woodpile run (not the service) fixes a shared folder this user owns"
+$r = Start-Process -FilePath $exe -ArgumentList "run","--config",(Join-Path $shared "woodpile.toml") -PassThru `
+    -RedirectStandardOutput (Join-Path $work "run-fix.out") -RedirectStandardError (Join-Path $work "run-fix.err.out")
+if (-not (Wait-UI 18514)) { Die "woodpile run didn't start" }
+if (Broad $shared) { Die "woodpile run left $shared shared" }
+Ok "woodpile run made a shared folder it owns private"
+Stop-Process -Id $r.Id -Force; $r.WaitForExit(10000) | Out-Null
+
 Copy-Item "$work\*.out" $Logs -ErrorAction SilentlyContinue
 Write-Host "`nportable smoke test (Windows): $script:passes checks passed"

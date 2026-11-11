@@ -55,3 +55,42 @@ func InheritedDACL(dir bool) (string, error) {
 	}
 	return b.String(), nil
 }
+
+// broadTrustees are the groups a data folder must never let in (re-test N2): every
+// local user would read the logs, or plant files.
+var broadTrustees = map[string]string{
+	"WD": "Everyone", "S-1-1-0": "Everyone",
+	"BU": "Users", "S-1-5-32-545": "Users",
+	"AU": "Authenticated Users", "S-1-5-11": "Authenticated Users",
+	"IU": "Interactive", "S-1-5-4": "Interactive",
+}
+
+// SharedTrustees returns the broad groups (Everyone, Users, Authenticated Users,
+// Interactive) that an SDDL's DACL allows any access, in order, without repeats.
+func SharedTrustees(sddl string) []string {
+	i := strings.Index(sddl, "D:")
+	if i < 0 {
+		return nil
+	}
+	rest := sddl[i+2:]
+	if j := strings.Index(rest, "S:"); j >= 0 { // the SACL, if any, follows
+		rest = rest[:j]
+	}
+	var out []string
+	for _, part := range strings.Split(rest, "(")[1:] {
+		f := strings.Split(strings.TrimSuffix(strings.TrimSpace(part), ")"), ";")
+		if len(f) < 6 || (f[0] != "A" && f[0] != "OA") {
+			continue
+		}
+		if name, ok := broadTrustees[strings.TrimSuffix(f[5], ")")]; ok {
+			dup := false
+			for _, o := range out {
+				dup = dup || o == name
+			}
+			if !dup {
+				out = append(out, name)
+			}
+		}
+	}
+	return out
+}

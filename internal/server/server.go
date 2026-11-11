@@ -30,7 +30,6 @@ import (
 	"github.com/gmccollu/woodpile/internal/listen"
 	"github.com/gmccollu/woodpile/internal/search"
 	"github.com/gmccollu/woodpile/internal/store"
-	"github.com/gmccollu/woodpile/internal/winacl"
 )
 
 // DefaultShutdownTimeout bounds the whole shutdown. It stays under the 20 s the
@@ -45,6 +44,12 @@ type Options struct {
 
 	Logger          *slog.Logger  // default slog.Default()
 	ShutdownTimeout time.Duration // default DefaultShutdownTimeout
+
+	// Service says the OS service manager runs this server: a data folder that
+	// Everyone, Users or Authenticated Users can open then stops it from starting
+	// (re-test N2), unless AllowSharedDataDir is set.
+	Service            bool
+	AllowSharedDataDir bool
 }
 
 // Server is an opened Woodpile service. Call Run once.
@@ -88,6 +93,16 @@ func Open(cfgPath string, opts Options) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("config path %q: %w", cfgPath, err)
 	}
+	// Folders this start creates are protected as they're created (re-test N2):
+	// LoadConfig writes a new config, creating its folder, which on Windows would
+	// otherwise inherit ProgramData's ACL (Users may read and create).
+	createdHere := map[string]bool{}
+	if cd := filepath.Dir(abs); !exists(cd) {
+		if err := makeProtectedDir(cd); err != nil {
+			return nil, fmt.Errorf("create the config folder: %w", err)
+		}
+		createdHere[filepath.Clean(cd)] = true
+	}
 	cfg, created, err := LoadConfig(abs)
 	if err != nil {
 		return nil, err
@@ -99,16 +114,17 @@ func Open(cfgPath string, opts Options) (*Server, error) {
 		return nil, fmt.Errorf("%s has invalid settings: %w", abs, errs)
 	}
 	dataDir := cfg.Storage.DataDir
-	_, statErr := os.Stat(dataDir)
-	if err := os.MkdirAll(dataDir, 0o750); err != nil {
-		return nil, fmt.Errorf("create the data folder: %w", err)
-	}
-	// A folder created here (not by an installer) gets, on Windows, a protected ACL
-	// for this account, SYSTEM and Administrators (security review M3).
-	if errors.Is(statErr, os.ErrNotExist) {
-		if err := winacl.ProtectForCurrentUser(dataDir); err != nil {
-			return nil, fmt.Errorf("protect the new data folder: %w", err)
+	if !exists(dataDir) {
+		// A folder created here (not by an installer) gets, on Windows, a protected
+		// ACL for this account, SYSTEM and Administrators (security review M3).
+		if err := makeProtectedDir(dataDir); err != nil {
+			return nil, fmt.Errorf("create the data folder: %w", err)
 		}
+		createdHere[filepath.Clean(dataDir)] = true
+	}
+	sharedBanner, err := checkSharedDataDir(dataDir, createdHere[filepath.Clean(dataDir)], opts, log)
+	if err != nil {
+		return nil, err
 	}
 
 	s := &Server{opts: opts, log: log, cfgPath: abs, created: created}
@@ -166,6 +182,10 @@ func Open(cfgPath string, opts Options) (*Server, error) {
 		search:  s.search,
 		exports: s.exports,
 	})
+	if sharedBanner != nil {
+		s.be.startupBanners = append(s.be.startupBanners, *sharedBanner)
+		s.be.serviceEvent(index.LevelError, index.KindError, sharedBanner.Text)
+	}
 	s.hub = hub.New(hub.Options{GroupOf: s.be.groupOf, HiddenOf: s.be.hiddenOf})
 	s.be.hub = s.hub
 	if err := s.be.refreshGroups(context.Background()); err != nil {

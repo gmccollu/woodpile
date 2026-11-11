@@ -63,3 +63,17 @@ func TestInheritedDACL(t *testing.T) {
 		}
 	}
 }
+
+func TestSharedTrustees(t *testing.T) {
+	for sddl, want := range map[string]string{
+		DataSDDL: "",
+		"O:BAG:SYD:AI(A;OICIID;FA;;;SY)(A;OICIID;FA;;;BA)(A;OICIID;0x1200a9;;;BU)(A;CIID;DCLCRPCR;;;BU)": "Users",
+		"D:P(A;;FA;;;WD)(A;;FR;;;S-1-5-11)(D;;FA;;;BU)":                                                  "Everyone,Authenticated Users",
+		"D:(A;;FA;;;S-1-5-4)S:(AU;SA;FA;;;WD)":                                                           "Interactive",
+		"no dacl":                                                                                        "",
+	} {
+		if got := strings.Join(SharedTrustees(sddl), ","); got != want {
+			t.Errorf("%s: %q, want %q", sddl, got, want)
+		}
+	}
+}
