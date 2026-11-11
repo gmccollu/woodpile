@@ -60,6 +60,9 @@ type device struct {
 
 	renameRetry time.Time // don't retry a failed part rename before this
 	needResync  bool      // re-read the file before the next write
+	evicted     bool      // removed from the store; writers must look the device up again
+	lastHeard   time.Time // received time of the latest message (for idle eviction)
+	lastFlush   int       // bytes in the last flushed buffer (sizes the next one)
 
 	fileMu    sync.Mutex
 	dirty     bool   // written since the last fsync (fileMu)
@@ -71,13 +74,26 @@ func newDevice(s *Store, addr netip.Addr) *device {
 	return &device{s: s, addr: addr, id: id, ip: addr.String(), dir: filepath.Join(s.logsDir, id)}
 }
 
-var bufPool = sync.Pool{New: func() any { b := make([]byte, 0, 32<<10); return &b }}
+// Buffers: a device starts with a small buffer that grows by append, so many quiet
+// or one-message senders cost about 1 KiB each until the next flush. A device whose
+// last flush was big takes a pooled large buffer instead.
+const (
+	smallBufSize = 1 << 10
+	bigBufSize   = 64 << 10
+)
 
-func getBuf() []byte { return (*bufPool.Get().(*[]byte))[:0] }
+var bufPool = sync.Pool{New: func() any { b := make([]byte, 0, bigBufSize); return &b }}
+
+func (d *device) newBuf() []byte {
+	if d.lastFlush >= bigBufSize/4 {
+		return (*bufPool.Get().(*[]byte))[:0]
+	}
+	return make([]byte, 0, smallBufSize)
+}
 
 func putBuf(b []byte) {
-	if cap(b) > 4<<20 {
-		return
+	if cap(b) < bigBufSize || cap(b) > 4<<20 {
+		return // small ones go to the GC; huge ones aren't worth keeping
 	}
 	b = b[:0]
 	bufPool.Put(&b)
@@ -97,10 +113,15 @@ func (d *device) appendLocked(rec time.Time, m *model.Message) error {
 		d.rotateLocked(rotMidnight)
 	}
 	if d.day == "" {
+		// A device recreated after eviction doesn't remember which days it closed;
+		// the catalog does. Never reopen a closed day.
+		for d.s.dayClosed(d.id, day) {
+			day = nextDay(day)
+		}
 		d.startDayLocked(day)
 	}
 	if d.buf == nil {
-		d.buf = getBuf()
+		d.buf = d.newBuf()
 	}
 	start := len(d.buf)
 	d.buf = logfile.AppendLine(d.buf, rec, d.addr, m.Raw)
@@ -111,7 +132,7 @@ func (d *device) appendLocked(rec time.Time, m *model.Message) error {
 		d.buf = d.buf[:start]
 		d.rotateLocked(rotSize)
 		if d.buf == nil {
-			d.buf = getBuf()
+			d.buf = d.newBuf()
 		}
 		d.buf = append(d.buf, line...)
 	}
@@ -220,6 +241,7 @@ func (d *device) flushLocked() error {
 		d.mergeAct(a)
 	}
 	d.bufAct = d.bufAct[:0]
+	d.lastFlush = len(d.buf)
 	putBuf(d.buf)
 	d.buf = nil
 	d.s.touch(d)
@@ -542,4 +564,17 @@ func (s *Store) touch(d *device) {
 		s.lru.MoveToFront(d.elem)
 	}
 	s.lruMu.Unlock()
+}
+
+// idleLocked reports whether the device can be evicted: no active file, nothing
+// buffered or uncounted, no handle or pending fsync, and quiet for IdleEvict.
+func (d *device) idleLocked(now time.Time) bool {
+	if d.closed || d.day != "" || len(d.buf) > 0 || len(d.act) > 0 || len(d.bufAct) > 0 || d.f != nil ||
+		now.Sub(d.lastHeard) < d.s.opts.IdleEvict {
+		return false
+	}
+	d.fileMu.Lock()
+	dirty := d.dirty
+	d.fileMu.Unlock()
+	return !dirty
 }

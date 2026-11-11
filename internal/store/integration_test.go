@@ -249,7 +249,8 @@ func benchWrite(b *testing.B, devices int) {
 		b.Fatal(err)
 	}
 	defer idx.Close()
-	s, err := Open(Options{DataDir: dir, Index: idx, Logger: quiet})
+	// A fleet this size arrives faster than the new-device rate; admit it all up front.
+	s, err := Open(Options{DataDir: dir, Index: idx, Logger: quiet, NewDeviceBurst: devices})
 	if err != nil {
 		b.Fatal(err)
 	}

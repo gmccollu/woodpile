@@ -135,9 +135,16 @@ func (s *Store) recover(ctx context.Context) error {
 				active = &list[i]
 			}
 		}
+		s.devMu.Lock()
+		s.known[dev] = struct{}{} // has logs: exempt from the new-device rate
+		s.devMu.Unlock()
+		// Only devices with an active file need in-memory state now; the others are
+		// created on their next message (dayClosed keeps them off closed days).
 		var d *device
-		if addr, ok := s.deviceAddr(ctx, dev, list); ok {
-			d = s.device(addr)
+		if active != nil {
+			if addr, ok := s.deviceAddr(ctx, dev, list); ok {
+				d, _ = s.device(addr, false)
+			}
 		}
 		if d == nil {
 			active = nil // without the sender's address we can't append; close it instead

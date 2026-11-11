@@ -13,6 +13,7 @@ package index
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -52,6 +53,9 @@ func Open(path string) (*DB, error) {
 	q.Add("_pragma", "synchronous(NORMAL)")
 	q.Add("_pragma", "foreign_keys(1)")
 	q.Set("_txlock", "immediate")
+	if err := prepareFiles(path); err != nil {
+		return nil, fmt.Errorf("index: %w", err)
+	}
 	sdb, err := sql.Open("sqlite", path+"?"+q.Encode())
 	if err != nil {
 		return nil, fmt.Errorf("index: open %s: %w", path, err)
@@ -63,6 +67,12 @@ func Open(path string) (*DB, error) {
 	if err := d.migrate(context.Background()); err != nil {
 		sdb.Close()
 		return nil, err
+	}
+	// The migration wrote, so the -wal and -shm files exist now; give them the
+	// database's mode and owner too.
+	if err := prepareFiles(path); err != nil {
+		sdb.Close()
+		return nil, fmt.Errorf("index: %w", err)
 	}
 	return d, nil
 }
@@ -216,18 +226,13 @@ func b2i(b bool) int {
 	return 0
 }
 
-// inList returns "(?,?,?)" and the args for an IN clause.
+// inList returns an IN-clause operand and its one argument for a set of ids. The ids
+// travel as a single JSON array read with json_each, so any number of them fits
+// (one placeholder per id hits SQLite's ~32k variable limit).
 func inList(ids []string) (string, []any) {
-	var b strings.Builder
-	args := make([]any, len(ids))
-	b.WriteByte('(')
-	for i, id := range ids {
-		if i > 0 {
-			b.WriteByte(',')
-		}
-		b.WriteByte('?')
-		args[i] = id
+	if ids == nil {
+		ids = []string{}
 	}
-	b.WriteByte(')')
-	return b.String(), args
+	b, _ := json.Marshal(ids)
+	return `(SELECT value FROM json_each(?))`, []any{string(b)}
 }

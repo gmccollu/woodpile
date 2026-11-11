@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -203,6 +204,9 @@ func (s *stmts) activity(a Activity) error {
 	minute := a.Minute.Truncate(time.Minute)
 	if _, err := s.exec(upsertStatsSQL, a.DeviceID, ms(minute), a.Msgs, a.Bytes, a.Truncated, a.Dropped); err != nil {
 		return err
+	}
+	if strings.HasPrefix(a.DeviceID, "_") {
+		return nil // a synthetic stats id (RefusedDeviceID): no devices row
 	}
 	first, last := a.FirstHeard, a.LastHeard
 	if first.IsZero() {

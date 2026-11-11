@@ -43,6 +43,11 @@ const (
 	DefaultSyncInterval   = 5 * time.Second
 	DefaultMaxOpenFiles   = 512
 	DefaultCloseWorkers   = 8
+
+	DefaultMaxDevices          = 10000
+	DefaultNewDeviceBurst      = 1000
+	DefaultNewDevicesPerMinute = 100.0
+	DefaultIdleEvict           = time.Minute
 )
 
 // Errors returned by Write.
@@ -50,6 +55,7 @@ var (
 	ErrClosed        = errors.New("store: closed")
 	ErrPaused        = errors.New("store: writes paused: the disk is nearly full")
 	ErrInvalidSender = errors.New("store: message has no valid sender address")
+	ErrDeviceLimit   = errors.New("store: new sender refused: device cap or new-device rate reached")
 )
 
 // Options configures a Store. Zero fields take the defaults above.
@@ -77,6 +83,19 @@ type Options struct {
 	FlushBytes    int           // and whenever a device's buffer reaches this
 	SyncInterval  time.Duration // fsync written files this often
 	MaxOpenFiles  int           // cap on open log file handles (LRU)
+	// New-sender limits, so spoofed or rotating source addresses can't exhaust memory
+	// and disk. At most MaxDevices senders are held in memory at once. A sender with
+	// no logs on disk yet also needs a token from a bucket of NewDeviceBurst that
+	// refills at NewDevicesPerMinute. A refused message counts as dropped (stats under
+	// index.RefusedDeviceID, Usage.RefusedMsgs) and Write returns ErrDeviceLimit.
+	MaxDevices          int
+	NewDeviceBurst      int
+	NewDevicesPerMinute float64
+	// IdleEvict frees a sender's in-memory state once it has no open file (its day
+	// was closed) and nothing was heard for this long. It's recreated on its next
+	// message; its index row is kept.
+	IdleEvict time.Duration
+
 	// CloseWorkers bounds how many closed files (yesterday's at midnight, or a full
 	// part) are fsynced at once, off the write path.
 	CloseWorkers int
@@ -118,9 +137,20 @@ type Store struct {
 	retentionBytes atomic.Int64
 	partBytes      atomic.Int64
 
-	devices sync.Map // netip.Addr -> *device
+	devices sync.Map // netip.Addr -> *device, for the lock-free lookup in Write
 	devMu   sync.Mutex
-	devList []*device // every device, for iteration (append only)
+	devSet  map[netip.Addr]*device // the same devices, authoritative (devMu)
+	known   map[string]struct{}    // device IDs with logs on disk or seen since Open (devMu)
+	tokens  float64                // new-device bucket (devMu)
+	tokenAt time.Time
+
+	refMu       sync.Mutex
+	refMinutes  map[int64]int64 // refused messages per unix minute, not yet in the index
+	refPending  int64           // refused since the last device_limit event
+	refReason   string          // "cap" or "rate", the latest
+	lastRefEv   time.Time
+	refusedMsgs atomic.Int64
+	lastRefused atomic.Int64 // unix ms
 
 	closed      atomic.Bool
 	paused      atomic.Bool
@@ -171,7 +201,8 @@ type Store struct {
 	closeWG   sync.WaitGroup
 	syncPath  func(path string) error // fsync by path; tests slow it down
 
-	lastRollup time.Time
+	lastRollup     time.Time
+	lastFloodCheck time.Time
 
 	// clockHW is the highest received time written (unix ms), to notice the
 	// received clock stepping back (watchClock).
@@ -228,6 +259,10 @@ func Open(opts Options) (*Store, error) {
 	setDefault(&opts.SyncInterval, DefaultSyncInterval)
 	setDefault(&opts.MaxOpenFiles, DefaultMaxOpenFiles)
 	setDefault(&opts.CloseWorkers, DefaultCloseWorkers)
+	setDefault(&opts.MaxDevices, DefaultMaxDevices)
+	setDefault(&opts.NewDeviceBurst, DefaultNewDeviceBurst)
+	setDefault(&opts.NewDevicesPerMinute, DefaultNewDevicesPerMinute)
+	setDefault(&opts.IdleEvict, DefaultIdleEvict)
 	if opts.Clock == nil {
 		opts.Clock = time.Now
 	}
@@ -252,7 +287,11 @@ func Open(opts Options) (*Store, error) {
 		stop:       make(chan struct{}),
 		compressCh: make(chan struct{}, 1),
 		syncPath:   syncPath,
+		devSet:     map[netip.Addr]*device{},
+		known:      map[string]struct{}{},
+		refMinutes: map[int64]int64{},
 	}
+	s.tokens = float64(opts.NewDeviceBurst)
 	s.closeCond = sync.NewCond(&s.closeMu)
 	s.retentionDays.Store(int64(opts.RetentionDays))
 	s.retentionBytes.Store(opts.RetentionBytes)
@@ -331,38 +370,144 @@ func (s *Store) Write(m model.Message) error {
 	}
 	rec = time.UnixMilli(rec.UnixMilli()).UTC() // the file keeps milliseconds; so does the index
 	s.watchClock(rec)
-	d := s.device(m.Sender.Unmap())
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	if d.closed {
-		return ErrClosed
+	addr := m.Sender.Unmap()
+	for {
+		d, err := s.device(addr, true)
+		if err != nil {
+			s.noteRefused(rec)
+			return err
+		}
+		if err, retry := s.writeTo(d, rec, &m); !retry {
+			return err
+		}
+		// The device was evicted between the lookup and the lock: look it up again.
 	}
-	if s.paused.Load() {
-		d.dropLocked(rec, 1)
-		return ErrPaused
-	}
-	return d.appendLocked(rec, &m)
 }
 
-// device returns the state for a sender, creating it on first use.
-func (s *Store) device(addr netip.Addr) *device {
+func (s *Store) writeTo(d *device, rec time.Time, m *model.Message) (err error, retry bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.evicted {
+		return nil, true
+	}
+	if d.closed {
+		return ErrClosed, false
+	}
+	d.lastHeard = rec
+	if s.paused.Load() {
+		d.dropLocked(rec, 1)
+		return ErrPaused, false
+	}
+	return d.appendLocked(rec, m), false
+}
+
+// device returns the state for a sender, creating it on first use. With admit set
+// (messages), a new sender must fit under MaxDevices and, if it has no logs yet, take
+// a new-device token; otherwise ErrDeviceLimit. Recovery creates devices unchecked.
+func (s *Store) device(addr netip.Addr, admit bool) (*device, error) {
 	if v, ok := s.devices.Load(addr); ok {
-		return v.(*device)
+		return v.(*device), nil
+	}
+	s.devMu.Lock()
+	defer s.devMu.Unlock()
+	if d, ok := s.devSet[addr]; ok {
+		return d, nil
+	}
+	id := model.DeviceID(addr)
+	if admit {
+		if len(s.devSet) >= s.opts.MaxDevices {
+			s.setRefuseReason("cap")
+			return nil, ErrDeviceLimit
+		}
+		if _, ok := s.known[id]; !ok {
+			now := s.clock()
+			if !s.tokenAt.IsZero() && now.After(s.tokenAt) {
+				s.tokens = min(float64(s.opts.NewDeviceBurst), s.tokens+now.Sub(s.tokenAt).Minutes()*s.opts.NewDevicesPerMinute)
+			}
+			s.tokenAt = now
+			if s.tokens < 1 {
+				s.setRefuseReason("rate")
+				return nil, ErrDeviceLimit
+			}
+			s.tokens--
+		}
 	}
 	d := newDevice(s, addr)
-	v, loaded := s.devices.LoadOrStore(addr, d)
-	if !loaded {
-		s.devMu.Lock()
-		s.devList = append(s.devList, d)
-		s.devMu.Unlock()
+	s.devSet[addr] = d
+	s.known[id] = struct{}{}
+	s.devices.Store(addr, d)
+	return d, nil
+}
+
+// evictLocked frees an idle device's in-memory state; the caller holds d.mu.
+func (s *Store) evictLocked(d *device) {
+	d.evicted = true
+	s.devMu.Lock()
+	if s.devSet[d.addr] == d {
+		delete(s.devSet, d.addr)
 	}
-	return v.(*device)
+	s.devMu.Unlock()
+	s.devices.CompareAndDelete(d.addr, d)
 }
 
 func (s *Store) allDevices() []*device {
 	s.devMu.Lock()
 	defer s.devMu.Unlock()
-	return append([]*device(nil), s.devList...)
+	out := make([]*device, 0, len(s.devSet))
+	for _, d := range s.devSet {
+		out = append(out, d)
+	}
+	return out
+}
+
+func (s *Store) setRefuseReason(r string) {
+	s.refMu.Lock()
+	s.refReason = r
+	s.refMu.Unlock()
+}
+
+// noteRefused counts a message from a refused new sender.
+func (s *Store) noteRefused(rec time.Time) {
+	s.refusedMsgs.Add(1)
+	s.dropped.Add(1)
+	s.lastRefused.Store(s.clock().UnixMilli())
+	s.refMu.Lock()
+	s.refMinutes[rec.UnixMilli()/60000]++
+	s.refPending++
+	s.refMu.Unlock()
+}
+
+// collectRefused queues refused counts for the index and, at most once a minute, a
+// warn event.
+func (s *Store) collectRefused(now time.Time, force bool) {
+	s.refMu.Lock()
+	mins := s.refMinutes
+	if len(mins) > 0 {
+		s.refMinutes = map[int64]int64{}
+	}
+	var text string
+	if s.refPending > 0 && (force || now.Sub(s.lastRefEv) >= time.Minute) {
+		why := fmt.Sprintf("the device cap (%d senders) was reached", s.opts.MaxDevices)
+		if s.refReason == "rate" {
+			why = fmt.Sprintf("new senders arrived faster than %g a minute (burst %d)", s.opts.NewDevicesPerMinute, s.opts.NewDeviceBurst)
+		}
+		text = fmt.Sprintf("refused %d messages from new senders: %s", s.refPending, why)
+		s.refPending, s.lastRefEv = 0, now
+	}
+	s.refMu.Unlock()
+	if len(mins) > 0 {
+		acts := make([]index.Activity, 0, len(mins))
+		for m, n := range mins {
+			acts = append(acts, index.Activity{DeviceID: index.RefusedDeviceID, Minute: time.UnixMilli(m * 60000).UTC(),
+				Counts: index.Counts{Dropped: n}})
+		}
+		s.qMu.Lock()
+		s.qAct = append(s.qAct, acts...)
+		s.qMu.Unlock()
+	}
+	if text != "" {
+		s.event(index.LevelWarn, index.KindDeviceLimit, "", text)
+	}
 }
 
 // Flush writes every buffer to its file, fsyncs the written files and updates the
@@ -404,6 +549,7 @@ func (s *Store) Close() error {
 		d.mu.Unlock()
 	}
 	s.drainClose()
+	s.collectRefused(s.clock(), true)
 	s.reportDrops(s.clock(), true)
 	keep(s.applyIndex())
 	return first
@@ -423,9 +569,19 @@ type Usage struct {
 	PendingCompression int       // closed files not yet gzipped
 	WritesPaused       bool      // the low-disk guard stopped writing (red banner)
 	PausedSince        time.Time // zero when not paused
-	Dropped            int64     // messages dropped since Open (paused or write errors)
+	Dropped            int64     // messages dropped since Open (paused, write errors, refused senders)
 	Written            int64     // messages written since Open
+
+	Devices           int       // senders held in memory now
+	MaxDevices        int       // the cap on Devices
+	RefusedMsgs       int64     // messages from refused new senders since Open (included in Dropped)
+	LastRefused       time.Time // zero if none
+	DeviceLimited     bool      // a new sender was refused in the last DeviceLimitWindow (device_limit banner)
+	DeviceLimitReason string    // "cap" or "rate": why the latest one was refused
 }
+
+// DeviceLimitWindow is how long Usage.DeviceLimited stays set after a refusal.
+const DeviceLimitWindow = 5 * time.Minute
 
 // Usage returns the current storage summary.
 func (s *Store) Usage() Usage {
@@ -438,6 +594,18 @@ func (s *Store) Usage() Usage {
 	}
 	if u.WritesPaused {
 		u.PausedSince = time.UnixMilli(s.pausedSince.Load()).UTC()
+	}
+	s.devMu.Lock()
+	u.Devices = len(s.devSet)
+	s.devMu.Unlock()
+	u.MaxDevices = s.opts.MaxDevices
+	u.RefusedMsgs = s.refusedMsgs.Load()
+	if ms := s.lastRefused.Load(); ms != 0 {
+		u.LastRefused = time.UnixMilli(ms).UTC()
+		u.DeviceLimited = s.clock().Sub(u.LastRefused) < DeviceLimitWindow
+		s.refMu.Lock()
+		u.DeviceLimitReason = s.refReason
+		s.refMu.Unlock()
 	}
 	s.diskMu.Lock()
 	u.FreeBytes, u.VolumeBytes = s.lastFree, s.lastTotal

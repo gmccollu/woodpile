@@ -43,6 +43,8 @@ proposal and can change.
 | Rotation | Close at 100 MiB or midnight UTC, gzip, keep 30 days / 20 GB (§3.4) **(decided)** |
 | Sizes | "GB" in this spec means GiB (1 GiB guard floor, 20 GiB cap) |
 | Low-disk reserve | max(1 GiB, min(5% of the volume, 10 GiB)): 1 GiB on a 10 GB volume, 5 GiB on 100 GB, 10 GiB on 460 GB and 4 TB (§3.4) **(decided, 2026-11-11)** |
+| Retention fairness | Over the size cap or the low-disk reserve, delete from the device using the most bytes on disk first (its oldest closed file); age retention is per file as before. A device sending over half of the last 24 h's bytes gets a warn event, at most hourly (§3.4) **(decided, 2026-11-11)** |
+| New-sender limits | At most 10,000 senders in memory (`max_devices`); senders with no logs yet also need a token (burst 1,000, then 100 a minute). Refused messages count as dropped and raise the `device_limit` banner. Idle senders with no open file are freed from memory after 1 min **(decided, 2026-11-11)** |
 | Checkpoints | Every 1 MiB, or every minute once 64 KiB has been written since the last one |
 | Durability | Plain `fsync` on every OS (on macOS that survives process and OS crashes, not necessarily power loss) |
 | Late messages | A message for a day that's already closed goes into the current file with its own timestamp; files never reopen |
@@ -132,13 +134,16 @@ frontend install.
   is a file-name lookup.
 - A background worker gzips each closed file at low priority, then verifies the gzip before deleting the
   original. Only the active file per device is uncompressed.
-- Retention applies to the compressed files: delete the oldest first when either limit is reached. Defaults:
-  **30 days or 20 GB total on disk, whichever comes first** **(decided)**.
+- Retention applies to the compressed files. Defaults: **30 days or 20 GB total on disk, whichever comes first**
+  **(decided)**. Age: every compressed file older than 30 days goes. Size: while all logs exceed the cap, delete
+  the oldest closed file of **the device using the most bytes on disk**, so a device flooding at debug level
+  shortens its own history, not everyone's. A device that sent more than half of the last 24 h's bytes is
+  reported with a warn event, at most once an hour.
 - Rotated files use gzip (`.log.gz`) rather than `.zip`. gzip streams, so search reads it without unpacking, and
   it's the standard for rotated logs. Exports are `.zip` (§4.1) because that's what people open by
   double-clicking.
 - Low-disk guard: if free space on the data volume falls below the reserve, max(1 GB, min(5% of the volume,
-  10 GB)), delete the oldest files until it's back above. The 10 GB cap keeps a large disk from reserving tens of
+  10 GB)), delete closed files until it's back above, again from the device using the most bytes first. The 10 GB cap keeps a large disk from reserving tens of
   GB it never needs (on a 460 GB disk, 5% alone paused writes with 24 GB still free). If nothing is left to
   delete, pause writing, count the dropped messages, and show a red banner that states the reserve. Never fill
   the disk.
@@ -279,6 +284,6 @@ Still unproven:
 ## 10. Open questions
 1. Where the repo lives. The answer given was the internal GHE, which conflicts with "open source on
    github.com" in §2 (see the reply of 2026-11-10).
-2. Retention fairness: with one global cap, a device flooding at debug level shortens every device's history.
-   Add an optional per-device cap or minimum days?
+2. Retention fairness: decided 2026-11-11 (largest device first, §3.4). An optional per-device cap or minimum
+   days is still open.
 3. macOS launchd daemon as `_woodpile` and the application-firewall prompt: test in M0 (see §5).

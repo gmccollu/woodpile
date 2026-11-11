@@ -83,6 +83,11 @@ type HourCounts struct {
 	Counts
 }
 
+// RefusedDeviceID is the stats id under which the store counts messages from new
+// senders it refused (device cap or new-device rate), as Dropped. It has stats rows
+// but no devices row; real device IDs never start with '_'. DeviceCounts includes it.
+const RefusedDeviceID = "_refused"
+
 // Activity is a counter delta for one device and one minute, as the store reports it.
 type Activity struct {
 	DeviceID   string
@@ -128,6 +133,10 @@ const (
 	KindAuth     Kind = "auth"
 	KindExport   Kind = "export"
 	KindClock    Kind = "clock"
+	// KindDeviceLimit: new senders refused by the device cap or new-device rate.
+	KindDeviceLimit Kind = "device_limit"
+	// KindFlood: one device sent more than half of the last 24 h's bytes.
+	KindFlood Kind = "flood"
 )
 
 // Source says what an event is about, for readers that act on events (export

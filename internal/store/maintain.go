@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -118,6 +119,10 @@ func (s *Store) maintain() error {
 	if ierr := s.applyIndex(); err == nil {
 		err = ierr
 	}
+	if now.Sub(s.lastFloodCheck) >= time.Hour { // after the apply, so it sees this pass's stats
+		s.lastFloodCheck = now
+		s.checkFloods(now)
+	}
 	if !s.opts.Manual && s.hasCompressWork(now) {
 		s.kickCompress()
 	}
@@ -126,12 +131,14 @@ func (s *Store) maintain() error {
 
 // flushAll writes every device's buffer and, with midnight set, closes files whose
 // day has ended.
+// With midnight set (the maintenance pass) it also evicts idle devices.
 func (s *Store) flushAll(midnight bool) error {
-	today := logfile.DayOf(s.clock())
+	now := s.clock()
+	today := logfile.DayOf(now)
 	var first error
 	for _, d := range s.allDevices() {
 		d.mu.Lock()
-		if !d.closed {
+		if !d.closed && !d.evicted {
 			if midnight && d.day != "" && d.day < today {
 				d.rotateLocked(rotMidnight)
 			} else if err := d.flushLocked(); err != nil && first == nil {
@@ -139,9 +146,23 @@ func (s *Store) flushAll(midnight bool) error {
 			}
 		}
 		d.collectLocked()
+		if midnight && !d.evicted && d.idleLocked(now) {
+			s.evictLocked(d)
+		}
 		d.mu.Unlock()
 	}
+	s.collectRefused(now, false)
 	return first
+}
+
+// dayClosed reports whether a device's file for day was already closed (it's in
+// the catalog, compressed or not).
+func (s *Store) dayClosed(id, day string) bool {
+	n := logfile.Name{Day: day}
+	gz := logfile.Name{Day: day, Compressed: true}
+	s.catMu.Lock()
+	defer s.catMu.Unlock()
+	return s.cat[logfile.RelPath(id, n)] != nil || s.cat[logfile.RelPath(id, gz)] != nil
 }
 
 // syncAll fsyncs every file written since the last pass, a few at a time.
@@ -246,11 +267,65 @@ func (s *Store) enforceRetention(now time.Time) {
 	if !over() {
 		return
 	}
-	for _, e := range s.sortedClosed(func(e *catEntry) bool { return e.name.Compressed }) {
-		if !over() {
-			break
+	s.deleteLargestFirst(now, index.ReasonCap, false, func(uint64) bool { return !over() })
+}
+
+// deviceBytes returns each device's bytes on disk: closed files plus its active file.
+func (s *Store) deviceBytes() map[string]int64 {
+	out := map[string]int64{}
+	s.catMu.Lock()
+	for _, e := range s.cat {
+		out[e.deviceID] += e.size
+	}
+	s.catMu.Unlock()
+	for _, d := range s.allDevices() {
+		d.mu.Lock()
+		if d.day != "" {
+			out[d.id] += d.w.size
 		}
-		s.deleteEntry(e, index.ReasonCap, now)
+		d.mu.Unlock()
+	}
+	return out
+}
+
+// deleteLargestFirst deletes closed files until done reports true (it's given the
+// bytes freed so far), always from the device with the most bytes on disk, oldest
+// file first: compressed files, then (with uncompressed) ones awaiting compression.
+// Active files are never deleted. So a flooding device pays for its own flood
+// instead of pushing out every other device's history.
+func (s *Store) deleteLargestFirst(now time.Time, reason index.Reason, uncompressed bool, done func(freed uint64) bool) {
+	bytes := s.deviceBytes()
+	cands := map[string][]*catEntry{}
+	add := func(list []*catEntry) {
+		for _, e := range list {
+			cands[e.deviceID] = append(cands[e.deviceID], e)
+		}
+	}
+	add(s.sortedClosed(func(e *catEntry) bool { return e.name.Compressed }))
+	if uncompressed {
+		add(s.sortedClosed(func(e *catEntry) bool { return !e.name.Compressed }))
+	}
+	var freed uint64
+	for !done(freed) {
+		best := ""
+		for dev, list := range cands {
+			if len(list) == 0 {
+				continue
+			}
+			if best == "" || bytes[dev] > bytes[best] || (bytes[dev] == bytes[best] && dev < best) {
+				best = dev
+			}
+		}
+		if best == "" {
+			return
+		}
+		e := cands[best][0]
+		cands[best] = cands[best][1:]
+		size := e.size
+		if s.deleteEntry(e, reason, now) {
+			bytes[best] -= size
+			freed += uint64(size)
+		}
 	}
 }
 
@@ -307,7 +382,8 @@ func (s *Store) checkDisk() (free, total uint64, ok bool) {
 }
 
 // guardDisk keeps free space above the reserve (see minFree): it asks
-// Reclaim (exports) first, then deletes the oldest closed files (compressed first, then ones still awaiting compression; never
+// Reclaim (exports) first, then deletes closed files from the largest device first
+// (see deleteLargestFirst: compressed first, then ones still awaiting compression; never
 // an active file), and pauses writing when nothing is left to delete.
 func (s *Store) guardDisk(now time.Time) {
 	free, total, ok := s.checkDisk()
@@ -324,19 +400,19 @@ func (s *Store) guardDisk(now time.Time) {
 		}
 	}
 	if free < thr {
-		cands := s.sortedClosed(func(e *catEntry) bool { return e.name.Compressed })
-		cands = append(cands, s.sortedClosed(func(e *catEntry) bool { return !e.name.Compressed })...)
-		for _, e := range cands {
-			if free >= thr {
-				break
+		diskOK := true
+		s.deleteLargestFirst(now, index.ReasonLowDisk, true, func(freed uint64) bool {
+			if freed == 0 {
+				return false
 			}
-			if !s.deleteEntry(e, index.ReasonLowDisk, now) {
-				continue
-			}
-			if free, total, ok = s.checkDisk(); !ok {
-				return
+			if free, total, diskOK = s.checkDisk(); !diskOK {
+				return true
 			}
 			thr = s.minFree(total)
+			return free >= thr
+		})
+		if !diskOK {
+			return
 		}
 	}
 	if free < thr {
@@ -409,5 +485,51 @@ func (s *Store) reportDrops(now time.Time, force bool) {
 			text = fmt.Sprintf("dropped %d messages: write error (%s)", counts[k], errs[k.dev])
 		}
 		s.event(index.LevelError, index.KindDrop, k.dev, text)
+	}
+}
+
+// Flood warning thresholds: a device sending more than floodShare of all bytes in
+// the last 24 h, when at least two devices sent and the total is at least floodMin.
+const (
+	floodShare = 0.5
+	floodMin   = 1 << 20
+)
+
+// checkFloods records a warn event for each device that sent more than half of the
+// last 24 h's bytes. It runs at most once an hour, so each device gets at most one
+// such event an hour.
+func (s *Store) checkFloods(now time.Time) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	per, err := s.idx.DeviceCounts(ctx, now.Add(-24*time.Hour), now)
+	if err != nil {
+		s.log.Warn("store: flood check failed", "err", err)
+		return
+	}
+	var total int64
+	senders := 0
+	for id, c := range per {
+		if strings.HasPrefix(id, "_") || c.Bytes == 0 {
+			continue
+		}
+		total += c.Bytes
+		senders++
+	}
+	if senders < 2 || total < floodMin {
+		return
+	}
+	ids := make([]string, 0, len(per))
+	for id := range per {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		b := per[id].Bytes
+		if strings.HasPrefix(id, "_") || float64(b) <= floodShare*float64(total) {
+			continue
+		}
+		s.event(index.LevelWarn, index.KindFlood, id, fmt.Sprintf(
+			"%s sent %.0f%% of the last 24 h's bytes (%d of %d); when storage runs short its own oldest logs are deleted first",
+			id, 100*float64(b)/float64(total), b, total))
 	}
 }

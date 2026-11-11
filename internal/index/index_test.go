@@ -2,6 +2,7 @@ package index
 
 import (
 	"context"
+	"fmt"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -472,6 +473,52 @@ func TestMigrateV1ToV2(t *testing.T) {
 		t.Fatalf("rollup after migration: %d %v", n, err)
 	}
 	if c, _ := d2.TotalCounts(ctx, time.Time{}, time.Time{}); c.Msgs != 3 {
+		t.Fatalf("%+v", c)
+	}
+}
+
+func TestManyDeviceIDs(t *testing.T) {
+	d := openIn(t, t.TempDir())
+	ids := make([]string, 40000)
+	var acts []Activity
+	var ops []FileOp
+	for i := range ids {
+		ids[i] = fmt.Sprintf("198.51.%d.%d", i/250, i%250)
+		if i%1000 == 0 {
+			acts = append(acts, Activity{DeviceID: ids[i], IP: ids[i], Minute: t0, LastHeard: t0, Counts: Counts{Msgs: 1}})
+			ops = append(ops, FileOp{Kind: OpUpsert, File: fileRow(ids[i], "2026-11-10.log", t0, t0, 1)})
+		}
+	}
+	if err := d.Apply(ctx, Batch{Activity: acts, Files: ops}); err != nil {
+		t.Fatal(err)
+	}
+	if c, err := d.Counts(ctx, ids, time.Time{}, time.Time{}); err != nil || c.Msgs != 40 {
+		t.Fatalf("Counts over 40k ids: %+v %v", c, err)
+	}
+	if ms, err := d.MinuteSeries(ctx, ids, t0, t0.Add(time.Minute)); err != nil || ms[0].Msgs != 40 {
+		t.Fatalf("MinuteSeries over 40k ids: %+v %v", ms, err)
+	}
+	if hs, err := d.HourSeries(ctx, ids, t0, t0.Add(time.Hour)); err != nil || hs[0].Msgs != 40 {
+		t.Fatalf("HourSeries over 40k ids: %+v %v", hs, err)
+	}
+	if spans, err := d.FilesInRange(ctx, ids, time.Time{}, time.Time{}); err != nil || len(spans) != 40 {
+		t.Fatalf("FilesInRange over 40k ids: %d %v", len(spans), err)
+	}
+	// Quotes and other JSON-special characters in an id are matched literally.
+	if c, _ := d.Counts(ctx, []string{`a"b\c`}, time.Time{}, time.Time{}); c.Msgs != 0 {
+		t.Fatalf("%+v", c)
+	}
+}
+
+func TestRefusedStatsHaveNoDevice(t *testing.T) {
+	d := openIn(t, t.TempDir())
+	if err := d.Apply(ctx, Batch{Activity: []Activity{{DeviceID: RefusedDeviceID, Minute: t0, Counts: Counts{Dropped: 9}}}}); err != nil {
+		t.Fatal(err)
+	}
+	if devs, _ := d.ListDevices(ctx); len(devs) != 0 {
+		t.Fatalf("devices %+v", devs)
+	}
+	if c, _ := d.TotalCounts(ctx, time.Time{}, time.Time{}); c.Dropped != 9 {
 		t.Fatalf("%+v", c)
 	}
 }
