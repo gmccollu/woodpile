@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -38,6 +39,15 @@ func (f *fakeRunner) ran(prefix string) bool {
 	return false
 }
 
+// unixOnly skips tests of the systemd and launchd installers on Windows: they only
+// ever run on Linux and macOS, and handle Unix paths with path/filepath.
+func unixOnly(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("the systemd and launchd installers run only on Unix")
+	}
+}
+
 func fakeHost(t *testing.T, r *fakeRunner, dirs ...string) *host {
 	t.Helper()
 	h := &host{runner: r, root: t.TempDir(), out: io.Discard}
@@ -59,6 +69,7 @@ func fakeExe(t *testing.T) string {
 }
 
 func TestSystemdUnitIsThePackagedOne(t *testing.T) {
+	unixOnly(t)
 	u, err := systemdUnit(linuxBin, "/etc/woodpile/woodpile.toml", "/var/lib/woodpile")
 	if err != nil {
 		t.Fatal(err)
@@ -93,6 +104,7 @@ func TestSystemdUnitIsThePackagedOne(t *testing.T) {
 }
 
 func TestInstallSystemd(t *testing.T) {
+	unixOnly(t)
 	r := &fakeRunner{fail: []string{"getent"}} // neither the group nor the user exists yet
 	h := fakeHost(t, r, "/run/systemd/system", "/usr/sbin")
 	os.WriteFile(h.path("/usr/sbin/nologin"), nil, 0o755)
@@ -155,6 +167,7 @@ func TestInstallSystemd(t *testing.T) {
 }
 
 func TestInstallSystemdNeedsSystemd(t *testing.T) {
+	unixOnly(t)
 	h := fakeHost(t, &fakeRunner{})
 	_, err := installSystemd(h, InstallOptions{ConfigPath: "/etc/woodpile/woodpile.toml", Exe: fakeExe(t)}, "/var/lib/woodpile")
 	if err == nil || !strings.Contains(err.Error(), "systemd isn't running") {
@@ -163,6 +176,7 @@ func TestInstallSystemdNeedsSystemd(t *testing.T) {
 }
 
 func TestLaunchdPlistIsThePackagedOne(t *testing.T) {
+	unixOnly(t)
 	p, err := launchdPlist(darwinPkgConfig, darwinPkgData)
 	if err != nil {
 		t.Fatal(err)
@@ -187,6 +201,7 @@ func TestLaunchdPlistIsThePackagedOne(t *testing.T) {
 }
 
 func TestInstallLaunchd(t *testing.T) {
+	unixOnly(t)
 	r := &fakeRunner{fail: []string{"launchctl print"}}
 	h := fakeHost(t, r)
 	o := InstallOptions{ConfigPath: darwinPkgConfig, Exe: fakeExe(t)}
@@ -230,6 +245,7 @@ func TestMacAccountScriptIsSourceable(t *testing.T) {
 }
 
 func TestStatusParsers(t *testing.T) {
+	unixOnly(t)
 	r := &fakeRunner{outs: map[string]string{"systemctl is-active woodpile.service": "active"}}
 	h := fakeHost(t, r, "/etc/systemd/system")
 	if st, _ := statusSystemd(h); st != StateNotInstalled {
