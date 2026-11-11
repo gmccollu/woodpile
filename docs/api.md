@@ -202,14 +202,15 @@ otherwise) except `/api/session`, `/api/login`, `/api/logout` and `GET /healthz`
 
 `GET /api/session`
 ```json
-{"mode": "lan", "auth_required": true, "authenticated": true, "password_set": true,
- "csrf_token": "opaque"}                    // "" when not logged in, and always "" in localhost mode
+{"mode": "lan", "auth_required": true, "authenticated": true, "password_set": true}
 ```
-In localhost mode: `{"mode": "localhost", "auth_required": false, "authenticated": true, "password_set": false, "csrf_token": ""}`.
+In localhost mode: `{"mode": "localhost", "auth_required": false, "authenticated": true, "password_set": false}`.
+`authenticated` is true only when the request carries both the session cookie and the matching `X-Woodpile-Session`
+header (below). `/api/session` never returns the session secret.
 `password_set` reports the real state in both modes (the LAN checkbox depends on it).
 
 `ui.require_login_local` (default false): when true and a password is set, localhost mode also requires login
-(same session and CSRF rules as LAN mode). It can't be turned on without a password.
+(the same session rules as LAN mode). It can't be turned on without a password.
 
 `PUT /api/password` requires `current` whenever a password is already set, in both modes. `woodpile
 reset-password` on the machine is the only way to replace a password without knowing it.
@@ -227,7 +228,8 @@ link straight away.
 mismatched or unreadable pair is a 400 on `ui.cert_file` and/or `ui.key_file`.
 The UI calls this first: in LAN mode with `authenticated: false` it shows the login form.
 
-`POST /api/login` body `{"password": "..."}` → `200` with the session object above, and a session cookie
+`POST /api/login` body `{"password": "..."}` → `200` with the session object above plus `"session_secret": "opaque"`
+(returned only here, once per login), and a session cookie
 (`__Host-woodpile_session`, `Secure; HttpOnly; SameSite=Strict; Path=/`; with `require_login_local` on plain
 localhost, `woodpile_session`, the same without `Secure`). `401` for a wrong password, `400` in localhost mode
 without `require_login_local`. Limits (`429` with `Retry-After`): each IP (each /64 for IPv6) gets 5 quick attempts,
@@ -238,14 +240,17 @@ failures a minute across all clients spaces every attempt 5 s apart.
 `POST /api/logout` → `204`, ends the session and clears the cookie.
 
 `PUT /api/password` body `{"current": "...", "new": "..."}` → `204`. `new` is 8–1024 bytes; a bad one gets
-`400 {"error": ..., "errors": {"new": "..."}}`. In localhost mode `current` is ignored (whoever can reach the UI there
-is trusted, as for every other setting). In LAN mode it needs a session and `current` (`403` if wrong; it counts
-toward the lockout), and it ends every other session. The password is stored only as an Argon2id hash in
+`400 {"error": ..., "errors": {"new": "..."}}`. Once a password is set, `current` is required in every mode (`403` if
+wrong; it counts toward the login limits). With a session it also ends every other session. The password is stored only as an Argon2id hash in
 `<data>/ui-password.hash` (mode 0600), never in the TOML.
 
-**CSRF:** in LAN mode every state-changing request with a session must send the session's `csrf_token` in an
-`X-CSRF-Token` header, or it gets `403`. Login is exempt (it has no session yet). `EventSource` needs no token: the
-live tail is a GET.
+**Session secret (replaces the CSRF token):** whenever login is required (LAN mode, or `require_login_local`),
+every `/api/` request except `/api/session`, `/api/login`, `/api/logout` and `/healthz` must carry **both** the
+session cookie **and** an `X-Woodpile-Session: <session_secret>` header; either one alone gets `401`. The cookie
+isn't port-scoped, so another server on the same host could receive it; the secret lives only in the page's
+`localStorage`, which is scoped to the exact origin (scheme, host and port), and a custom header can't be sent
+cross-site, so it also does the CSRF token's job. The live tail therefore uses `fetch()` with a streaming reader
+instead of `EventSource` (which can't send headers); the stream format is unchanged.
 
 `GET /healthz` → `{"ok": true}` (no login in either mode).
 
