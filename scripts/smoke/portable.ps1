@@ -78,7 +78,10 @@ function Close-Console($proc, $logFile, $data, $run, $count) {
     $took = ((Get-Date) - $t0).TotalSeconds
     if ($took -gt 5) { Die "stopping took $took s; Windows allows about 5 s" }
     $log = Get-Content -Raw $logFile
-    if (($log | Select-String -SimpleMatch "stopped cleanly" -AllMatches).Matches.Count -lt 1) { Die "woodpile.log has no clean stop" }
+    Write-Host ("exit code 0x{0:X8}; the log's last lines:" -f $proc.ExitCode)
+    Write-Host (($log -split "`n" | Select-Object -Last 8) -join "`n")
+    Copy-Item $logFile $Logs -ErrorAction SilentlyContinue
+    if ($log -notmatch "stopped cleanly") { Die "woodpile.log has no clean stop" }
     Ok ("closing the console window (CTRL_CLOSE_EVENT) stopped it cleanly in {0:N1} s" -f $took)
     & (Resolve-Path $VerifySeq) -data $data -run $run -n $count | Write-Host
     if ($LASTEXITCODE -ne 0) { Die "messages lost at the close" }
