@@ -81,13 +81,13 @@ jobs:
           go build -trimpath -ldflags "-X main.version=0.0.0-ci+$short -X main.commit=$short" -o dist/ ./cmd/woodpile
           ./dist/woodpile version
 
-  # arm64 runners: free on public repos; a private repo may not have the labels, and a job
-  # asking for a missing label waits forever. So this runs on a public repo, or on a private
-  # one with the repo variable ARM_RUNNERS=true (Settings -> Secrets and variables -> Actions
-  # -> Variables) once its plan has them.
+  # arm64 runners (ubuntu-24.04-arm, windows-11-arm; both available to this repo, checked
+  # 2026-11-11). A job asking for a label the repo doesn't have waits forever, so set the repo
+  # variable ARM_RUNNERS=false (Settings -> Secrets and variables -> Actions -> Variables) to
+  # turn these off if that ever changes, e.g. on a fork.
   test-arm:
     name: test (${{ matrix.os }})
-    if: ${{ !github.event.repository.private || vars.ARM_RUNNERS == 'true' }}
+    if: ${{ vars.ARM_RUNNERS != 'false' }}
     strategy:
       fail-fast: false
       matrix:

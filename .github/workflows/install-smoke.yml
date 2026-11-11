@@ -44,7 +44,7 @@ jobs:
         env:
           MSG: ${{ github.event.head_commit.message }}
           OS: ${{ inputs.os }}
-          PRIVATE: ${{ github.event.repository.private }}
+          ARM_RUNNERS: ${{ vars.ARM_RUNNERS }}
         run: |
           w=false; m=false
           case "$OS" in all) w=true; m=true ;; windows) w=true ;; macos) m=true ;; esac
@@ -54,14 +54,16 @@ jobs:
           echo "windows=$w" >>"$GITHUB_OUTPUT"
           echo "macos=$m" >>"$GITHUB_OUTPUT"
           echo "windows=$w macos=$m"
-          # arm64 runners are free on public repos; a private repo may not have the labels, and a
-          # job asking for a missing label waits forever. So on a private repo they run only when
-          # asked for: "[smoke arm]" in the head commit, or os=arm by hand.
+          # arm64 (both labels available to this repo, checked 2026-11-11): Linux arm64 with the
+          # Linux jobs; Windows on Arm with the Windows jobs, or with "[smoke arm]" / os=arm.
+          # ARM_RUNNERS=false (a repo variable) turns them off, e.g. on a fork without the labels:
+          # a job asking for a missing label waits forever.
           ask=false
           case "$OS" in arm) ask=true ;; esac
           case "$MSG" in *"[smoke arm]"*) ask=true ;; esac
-          al=$ask; aw=$ask
-          if [ "$PRIVATE" != true ]; then al=true; [ "$w" = true ] && aw=true; fi
+          al=true; aw=$ask
+          [ "$w" = true ] && aw=true
+          if [ "$ARM_RUNNERS" = false ]; then al=false; aw=false; fi
           echo "arm_linux=$al" >>"$GITHUB_OUTPUT"
           echo "arm_windows=$aw" >>"$GITHUB_OUTPUT"
           echo "arm_linux=$al arm_windows=$aw"
