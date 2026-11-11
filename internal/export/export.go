@@ -78,8 +78,9 @@ type Filters struct {
 
 // Request is a POST /api/exports body, parsed.
 type Request struct {
-	Devices  []string // named devices (hidden ones included)
-	From, To time.Time
+	AllDevices bool     // every non-hidden device
+	Devices    []string // named devices (hidden ones included)
+	From, To   time.Time
 	Filters
 }
 
@@ -284,8 +285,11 @@ func (m *Manager) resolve(ctx context.Context, r Request) ([]string, error) {
 	if !r.From.Before(r.To) {
 		return nil, &RequestError{Msg: `"from" must be before "to".`}
 	}
-	if len(r.Devices) == 0 && r.Group == "" && !r.Ungrouped {
-		return nil, &RequestError{Msg: "Pick at least one device (devices, group or ungrouped)."}
+	if r.AllDevices && (len(r.Devices) > 0 || r.Group != "" || r.Ungrouped) {
+		return nil, &RequestError{Msg: "all_devices picks every device; don't send devices, group or ungrouped with it."}
+	}
+	if !r.AllDevices && len(r.Devices) == 0 && r.Group == "" && !r.Ungrouped {
+		return nil, &RequestError{Msg: "Pick at least one device (devices, group, ungrouped or all_devices)."}
 	}
 	if r.Group != "" && r.Ungrouped {
 		return nil, &RequestError{Msg: "group and ungrouped=true are alternatives; send one."}

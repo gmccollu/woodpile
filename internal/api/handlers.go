@@ -152,6 +152,7 @@ func (s *Server) apiRoutes() *http.ServeMux {
 
 	// Devices.
 	mux.Handle("/api/devices", methods{http.MethodGet: s.getDevices})
+	mux.Handle("/api/groups", methods{http.MethodGet: s.getGroups})
 	mux.Handle("/api/devices/{id}", methods{http.MethodPatch: s.patchDevice})
 
 	// Live tail.

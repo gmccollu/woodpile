@@ -175,6 +175,7 @@ type ContextPage struct {
 
 // ExportRequest is the body of POST /api/exports and /api/exports/estimate.
 type ExportRequest struct {
+	AllDevices bool // every non-hidden device (instead of Devices, Group or Ungrouped)
 	Devices    []string
 	Group      string
 	Ungrouped  bool
@@ -417,6 +418,7 @@ func (s *Server) getContext(w http.ResponseWriter, r *http.Request) {
 
 // exportBody is the JSON body of POST /api/exports.
 type exportBody struct {
+	AllDevices bool       `json:"all_devices"`
 	Devices    []string   `json:"devices"`
 	Group      string     `json:"group"`
 	Ungrouped  bool       `json:"ungrouped"`
@@ -433,7 +435,7 @@ func (s *Server) readExportRequest(w http.ResponseWriter, r *http.Request) (Expo
 	if !decodeJSON(w, r, &b) {
 		return ExportRequest{}, false
 	}
-	req := ExportRequest{Group: b.Group, Ungrouped: b.Ungrouped, Severities: b.Severities, Q: b.Q, Regex: b.Regex, Case: b.Case}
+	req := ExportRequest{AllDevices: b.AllDevices, Group: b.Group, Ungrouped: b.Ungrouped, Severities: b.Severities, Q: b.Q, Regex: b.Regex, Case: b.Case}
 	for _, d := range b.Devices {
 		if d = strings.TrimSpace(d); d != "" {
 			req.Devices = append(req.Devices, d)
@@ -461,8 +463,11 @@ func (s *Server) readExportRequest(w http.ResponseWriter, r *http.Request) (Expo
 	if req.Group != "" && req.Ungrouped {
 		return bad("group and ungrouped=true are alternatives; send one.")
 	}
-	if len(req.Devices) == 0 && req.Group == "" && !req.Ungrouped {
-		return bad("Pick at least one device (devices, group or ungrouped).")
+	if req.AllDevices && (len(req.Devices) > 0 || req.Group != "" || req.Ungrouped) {
+		return bad("all_devices picks every device; don't send devices, group or ungrouped with it.")
+	}
+	if !req.AllDevices && len(req.Devices) == 0 && req.Group == "" && !req.Ungrouped {
+		return bad("Pick at least one device (devices, group, ungrouped or all_devices).")
 	}
 	return req, true
 }

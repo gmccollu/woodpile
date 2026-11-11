@@ -83,7 +83,7 @@ func (h *Hub) ServeSSE(w http.ResponseWriter, r *http.Request) {
 		case <-ctx.Done():
 			return
 		case <-hb.C:
-			bw.WriteString(": heartbeat\n\n")
+			bw.WriteString(": ping\n\n")
 			if !flush() {
 				return
 			}

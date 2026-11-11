@@ -136,6 +136,13 @@ func TestParseFilter(t *testing.T) {
 	}
 }
 
+func TestDefaultHeartbeatIs15s(t *testing.T) {
+	// docs/api.md: the UI treats 45 s of silence as a dead stream.
+	if DefaultHeartbeat != 15*time.Second || New(Options{}).opts.Heartbeat != 15*time.Second {
+		t.Errorf("heartbeat %v", DefaultHeartbeat)
+	}
+}
+
 func TestParseSeverities(t *testing.T) {
 	f, err := ParseFilter(url.Values{"severities": {"0, 3,unknown,"}, "min_severity": {"7"}})
 	if err != nil {
@@ -537,7 +544,7 @@ func TestServeSSE(t *testing.T) {
 		t.Errorf("live 2: %+v", ev)
 	}
 	// Heartbeat comment.
-	if ev := next(t, events, false); ev.name != ":" || ev.data != "heartbeat" {
+	if ev := next(t, events, false); ev.name != ":" || ev.data != "ping" {
 		t.Errorf("want a heartbeat, got %+v", ev)
 	}
 	// Sampling notice: 200 matches in one second, then the window ends.

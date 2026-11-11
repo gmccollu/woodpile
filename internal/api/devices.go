@@ -96,12 +96,12 @@ func pageDevices(ds []Device, q DeviceQuery) DevicePage {
 		var c int
 		switch q.Sort {
 		case "name":
-			an, bn := a.Name, b.Name
+			an, bn := a.Name, b.Name // a device without a name sorts by its IP
 			if an == "" {
-				an = a.ID
+				an = a.IP
 			}
 			if bn == "" {
-				bn = b.ID
+				bn = b.IP
 			}
 			c = cmp.Compare(strings.ToLower(an), strings.ToLower(bn))
 		case "last_heard":
@@ -138,4 +138,36 @@ func (s *Server) getDevices(w http.ResponseWriter, r *http.Request) {
 		ds[i].normalize()
 	}
 	writeJSON(w, http.StatusOK, pageDevices(ds, q))
+}
+
+// Group is one entry of GET /api/groups.
+type Group struct {
+	Name    string `json:"name"`
+	Devices int    `json:"devices"` // non-hidden devices in the group
+}
+
+func (s *Server) getGroups(w http.ResponseWriter, r *http.Request) {
+	ds, err := s.backend.Devices(r.Context())
+	if err != nil {
+		s.backendError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, groupsOf(ds))
+}
+
+// groupsOf counts the non-hidden devices of each group, sorted by name;
+// ungrouped devices aren't listed.
+func groupsOf(ds []Device) []Group {
+	n := map[string]int{}
+	for _, d := range ds {
+		if d.Group != "" && !d.Hidden {
+			n[d.Group]++
+		}
+	}
+	out := make([]Group, 0, len(n))
+	for g, c := range n {
+		out = append(out, Group{Name: g, Devices: c})
+	}
+	slices.SortFunc(out, func(a, b Group) int { return strings.Compare(a.Name, b.Name) })
+	return out
 }

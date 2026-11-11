@@ -124,9 +124,19 @@ func TestSearchContextExport(t *testing.T) {
 		t.Fatalf("context %+v", cp)
 	}
 
-	// Export everything and check the zip.
+	// Groups: the device in "lab" is listed with its count.
+	if code, b := p.do("PATCH", "/api/devices/127.0.0.1", map[string]any{"group": "lab"}); code != 200 {
+		t.Fatalf("patch: %d %s", code, b)
+	}
+	var groups []map[string]any
+	p.getJSON("/api/groups", &groups)
+	if len(groups) != 1 || groups[0]["name"] != "lab" || num(groups[0]["devices"]) != 1 {
+		t.Errorf("groups %v", groups)
+	}
+
+	// Export everything (all_devices) and check the zip.
 	now := time.Now().UTC()
-	body := map[string]any{"devices": []string{"127.0.0.1"}, "from": now.Add(-time.Hour).Format(time.RFC3339),
+	body := map[string]any{"all_devices": true, "from": now.Add(-time.Hour).Format(time.RFC3339),
 		"to": now.Add(time.Minute).Format(time.RFC3339), "q": tag}
 	code, b := p.do("POST", "/api/exports", body)
 	if code != 202 {

@@ -93,7 +93,7 @@ func (b *backend) Context(ctx context.Context, ref string, before, after int) (a
 }
 
 func toExportRequest(r api.ExportRequest) export.Request {
-	return export.Request{Devices: r.Devices, From: r.From, To: r.To, Filters: export.Filters{
+	return export.Request{AllDevices: r.AllDevices, Devices: r.Devices, From: r.From, To: r.To, Filters: export.Filters{
 		Group: r.Group, Ungrouped: r.Ungrouped, Severities: toSeveritySet(r.Severities), Q: r.Q, Regex: r.Regex, Case: r.Case}}
 }
 

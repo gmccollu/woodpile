@@ -597,12 +597,13 @@ func TestExportValidation(t *testing.T) {
 	m := e.manager()
 	var re *RequestError
 	for name, r := range map[string]Request{
-		"no devices":   {From: e.day0, To: e.day0.Add(time.Hour)},
-		"no range":     {Devices: []string{"192.0.2.1"}},
-		"backwards":    {Devices: []string{"192.0.2.1"}, From: e.day0.Add(time.Hour), To: e.day0},
-		"bad regex":    {Devices: []string{"192.0.2.1"}, From: e.day0, To: e.day0.Add(time.Hour), Filters: Filters{Q: "(", Regex: true}},
-		"no match":     {From: e.day0, To: e.day0.Add(time.Hour), Filters: Filters{Group: "nope"}},
-		"group and ug": {From: e.day0, To: e.day0.Add(time.Hour), Filters: Filters{Group: "HQ", Ungrouped: true}},
+		"no devices":    {From: e.day0, To: e.day0.Add(time.Hour)},
+		"no range":      {Devices: []string{"192.0.2.1"}},
+		"backwards":     {Devices: []string{"192.0.2.1"}, From: e.day0.Add(time.Hour), To: e.day0},
+		"bad regex":     {Devices: []string{"192.0.2.1"}, From: e.day0, To: e.day0.Add(time.Hour), Filters: Filters{Q: "(", Regex: true}},
+		"no match":      {From: e.day0, To: e.day0.Add(time.Hour), Filters: Filters{Group: "nope"}},
+		"group and ug":  {From: e.day0, To: e.day0.Add(time.Hour), Filters: Filters{Group: "HQ", Ungrouped: true}},
+		"all and named": {AllDevices: true, Devices: []string{"192.0.2.1"}, From: e.day0, To: e.day0.Add(time.Hour)},
 	} {
 		if _, err := m.Create(bg, r); !errors.As(err, &re) {
 			t.Errorf("%s: %v", name, err)
@@ -640,4 +641,23 @@ func TestEstimateIsAnUpperBound(t *testing.T) {
 		}
 		t.Logf("estimate %d lines / %d bytes; export %d lines / %d bytes", est.Lines, est.Bytes, in.Lines, bytes)
 	}
+}
+
+func TestExportAllDevices(t *testing.T) {
+	e := newEnv(t, 50)
+	yes := true
+	e.idx.UpdateDevice(bg, model.DeviceID(devC), index.DeviceUpdate{Hidden: &yes})
+	m := e.manager()
+	in, err := m.Create(bg, Request{AllDevices: true, From: e.day0, To: e.day0.Add(48 * time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(in.Devices, ",") != "192.0.2.1,192.0.2.2" {
+		t.Errorf("devices %v (hidden ones only when named)", in.Devices)
+	}
+	est, err := m.Estimate(bg, Request{AllDevices: true, From: e.day0, To: e.day0.Add(48 * time.Hour)})
+	if err != nil || est.Lines == 0 {
+		t.Errorf("estimate %+v %v", est, err)
+	}
+	wait(t, m, in.ID, Ready)
 }

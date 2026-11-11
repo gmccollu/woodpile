@@ -211,12 +211,20 @@ func TestExportRoutes(t *testing.T) {
 		{`{"from": "2026-11-10T00:00:00Z", "to": "2026-11-10T06:00:00Z"}`, "at least one device"},
 		{`{"devices": [" "], "from": "2026-11-10T00:00:00Z", "to": "2026-11-10T06:00:00Z"}`, "at least one device"},
 		{`{"group": "HQ", "ungrouped": true, "from": "2026-11-10T00:00:00Z", "to": "2026-11-10T06:00:00Z"}`, "alternatives"},
+		{`{"all_devices": true, "devices": ["a"], "from": "2026-11-10T00:00:00Z", "to": "2026-11-10T06:00:00Z"}`, "all_devices"},
+		{`{"all_devices": false, "from": "2026-11-10T00:00:00Z", "to": "2026-11-10T06:00:00Z"}`, "at least one device"},
 		{`{"devices": ["a"], "from": "2026-11-10T00:00:00Z", "to": "2026-11-10T06:00:00Z", "severities": [9]}`, "severit"},
 		{`{"devices": ["a"], "from": "2026-11-10T00:00:00Z", "to": "2026-11-10T06:00:00Z", "path": "/etc"}`, "unknown field"},
 	} {
 		for _, route := range []string{"/api/exports", "/api/exports/estimate"} {
 			wantError(t, do(t, c, "POST", srv.url(route), bad.body), 400, bad.msg)
 		}
+	}
+	if r := do(t, c, "POST", srv.url("/api/exports/estimate"), `{"all_devices": true, "from": "2026-11-10T00:00:00Z", "to": "2026-11-10T06:00:00Z"}`); r.code != 200 {
+		t.Errorf("estimate all_devices: %d %s", r.code, r.body)
+	}
+	if last := srv.b.exportReqs[len(srv.b.exportReqs)-1]; !last.AllDevices || len(last.Devices) != 0 {
+		t.Errorf("all_devices not passed: %+v", last)
 	}
 	srv.b.mu.Lock()
 	srv.b.exportErr = &RequestError{Msg: "No device matches the selection."}

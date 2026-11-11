@@ -84,6 +84,13 @@ func docExamples(t *testing.T) map[string]any {
 		}
 		out[route] = v
 	}
+	if m := regexp.MustCompile("`GET /api/groups` → `(\\[.*?\\])`").FindStringSubmatch(doc); m != nil {
+		var v any
+		if err := json.Unmarshal([]byte(m[1]), &v); err != nil {
+			t.Fatalf("groups example: %v", err)
+		}
+		out["/api/groups"] = v
+	}
 	// One-line examples: "`GET /api/rejected` → `[...]`".
 	if m := regexp.MustCompile("`GET /api/rejected` → `(\\[.*?\\])`").FindStringSubmatch(doc); m != nil {
 		var v any
@@ -186,7 +193,7 @@ func sameShape(t *testing.T, where string, doc, got any, optional map[string]boo
 
 func TestRoutesMatchDocExamples(t *testing.T) {
 	examples := docExamples(t)
-	for _, route := range []string{"/api/status", "/api/stats", "/api/devices", "/api/settings", "/api/rejected", "/api/storage/history"} {
+	for _, route := range []string{"/api/status", "/api/stats", "/api/devices", "/api/groups", "/api/settings", "/api/rejected", "/api/storage/history"} {
 		if _, ok := examples[route]; !ok {
 			t.Fatalf("no example for %s in docs/api.md", route)
 		}
@@ -668,4 +675,23 @@ func TestLivePassthrough(t *testing.T) {
 		t.Fatal("stream still open after a restart")
 	}
 	srv.waitRestart(t, false, old)
+}
+
+func TestGroups(t *testing.T) {
+	b := newFakeBackend()
+	b.devices, b.order = map[string]Device{}, nil
+	for _, d := range []Device{{ID: "a", Group: "lab"}, {ID: "b", Group: "HQ"}, {ID: "c", Group: "HQ"}, {ID: "d", Group: "HQ", Hidden: true},
+		{ID: "e"}, {ID: "f", Group: "dmz", Hidden: true}} {
+		b.devices[d.ID] = d
+		b.order = append(b.order, d.ID)
+	}
+	srv := startServer(t, b, UIConfig{})
+	r := do(t, httpClient(), "GET", srv.url("/api/groups"), "")
+	if r.code != 200 || strings.TrimSpace(string(r.body)) != `[{"name":"HQ","devices":2},{"name":"lab","devices":1}]` {
+		t.Errorf("%d %s", r.code, r.body)
+	}
+	b.devices, b.order = map[string]Device{}, nil
+	if r := do(t, httpClient(), "GET", srv.url("/api/groups"), ""); strings.TrimSpace(string(r.body)) != "[]" {
+		t.Errorf("no groups: %s", r.body)
+	}
 }
