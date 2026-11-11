@@ -77,6 +77,12 @@ type MinuteCounts struct {
 	Counts
 }
 
+// HourCounts are the counts for the hour starting at Hour.
+type HourCounts struct {
+	Hour time.Time
+	Counts
+}
+
 // Activity is a counter delta for one device and one minute, as the store reports it.
 type Activity struct {
 	DeviceID   string

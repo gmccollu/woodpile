@@ -266,11 +266,42 @@ func (d *DB) UpdateDevice(ctx context.Context, id string, u DeviceUpdate) (Devic
 	return d.Device(ctx, id)
 }
 
-// Prune deletes stats buckets older than statsBefore and events and deletions older
-// than historyBefore (a zero time skips that part).
+// RollupStats moves every per-minute bucket that starts before `before` (truncated to
+// the hour) into its hourly bucket, in one transaction, so no message is counted twice
+// or lost. It returns the number of minute buckets moved. The store runs it with
+// before = now - MinuteRetention.
+func (d *DB) RollupStats(ctx context.Context, before time.Time) (int64, error) {
+	b := ms(before.UTC().Truncate(time.Hour))
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO stats_hourly (device_id, hour, msgs, bytes, truncated, dropped)
+SELECT device_id, (minute / 3600000) * 3600000, sum(msgs), sum(bytes), sum(truncated), sum(dropped)
+FROM stats WHERE minute < ? GROUP BY device_id, minute / 3600000
+ON CONFLICT (device_id, hour) DO UPDATE SET
+	msgs = msgs + excluded.msgs, bytes = bytes + excluded.bytes,
+	truncated = truncated + excluded.truncated, dropped = dropped + excluded.dropped`, b); err != nil {
+		return 0, fmt.Errorf("index: stats rollup: %w", err)
+	}
+	res, err := tx.ExecContext(ctx, `DELETE FROM stats WHERE minute < ?`, b)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return n, tx.Commit()
+}
+
+// Prune deletes stats buckets (minute and hourly) starting before statsBefore, and
+// events and deletions older than historyBefore (a zero time skips that part).
 func (d *DB) Prune(ctx context.Context, statsBefore, historyBefore time.Time) error {
 	if !statsBefore.IsZero() {
 		if _, err := d.db.ExecContext(ctx, `DELETE FROM stats WHERE minute < ?`, ms(statsBefore)); err != nil {
+			return err
+		}
+		if _, err := d.db.ExecContext(ctx, `DELETE FROM stats_hourly WHERE hour < ?`, ms(statsBefore.UTC().Truncate(time.Hour))); err != nil {
 			return err
 		}
 	}

@@ -345,3 +345,108 @@ func TestReindexSkipsUnfinishedCompression(t *testing.T) {
 		t.Fatalf("%+v %v", res, err)
 	}
 }
+
+func TestRollupAndCounts(t *testing.T) {
+	d := openIn(t, t.TempDir())
+	base := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+	// One message per device per minute for 30 hours, two devices, one drop an hour.
+	var acts []Activity
+	for m := 0; m < 30*60; m++ {
+		min := base.Add(time.Duration(m) * time.Minute)
+		for _, dev := range []string{"192.0.2.1", "192.0.2.2"} {
+			a := Activity{DeviceID: dev, IP: dev, Minute: min, FirstHeard: min, LastHeard: min, Counts: Counts{Msgs: 1, Bytes: 10}}
+			if m%60 == 0 && dev == "192.0.2.2" {
+				a.Dropped, a.Truncated = 1, 1
+			}
+			acts = append(acts, a)
+		}
+	}
+	if err := d.Apply(ctx, Batch{Activity: acts}); err != nil {
+		t.Fatal(err)
+	}
+	now := base.Add(30*time.Hour - 20*time.Minute) // 05:40 on day 2
+	before, _ := d.Counts(ctx, nil, time.Time{}, time.Time{})
+	moved, err := d.RollupStats(ctx, now.Add(-MinuteRetention))
+	// The boundary is 05:00 on day 1: hours 00..04 move (5 h x 60 min x 2 devices).
+	if err != nil || moved != 600 {
+		t.Fatalf("moved %d, %v", moved, err)
+	}
+	if again, _ := d.RollupStats(ctx, now.Add(-MinuteRetention)); again != 0 {
+		t.Fatalf("second rollup moved %d", again)
+	}
+	after, _ := d.Counts(ctx, nil, time.Time{}, time.Time{})
+	if after != before || after.Msgs != 3600 || after.Dropped != 30 {
+		t.Fatalf("totals changed by the rollup: %+v -> %+v", before, after)
+	}
+	var minuteRows, hourRows int
+	d.db.QueryRow(`SELECT count(*) FROM stats`).Scan(&minuteRows)
+	d.db.QueryRow(`SELECT count(*) FROM stats_hourly`).Scan(&hourRows)
+	if minuteRows != 3000 || hourRows != 10 {
+		t.Fatalf("%d minute rows, %d hourly rows", minuteRows, hourRows)
+	}
+	// Last 24 h is still per-minute, so it's exact to the minute.
+	c24, _ := d.Counts(ctx, nil, now.Add(-24*time.Hour), now)
+	if c24.Msgs != 2*24*60 || c24.Dropped != 24 {
+		t.Fatalf("24h %+v", c24)
+	}
+	// A range spanning both tables: day 1 00:30 .. 06:00 = hourly 00..04 whole, then minutes 05:00..05:59.
+	span, _ := d.Counts(ctx, []string{"192.0.2.2"}, base.Add(30*time.Minute), base.Add(6*time.Hour))
+	if span.Msgs != 6*60 || span.Dropped != 6 || span.Truncated != 6 {
+		t.Fatalf("span %+v", span)
+	}
+	per, _ := d.DeviceCounts(ctx, time.Time{}, time.Time{})
+	if per["192.0.2.1"].Msgs != 1800 || per["192.0.2.2"].Dropped != 30 {
+		t.Fatalf("per device %+v", per)
+	}
+	// Hourly series covers both tables with no gap at the boundary.
+	hs, err := d.HourSeries(ctx, nil, base, base.Add(30*time.Hour))
+	if err != nil || len(hs) != 30 {
+		t.Fatalf("%d hours %v", len(hs), err)
+	}
+	for i, h := range hs {
+		if h.Msgs != 120 || !h.Hour.Equal(base.Add(time.Duration(i)*time.Hour)) {
+			t.Fatalf("hour %d: %+v", i, h)
+		}
+	}
+	// MinuteSeries reads minutes only: rolled-up minutes are zero.
+	ms, _ := d.MinuteSeries(ctx, nil, base.Add(4*time.Hour+59*time.Minute), base.Add(5*time.Hour+time.Minute))
+	if ms[0].Msgs != 0 || ms[1].Msgs != 2 {
+		t.Fatalf("minute series at boundary %+v", ms)
+	}
+	// A late delta for a rolled-up minute is kept and counted once.
+	late := base.Add(2*time.Hour + 5*time.Minute)
+	d.Apply(ctx, Batch{Activity: []Activity{{DeviceID: "192.0.2.1", IP: "192.0.2.1", Minute: late, LastHeard: late, Counts: Counts{Msgs: 5}}}})
+	if c, _ := d.Counts(ctx, nil, time.Time{}, time.Time{}); c.Msgs != 3605 {
+		t.Fatalf("late delta %+v", c)
+	}
+	d.RollupStats(ctx, now.Add(-MinuteRetention))
+	if c, _ := d.Counts(ctx, nil, time.Time{}, time.Time{}); c.Msgs != 3605 {
+		t.Fatalf("late delta after rollup %+v", c)
+	}
+	// Prune drops hourly buckets older than the stats retention too.
+	d.Prune(ctx, base.Add(3*time.Hour), time.Time{})
+	if c, _ := d.Counts(ctx, nil, time.Time{}, time.Time{}); c.Msgs != 3605-5-3*120 {
+		t.Fatalf("after prune %+v", c)
+	}
+}
+
+func TestMigrateV1ToV2(t *testing.T) {
+	dir := t.TempDir()
+	d := openIn(t, dir)
+	d.Apply(ctx, Batch{Activity: []Activity{{DeviceID: "192.0.2.1", IP: "192.0.2.1", Minute: t0, Counts: Counts{Msgs: 3}}}})
+	// Turn it back into a v1 database.
+	if _, err := d.db.Exec(`DROP TABLE stats_hourly; PRAGMA user_version = 1`); err != nil {
+		t.Fatal(err)
+	}
+	d.Close()
+	d2 := openIn(t, dir)
+	if v, _ := d2.SchemaVersion(ctx); v != 2 || CurrentSchema != 2 {
+		t.Fatalf("version %d", v)
+	}
+	if n, err := d2.RollupStats(ctx, t0.Add(48*time.Hour)); err != nil || n != 1 {
+		t.Fatalf("rollup after migration: %d %v", n, err)
+	}
+	if c, _ := d2.TotalCounts(ctx, time.Time{}, time.Time{}); c.Msgs != 3 {
+		t.Fatalf("%+v", c)
+	}
+}

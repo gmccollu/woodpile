@@ -51,7 +51,7 @@ func (s *Store) hasCompressWork(now time.Time) bool {
 	s.catMu.Lock()
 	defer s.catMu.Unlock()
 	for _, e := range s.cat {
-		if !e.name.Compressed && !e.busy && !now.Before(e.nextTry) {
+		if !e.name.Compressed && !e.busy && !e.syncing && !now.Before(e.nextTry) {
 			return true
 		}
 	}
@@ -64,7 +64,7 @@ func (s *Store) nextToCompress(now time.Time) *catEntry {
 	defer s.catMu.Unlock()
 	var best *catEntry
 	for _, e := range s.cat {
-		if e.name.Compressed || e.busy || now.Before(e.nextTry) {
+		if e.name.Compressed || e.busy || e.syncing || now.Before(e.nextTry) {
 			continue
 		}
 		if best == nil || e.last.Before(best.last) || (e.last.Equal(best.last) && e.rel < best.rel) {

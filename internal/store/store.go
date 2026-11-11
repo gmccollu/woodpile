@@ -41,6 +41,7 @@ const (
 	DefaultFlushBytes     = 1 << 20
 	DefaultSyncInterval   = 5 * time.Second
 	DefaultMaxOpenFiles   = 512
+	DefaultCloseWorkers   = 8
 )
 
 // Errors returned by Write.
@@ -65,6 +66,9 @@ type Options struct {
 	FlushBytes    int           // and whenever a device's buffer reaches this
 	SyncInterval  time.Duration // fsync written files this often
 	MaxOpenFiles  int           // cap on open log file handles (LRU)
+	// CloseWorkers bounds how many closed files (yesterday's at midnight, or a full
+	// part) are fsynced at once, off the write path.
+	CloseWorkers int
 
 	// Clock returns the current time (tests inject a fake). It decides midnight
 	// rotation of idle files, retention age and the time of a message with a zero
@@ -149,6 +153,15 @@ type Store struct {
 	ctx        context.Context
 	cancel     context.CancelFunc
 
+	closeMu   sync.Mutex
+	closeCond *sync.Cond
+	closeQ    []closeJob
+	closeStop bool
+	closeWG   sync.WaitGroup
+	syncPath  func(path string) error // fsync by path; tests slow it down
+
+	lastRollup time.Time
+
 	// testHookGzip, if set, is called with the temp gzip path before verification.
 	testHookGzip func(path string)
 }
@@ -170,6 +183,7 @@ func Open(opts Options) (*Store, error) {
 	setDefault(&opts.FlushBytes, DefaultFlushBytes)
 	setDefault(&opts.SyncInterval, DefaultSyncInterval)
 	setDefault(&opts.MaxOpenFiles, DefaultMaxOpenFiles)
+	setDefault(&opts.CloseWorkers, DefaultCloseWorkers)
 	if opts.Clock == nil {
 		opts.Clock = time.Now
 	}
@@ -193,7 +207,9 @@ func Open(opts Options) (*Store, error) {
 		dropErrs:   map[string]string{},
 		stop:       make(chan struct{}),
 		compressCh: make(chan struct{}, 1),
+		syncPath:   syncPath,
 	}
+	s.closeCond = sync.NewCond(&s.closeMu)
 	s.retentionDays.Store(int64(opts.RetentionDays))
 	s.retentionBytes.Store(opts.RetentionBytes)
 	s.partBytes.Store(opts.PartBytes)
@@ -212,6 +228,7 @@ func Open(opts Options) (*Store, error) {
 		go s.flushLoop()
 		go s.syncLoop()
 		go s.compressLoop()
+		s.startClosers()
 		s.kickCompress()
 	}
 	return s, nil
@@ -299,6 +316,7 @@ func (s *Store) allDevices() []*device {
 // index.
 func (s *Store) Flush() error {
 	err := s.flushAll(false)
+	s.drainClose()
 	if serr := s.syncAll(); err == nil {
 		err = serr
 	}
@@ -317,6 +335,7 @@ func (s *Store) Close() error {
 	close(s.stop)
 	s.cancel()
 	s.wg.Wait()
+	s.stopClosers()
 	var first error
 	keep := func(err error) {
 		if first == nil && err != nil {
@@ -331,6 +350,7 @@ func (s *Store) Close() error {
 		keep(d.closeFileLocked(true))
 		d.mu.Unlock()
 	}
+	s.drainClose()
 	s.reportDrops(s.clock(), true)
 	keep(s.applyIndex())
 	return first

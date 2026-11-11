@@ -25,9 +25,11 @@ import (
 // FileName is the index's file name inside the data dir.
 const FileName = "index.db"
 
-// Retention for the rows Prune removes, as defaults for its callers.
+// Stats retention. Per-minute buckets are kept for MinuteRetention, then RollupStats
+// folds them into hourly buckets, which are kept for StatsRetention.
 const (
-	StatsRetention = 7 * 24 * time.Hour
+	MinuteRetention = 24 * time.Hour
+	StatsRetention  = 7 * 24 * time.Hour
 )
 
 // ErrNotFound is returned when a device or file doesn't exist.
@@ -141,6 +143,19 @@ CREATE TABLE deletions (
 	reason    TEXT NOT NULL CHECK (reason IN ('age', 'cap', 'low_disk'))
 );
 CREATE INDEX deletions_time ON deletions (time);
+`,
+	// 1 -> 2: hourly stats buckets (per-minute buckets are rolled up after 24 h).
+	`
+CREATE TABLE stats_hourly (
+	device_id TEXT NOT NULL,
+	hour      INTEGER NOT NULL,
+	msgs      INTEGER NOT NULL DEFAULT 0,
+	bytes     INTEGER NOT NULL DEFAULT 0,
+	truncated INTEGER NOT NULL DEFAULT 0,
+	dropped   INTEGER NOT NULL DEFAULT 0,
+	PRIMARY KEY (device_id, hour)
+) WITHOUT ROWID;
+CREATE INDEX stats_hourly_hour ON stats_hourly (hour);
 `,
 }
 

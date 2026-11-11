@@ -47,12 +47,62 @@ func (d *DB) Device(ctx context.Context, id string) (Device, error) {
 	return dv, err
 }
 
-// DeviceCounts returns each device's counts summed over the minutes in [from, to).
-// Devices with no activity in the range are absent.
+// statsUnion selects (device_id, start, msgs, bytes, truncated, dropped) from both
+// stats tables over a range. Each table's rows are taken whole: a minute bucket counts
+// when it starts in [from truncated to the minute, to), an hourly bucket when it starts
+// in [from truncated to the hour, to). A message lives in exactly one bucket (the
+// rollup moves rows in one transaction), so nothing is counted twice. Within the last
+// MinuteRetention the result is exact to the minute; further back, to the hour.
+func statsUnion(deviceIDs []string, from, to time.Time) (string, []any, bool) {
+	fromMin, fromHour := ms(from.UTC().Truncate(time.Minute)), ms(from.UTC().Truncate(time.Hour))
+	if from.IsZero() {
+		fromMin, fromHour = 0, 0
+	}
+	toMs := int64(1<<62 - 1)
+	if !to.IsZero() {
+		toMs = ms(to)
+	}
+	devWhere, devArgs := "", []any(nil)
+	if deviceIDs != nil {
+		if len(deviceIDs) == 0 {
+			return "", nil, false
+		}
+		in, a := inList(deviceIDs)
+		devWhere, devArgs = ` AND device_id IN `+in, a
+	}
+	q := `SELECT device_id, minute AS start, msgs, bytes, truncated, dropped FROM stats WHERE minute >= ? AND minute < ?` + devWhere +
+		` UNION ALL SELECT device_id, hour AS start, msgs, bytes, truncated, dropped FROM stats_hourly WHERE hour >= ? AND hour < ?` + devWhere
+	args := append([]any{fromMin, toMs}, devArgs...)
+	args = append(append(args, fromHour, toMs), devArgs...)
+	return q, args, true
+}
+
+// Counts returns the counts of deviceIDs (nil means all) over [from, to) (zero times
+// are unbounded), spanning the minute and hourly buckets; see statsUnion for how the
+// range edges are resolved. For dropped_24h use from = now-24h: that range is still
+// in per-minute buckets, so it is exact to the minute.
+func (d *DB) Counts(ctx context.Context, deviceIDs []string, from, to time.Time) (Counts, error) {
+	var c Counts
+	q, args, ok := statsUnion(deviceIDs, from, to)
+	if !ok {
+		return c, nil
+	}
+	err := d.db.QueryRowContext(ctx, `SELECT COALESCE(sum(msgs),0), COALESCE(sum(bytes),0), COALESCE(sum(truncated),0),
+		COALESCE(sum(dropped),0) FROM (`+q+`)`, args...).Scan(&c.Msgs, &c.Bytes, &c.Truncated, &c.Dropped)
+	return c, err
+}
+
+// TotalCounts is Counts for all devices.
+func (d *DB) TotalCounts(ctx context.Context, from, to time.Time) (Counts, error) {
+	return d.Counts(ctx, nil, from, to)
+}
+
+// DeviceCounts returns each device's counts over [from, to), like Counts. Devices
+// with no activity in the range are absent.
 func (d *DB) DeviceCounts(ctx context.Context, from, to time.Time) (map[string]Counts, error) {
+	q, args, _ := statsUnion(nil, from, to)
 	rows, err := d.db.QueryContext(ctx, `SELECT device_id, sum(msgs), sum(bytes), sum(truncated), sum(dropped)
-		FROM stats WHERE minute >= ? AND minute < ? GROUP BY device_id`,
-		ms(from.Truncate(time.Minute)), ms(to))
+		FROM (`+q+`) GROUP BY device_id`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -69,19 +119,47 @@ func (d *DB) DeviceCounts(ctx context.Context, from, to time.Time) (map[string]C
 	return out, rows.Err()
 }
 
-// TotalCounts returns the counts of all devices summed over the minutes in [from, to)
-// (for example dropped_24h and truncated_24h).
-func (d *DB) TotalCounts(ctx context.Context, from, to time.Time) (Counts, error) {
-	var c Counts
-	err := d.db.QueryRowContext(ctx, `SELECT COALESCE(sum(msgs),0), COALESCE(sum(bytes),0),
-		COALESCE(sum(truncated),0), COALESCE(sum(dropped),0) FROM stats WHERE minute >= ? AND minute < ?`,
-		ms(from.Truncate(time.Minute)), ms(to)).Scan(&c.Msgs, &c.Bytes, &c.Truncated, &c.Dropped)
-	return c, err
+// HourSeries returns one entry per hour in [from, to), oldest first, with missing
+// hours as zeros, summed over deviceIDs (nil means all). It spans both tables: recent
+// hours come from the per-minute buckets not yet rolled up. from is truncated to the
+// hour. For a 7-day chart use from = now-7d, to = now.
+func (d *DB) HourSeries(ctx context.Context, deviceIDs []string, from, to time.Time) ([]HourCounts, error) {
+	from = from.UTC().Truncate(time.Hour)
+	if !to.After(from) {
+		return nil, nil
+	}
+	n := int((to.Sub(from) + time.Hour - 1) / time.Hour)
+	out := make([]HourCounts, n)
+	for i := range out {
+		out[i].Hour = from.Add(time.Duration(i) * time.Hour)
+	}
+	q, args, ok := statsUnion(deviceIDs, from, to)
+	if !ok {
+		return out, nil
+	}
+	rows, err := d.db.QueryContext(ctx, `SELECT (start / 3600000) * 3600000, sum(msgs), sum(bytes), sum(truncated), sum(dropped)
+		FROM (`+q+`) GROUP BY start / 3600000`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var h int64
+		var c Counts
+		if err := rows.Scan(&h, &c.Msgs, &c.Bytes, &c.Truncated, &c.Dropped); err != nil {
+			return nil, err
+		}
+		if i := int(tm(h).Sub(from) / time.Hour); i >= 0 && i < n {
+			out[i].Counts = c
+		}
+	}
+	return out, rows.Err()
 }
 
 // MinuteSeries returns one entry per minute in [from, to), oldest first, with missing
-// minutes as zeros, summed over deviceIDs (nil means all devices). from is truncated
-// to the minute. For the dashboard sparkline, use from = now-60m, to = now truncated
+// minutes as zeros, summed over deviceIDs (nil means all devices). It reads only the
+// per-minute buckets, so it covers the last MinuteRetention (24 h); older minutes read
+// as zero once rolled up (use HourSeries). from is truncated to the minute. For the dashboard sparkline, use from = now-60m, to = now truncated
 // to the minute, and divide Msgs by 60 for msgs/s.
 func (d *DB) MinuteSeries(ctx context.Context, deviceIDs []string, from, to time.Time) ([]MinuteCounts, error) {
 	from = from.Truncate(time.Minute).UTC()

@@ -25,6 +25,7 @@ type catEntry struct {
 	lines       int64
 
 	busy     bool // being compressed
+	syncing  bool // just closed; the closer pool hasn't fsynced it yet
 	failures int
 	nextTry  time.Time
 }
@@ -88,6 +89,7 @@ func (s *Store) maintain() error {
 	defer s.maintMu.Unlock()
 	err := s.flushAll(true)
 	if s.opts.Manual {
+		s.drainClose()
 		s.compressPending(s.ctx)
 	}
 	now := s.clock()
@@ -95,6 +97,15 @@ func (s *Store) maintain() error {
 	s.enforceRetention(now)
 	s.guardDisk(now)
 	s.reportDrops(now, false)
+	if b := now.Add(-index.MinuteRetention).UTC().Truncate(time.Hour); !b.Equal(s.lastRollup) {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		if _, rerr := s.idx.RollupStats(ctx, b); rerr != nil {
+			s.log.Warn("store: rolling up stats failed", "err", rerr)
+		} else {
+			s.lastRollup = b
+		}
+		cancel()
+	}
 	if now.Sub(s.lastPrune) >= time.Hour {
 		s.lastPrune = now
 		hist := time.Duration(max(2*s.retentionDays.Load(), 90)) * 24 * time.Hour
@@ -203,7 +214,7 @@ func (s *Store) sortedClosed(keep func(*catEntry) bool) []*catEntry {
 	s.catMu.Lock()
 	var out []*catEntry
 	for _, e := range s.cat {
-		if !e.busy && keep(e) {
+		if !e.busy && !e.syncing && keep(e) {
 			out = append(out, e)
 		}
 	}
@@ -246,7 +257,7 @@ func (s *Store) enforceRetention(now time.Time) {
 // deleteEntry removes a closed file and records the deletion.
 func (s *Store) deleteEntry(e *catEntry, reason index.Reason, now time.Time) bool {
 	s.catMu.Lock()
-	if e.busy || s.cat[e.rel] != e {
+	if e.busy || e.syncing || s.cat[e.rel] != e {
 		s.catMu.Unlock()
 		return false
 	}

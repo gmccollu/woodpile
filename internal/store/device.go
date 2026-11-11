@@ -385,9 +385,9 @@ func (d *device) rotateLocked(reason rotateReason) {
 		}
 	}
 	d.flushLocked()
-	if err := d.closeFileLocked(true); err != nil {
-		d.s.event(index.LevelWarn, index.KindError, d.id, fmt.Sprintf("fsync %s: %v", d.rel, err))
-	}
+	// Close the handle without fsync: the closer pool fsyncs the file by path, off the
+	// write path, so writes for the new file never wait for the old one's fsync.
+	d.detachFileLocked()
 	day := d.day
 	reset := func() {
 		d.s.activeBytes.Add(-d.w.size)
@@ -414,27 +414,46 @@ func (d *device) rotateLocked(reason rotateReason) {
 		nn := logfile.Name{Day: day, Part: nextPart(d.dir, day)}
 		nabs := filepath.Join(d.dir, nn.String())
 		if err := os.Rename(abs, nabs); err != nil {
+			d.fileMu.Lock()
+			d.dirty, d.dirtyPath = true, abs // still active: the sync loop fsyncs it
+			d.fileMu.Unlock()
 			d.renameRetry = d.s.clock().Add(time.Minute)
 			d.s.event(index.LevelWarn, index.KindRotate, d.id,
 				fmt.Sprintf("couldn't close part %s (%v); still writing to it, retrying in a minute", rel, err))
 			return
 		}
-		syncDir(d.dir)
 		nrel := d.s.rel(nabs)
 		row := d.fileRow()
 		row.Path, row.Part = nrel, nn.Part
 		d.s.pushOps(index.FileOp{Kind: index.OpRename, OldPath: rel, File: row})
 		name, abs, rel = nn, nabs, nrel
 	}
-	d.s.addClosed(&catEntry{deviceID: d.id, name: name, abs: abs, rel: rel, first: d.w.first, last: d.w.last,
-		size: d.w.size, rawSize: d.w.size, lines: d.w.lines})
+	ce := &catEntry{deviceID: d.id, name: name, abs: abs, rel: rel, first: d.w.first, last: d.w.last,
+		size: d.w.size, rawSize: d.w.size, lines: d.w.lines, syncing: true}
+	d.s.addClosed(ce)
+	d.s.queueClose(closeJob{e: ce, path: abs, dir: d.dir, renamed: reason == rotSize})
 	why := "end of day"
 	if reason == rotSize {
 		why = "part size reached"
 	}
 	d.s.event(index.LevelInfo, index.KindRotate, d.id, fmt.Sprintf("closed %s (%s, %d lines, %d bytes)", rel, why, d.w.lines, d.w.size))
 	reset()
-	d.s.kickCompress()
+}
+
+// detachFileLocked closes the active file's handle without fsyncing it and clears the
+// dirty state; the caller hands the fsync to the closer pool.
+func (d *device) detachFileLocked() {
+	d.fileMu.Lock()
+	had := d.f != nil
+	if had {
+		d.f.Close()
+		d.f = nil
+	}
+	d.dirty, d.dirtyPath = false, ""
+	d.fileMu.Unlock()
+	if had {
+		d.s.releaseSlot(d)
+	}
 }
 
 // nextPart returns the next free part number for day in dir.
