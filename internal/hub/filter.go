@@ -21,11 +21,61 @@ type Filter struct {
 	// severity <= *MinSeverity pass. Messages with an unknown severity always pass.
 	// Nil means no severity filter.
 	MinSeverity *int
-	Q           string // case-insensitive substring of the raw message
+	// Severities, when not zero, is the exact set of severities that pass
+	// (docs/api.md, "Severity filters"). It wins over MinSeverity.
+	Severities SeveritySet
+	Q          string // case-insensitive substring of the raw message
+}
+
+// SeveritySet is a set of syslog severities 0-7 plus "unknown" (no parseable
+// PRI). The zero value is the empty set, which as a filter means "all".
+type SeveritySet uint16
+
+// SeverityUnknownBit is the set bit for messages with no parseable PRI.
+const SeverityUnknownBit SeveritySet = 1 << 8
+
+// AllSeverities holds 0-7 and unknown.
+const AllSeverities SeveritySet = 0x1ff
+
+// Has reports whether sev (0-7, or model.Unknown) is in the set.
+func (s SeveritySet) Has(sev int) bool {
+	if sev < 0 || sev > 7 {
+		return s&SeverityUnknownBit != 0
+	}
+	return s&(1<<uint(sev)) != 0
+}
+
+// With returns s with sev (0-7, or model.Unknown) added.
+func (s SeveritySet) With(sev int) SeveritySet {
+	if sev < 0 || sev > 7 {
+		return s | SeverityUnknownBit
+	}
+	return s | 1<<uint(sev)
+}
+
+// ParseSeverities reads a severities= value: a comma-separated list of 0-7 and
+// "unknown". Blank items are ignored, so "" is the empty set (meaning all).
+func ParseSeverities(v string) (SeveritySet, error) {
+	var s SeveritySet
+	for _, item := range strings.Split(v, ",") {
+		item = strings.TrimSpace(item)
+		switch {
+		case item == "":
+		case strings.EqualFold(item, "unknown"):
+			s |= SeverityUnknownBit
+		case len(item) == 1 && item[0] >= '0' && item[0] <= '7':
+			s |= 1 << uint(item[0]-'0')
+		default:
+			return 0, fmt.Errorf("severities: %q is not a severity (0 to 7, or unknown)", item)
+		}
+	}
+	return s, nil
 }
 
 // ParseFilter reads a Filter from /api/live query parameters: devices (comma
-// separated), group, ungrouped=true, min_severity (0-7) and q.
+// separated), group, ungrouped=true, severities (0-7 and unknown, comma
+// separated), min_severity (0-7) and q. Both severity forms are validated; when
+// severities is given (and not empty) it wins over min_severity.
 func ParseFilter(v url.Values) (Filter, error) {
 	var f Filter
 	for _, d := range strings.Split(v.Get("devices"), ",") {
@@ -51,6 +101,13 @@ func ParseFilter(v url.Values) (Filter, error) {
 		}
 		f.MinSeverity = &n
 	}
+	set, err := ParseSeverities(v.Get("severities"))
+	if err != nil {
+		return Filter{}, err
+	}
+	if set != 0 {
+		f.Severities, f.MinSeverity = set, nil
+	}
 	f.Q = v.Get("q")
 	return f, nil
 }
@@ -60,7 +117,8 @@ type compiled struct {
 	devices   map[string]bool
 	group     string
 	ungrouped bool
-	maxSev    int // -1: no severity filter
+	maxSev    int         // -1: no severity ceiling
+	sevs      SeveritySet // 0: no severity set
 	q         []byte
 	qASCII    bool
 }
@@ -73,7 +131,9 @@ func compile(f Filter) *compiled {
 			c.devices[d] = true
 		}
 	}
-	if f.MinSeverity != nil {
+	if f.Severities != 0 && f.Severities&AllSeverities != AllSeverities {
+		c.sevs = f.Severities
+	} else if f.Severities == 0 && f.MinSeverity != nil {
 		c.maxSev = *f.MinSeverity
 	}
 	if f.Q != "" {
@@ -88,6 +148,9 @@ func (c *compiled) match(e *Entry, g *groupLookup) bool {
 		return false
 	}
 	if c.maxSev >= 0 && e.Severity != model.Unknown && e.Severity > c.maxSev {
+		return false
+	}
+	if c.sevs != 0 && !c.sevs.Has(e.Severity) {
 		return false
 	}
 	if c.group != "" && g.get() != c.group {

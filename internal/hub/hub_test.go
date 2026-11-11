@@ -80,6 +80,10 @@ func TestFilters(t *testing.T) {
 		{"q ascii fold", Filter{Q: "link down"}, []string{"<11>Link DOWN on port 1", "no pri: Link down"}},
 		{"q non-ascii", Filter{Q: "ÜNÏCODE"}, []string{"<12>Ünïcode WARNING"}},
 		{"combined", Filter{Group: "HQ", MinSeverity: sev(5), Q: "PORT"}, []string{"<11>Link DOWN on port 1"}},
+		{"severities 3,7", Filter{Severities: SeveritySet(0).With(3).With(7)}, []string{"<11>Link DOWN on port 1", "<15>debug noise"}},
+		{"severities unknown only", Filter{Severities: SeverityUnknownBit}, []string{"no pri: Link down"}},
+		{"severities win over min_severity", Filter{Severities: SeveritySet(0).With(6), MinSeverity: sev(0)}, []string{"<14>user login ok"}},
+		{"all severities", Filter{Severities: AllSeverities}, []string{"<11>Link DOWN on port 1", "<14>user login ok", "<15>debug noise", "no pri: Link down", "<12>Ünïcode WARNING"}},
 	}
 	for _, c := range cases {
 		h := New(Options{GroupOf: groupOf})
@@ -128,6 +132,48 @@ func TestParseFilter(t *testing.T) {
 		if _, err := ParseFilter(bad); err == nil {
 			t.Errorf("%v accepted", bad)
 		}
+	}
+}
+
+func TestParseSeverities(t *testing.T) {
+	f, err := ParseFilter(url.Values{"severities": {"0, 3,unknown,"}, "min_severity": {"7"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.MinSeverity != nil || f.Severities != SeveritySet(0).With(0).With(3).With(-1) {
+		t.Errorf("severities should win: %+v", f)
+	}
+	for sev, want := range map[int]bool{0: true, 1: false, 3: true, 7: false, -1: true} {
+		if f.Severities.Has(sev) != want {
+			t.Errorf("Has(%d) = %v", sev, !want)
+		}
+	}
+	// An empty value means all, so min_severity applies.
+	f, err = ParseFilter(url.Values{"severities": {""}, "min_severity": {"4"}})
+	if err != nil || f.Severities != 0 || f.MinSeverity == nil || *f.MinSeverity != 4 {
+		t.Errorf("empty severities: %+v %v", f, err)
+	}
+	if s, err := ParseSeverities("UNKNOWN,7"); err != nil || s != SeverityUnknownBit|1<<7 {
+		t.Errorf("%b %v", s, err)
+	}
+	for _, bad := range []string{"8", "-1", "warn", "3,x", "03", "1.0", " 9 "} {
+		if _, err := ParseFilter(url.Values{"severities": {bad}}); err == nil {
+			t.Errorf("severities=%q accepted", bad)
+		}
+	}
+	// A bad min_severity is still refused when severities is given.
+	if _, err := ParseFilter(url.Values{"severities": {"3"}, "min_severity": {"9"}}); err == nil {
+		t.Error("bad min_severity accepted next to severities")
+	}
+}
+
+func TestLiveSeveritiesBadRequest(t *testing.T) {
+	h := New(Options{})
+	defer h.Close()
+	rec := httptest.NewRecorder()
+	h.ServeSSE(rec, httptest.NewRequest("GET", "/api/live?severities=3,banana", nil))
+	if rec.Code != 400 || !strings.Contains(rec.Body.String(), "banana") {
+		t.Errorf("%d %s", rec.Code, rec.Body)
 	}
 }
 
