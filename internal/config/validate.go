@@ -1,9 +1,7 @@
 package config
 
 import (
-	"errors"
 	"fmt"
-	"io/fs"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -113,26 +111,27 @@ func checkCertPair(e Errors, ui UI) {
 	if cert == "" && key == "" {
 		return
 	}
-	check := func(k, p, other string) {
+	// One message for every way a file can be wrong: the check runs as the
+	// service account, and saying "not found" versus "permission denied" would
+	// tell a UI user which files exist where they can't look.
+	check := func(k, p, other, what string) {
 		switch {
 		case p == "":
 			e[k] = "is required when " + other + " is set (or leave both empty for the self-signed certificate)"
 		case !isAbs(p):
 			e[k] = "must be an absolute path"
 		default:
-			fi, err := os.Stat(p)
-			switch {
-			case err != nil && errors.Is(err, fs.ErrNotExist):
-				e[k] = "file not found"
-			case err != nil:
-				e[k] = "can't be read: " + err.Error()
-			case !fi.Mode().IsRegular():
-				e[k] = "is not a regular file"
+			if fi, err := os.Stat(p); err != nil || !fi.Mode().IsRegular() {
+				e[k] = "is not a readable " + what + " file"
+			} else if f, err := os.Open(p); err != nil {
+				e[k] = "is not a readable " + what + " file"
+			} else {
+				f.Close()
 			}
 		}
 	}
-	check("ui.cert_file", cert, "key_file")
-	check("ui.key_file", key, "cert_file")
+	check("ui.cert_file", cert, "key_file", "certificate")
+	check("ui.key_file", key, "cert_file", "key")
 }
 
 func checkListener(e Errors, goos, key string, ln Listener) {

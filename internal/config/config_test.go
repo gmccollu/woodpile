@@ -38,7 +38,7 @@ func TestJSONShapeMatchesSettings(t *testing.T) {
 	// docs/api.md, GET /api/settings.
 	want := `{"listeners":{"udp":{"enabled":true,"addr":"0.0.0.0","port":514},"tcp":{"enabled":true,"addr":"0.0.0.0","port":514},"allowlist":[]},` +
 		`"storage":{"data_dir":"/data","retention_days":30,"retention_bytes":21474836480,"part_bytes":104857600},` +
-		`"ui":{"lan_mode":false,"port":8514,"cert_file":"","key_file":""},"quiet":{"quiet_after_seconds":300,"offline_after_seconds":3600}}`
+		`"ui":{"lan_mode":false,"port":8514,"cert_file":"","key_file":"","require_login_local":false},"quiet":{"quiet_after_seconds":300,"offline_after_seconds":3600}}`
 	if string(b) != want {
 		t.Errorf("JSON:\n got %s\nwant %s", b, want)
 	}
@@ -284,8 +284,16 @@ func TestValidateCertPair(t *testing.T) {
 		{"cert only", cert, "", map[string]string{"ui.key_file": "required when cert_file"}},
 		{"key only", "", key, map[string]string{"ui.cert_file": "required when key_file"}},
 		{"relative", "cert.pem", key, map[string]string{"ui.cert_file": "absolute"}},
-		{"missing", cert, filepath.Join(dir, "nope.pem"), map[string]string{"ui.key_file": "not found"}},
-		{"directory", dir, key, map[string]string{"ui.cert_file": "regular file"}},
+		{"missing", cert, filepath.Join(dir, "nope.pem"), map[string]string{"ui.key_file": "is not a readable key file"}},
+		{"directory", dir, key, map[string]string{"ui.cert_file": "is not a readable certificate file"}},
+	}
+	// A missing file and a directory read the same (nothing about existence or
+	// permissions leaks to the UI).
+	missing, directory := testConfig(t), testConfig(t)
+	missing.UI.CertFile, missing.UI.KeyFile = filepath.Join(dir, "nope.pem"), key
+	directory.UI.CertFile, directory.UI.KeyFile = dir, key
+	if a, b := missing.validate("linux", nil)["ui.cert_file"], directory.validate("linux", nil)["ui.cert_file"]; a != b || a == "" {
+		t.Errorf("missing %q vs directory %q", a, b)
 	}
 	for _, tc := range cases {
 		c := testConfig(t)

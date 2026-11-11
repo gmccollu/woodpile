@@ -91,6 +91,9 @@ type UI struct {
 	// means the self-signed one generated on this machine.
 	CertFile string `toml:"cert_file" json:"cert_file" comment:"LAN mode HTTPS certificate and key (PEM files, absolute paths). Leave both empty for the self-signed certificate."`
 	KeyFile  string `toml:"key_file" json:"key_file"`
+	// RequireLoginLocal makes localhost mode use the password and sessions too
+	// (once a password is set), so other users of this machine can't use the UI.
+	RequireLoginLocal bool `toml:"require_login_local" json:"require_login_local" comment:"true: the UI asks for the password on localhost too (needs a password)."`
 }
 
 // Quiet sets the device status thresholds (online, quiet, offline).
