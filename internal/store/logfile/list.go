@@ -61,14 +61,14 @@ func List(dataDir string) (files []Entry, temps []string, err error) {
 			if !ok {
 				continue
 			}
-			info, err := e.Info()
+			size, err := entrySize(p, e)
 			if errors.Is(err, fs.ErrNotExist) {
 				continue
 			}
 			if err != nil {
 				return nil, nil, err
 			}
-			files = append(files, Entry{DeviceID: dv.Name(), Name: n, Rel: RelPath(dv.Name(), n), Path: p, Size: info.Size()})
+			files = append(files, Entry{DeviceID: dv.Name(), Name: n, Rel: RelPath(dv.Name(), n), Path: p, Size: size})
 		}
 	}
 	sort.Slice(files, func(i, j int) bool {

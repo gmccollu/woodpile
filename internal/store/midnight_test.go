@@ -53,26 +53,55 @@ func TestStatsRollupBoundary(t *testing.T) {
 	}
 }
 
-// TestMidnightDoesNotStallWrites crosses midnight with many devices while the fsync of
-// each closed file is slow, and checks that writes for the new day stay fast and that
-// nothing is lost.
+// TestMidnightDoesNotStallWrites crosses midnight with many devices and checks that
+// writes never wait for the fsync of a closed file, and that nothing is lost.
+//
+// The fake fsync doesn't sleep: it blocks on a gate that stays shut until every write
+// of the new day is done. A write (or maintenance pass) that depended on a closer's
+// fsync could then never finish, and the watchdog fails the test. That catches a real
+// wait however fast or slow the machine is, where a "no write over N ms" bound would
+// have to choose between missing a wait and failing on scheduler noise: on a 2-vCPU
+// runner under -race, a goroutine holding a device lock can be descheduled for tens of
+// milliseconds, and Windows' clock moves in ~15.6 ms ticks. Latencies are only logged.
 func TestMidnightDoesNotStallWrites(t *testing.T) {
-	const devices, writers, perDevice = 400, 4, 20
-	const slowSync = 50 * time.Millisecond
+	const devices, writers, perDevice, workers = 400, 4, 20, 8
 	e := newEnv(t, func(o *Options) {
 		o.Manual = false
 		o.FlushInterval = 10 * time.Millisecond
-		o.CloseWorkers = 8
+		o.CloseWorkers = workers
 	})
-	var synced atomic.Int64
+	gate := make(chan struct{})
+	var started, finished atomic.Int64
 	e.s.closeMu.Lock()
 	real := e.s.syncPath
 	e.s.syncPath = func(p string) error {
-		time.Sleep(slowSync)
-		synced.Add(1)
+		started.Add(1)
+		<-gate
+		finished.Add(1)
 		return real(p)
 	}
 	e.s.closeMu.Unlock()
+	released := false
+	release := func() {
+		if !released {
+			released = true
+			close(gate)
+		}
+	}
+	defer release()
+	// within fails the test if fn doesn't return in time, which here means it was
+	// waiting for a gated fsync.
+	within := func(what string, fn func()) {
+		t.Helper()
+		done := make(chan struct{})
+		go func() { defer close(done); fn() }()
+		select {
+		case <-done:
+		case <-time.After(60 * time.Second):
+			t.Fatalf("%s didn't finish while closed files' fsyncs were held: it waits on the closer pool", what)
+		}
+	}
+
 	addrs := make([]netip.Addr, devices)
 	for i := range addrs {
 		addrs[i] = netip.AddrFrom4([4]byte{198, 51, 100 + byte(i/250), byte(i % 250)})
@@ -85,57 +114,75 @@ func TestMidnightDoesNotStallWrites(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.clock.Set(time.Date(2026, 11, 11, 0, 0, 1, 0, time.UTC))
+	// Half the devices rotate on the write path (their first message of the new day),
+	// the other half in a maintenance pass.
+	within("a first write of the new day", func() {
+		for _, a := range addrs[:devices/2] {
+			e.write(a, "first today")
+		}
+	})
+	within("the maintenance pass", func() { e.s.Maintain() })
+	// Every closer is now stuck in an fsync, with the rest of the 400 queued behind.
+	deadline := time.Now().Add(30 * time.Second)
+	for started.Load() < workers && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if n := started.Load(); n != workers {
+		t.Fatalf("%d closers in fsync, want %d", n, workers)
+	}
 
-	// A maintenance pass that closes all 400 files returns quickly; sequential fsyncs
-	// alone would take devices*slowSync = 20 s.
-	start := time.Now()
-	go e.s.Maintain()
 	var mu sync.Mutex
 	var lat []time.Duration
-	var wg sync.WaitGroup
-	for g := 0; g < writers; g++ {
-		wg.Add(1)
-		go func(g int) {
-			defer wg.Done()
-			local := make([]time.Duration, 0, devices*perDevice)
-			for n := 0; n < perDevice; n++ {
-				for i := range addrs {
-					a := addrs[(i+g*97)%devices]
-					t0 := time.Now()
-					err := e.s.Write(model.Message{Received: e.clock.Now(), Sender: a, Raw: []byte(fmt.Sprintf("today %d %d", g, n))})
-					local = append(local, time.Since(t0))
-					if err != nil {
-						t.Error(err)
-						return
+	within("the new day's writes", func() {
+		var wg sync.WaitGroup
+		for g := 0; g < writers; g++ {
+			wg.Add(1)
+			go func(g int) {
+				defer wg.Done()
+				local := make([]time.Duration, 0, devices*perDevice)
+				for n := 0; n < perDevice; n++ {
+					for i := range addrs {
+						a := addrs[(i+g*97)%devices]
+						t0 := time.Now()
+						err := e.s.Write(model.Message{Received: e.clock.Now(), Sender: a, Raw: []byte(fmt.Sprintf("today %d %d", g, n))})
+						local = append(local, time.Since(t0))
+						if err != nil {
+							t.Error(err)
+							return
+						}
 					}
 				}
-			}
-			mu.Lock()
-			lat = append(lat, local...)
-			mu.Unlock()
-		}(g)
+				mu.Lock()
+				lat = append(lat, local...)
+				mu.Unlock()
+			}(g)
+		}
+		wg.Wait()
+		e.s.Usage() // the API's view doesn't wait on the closers either
+	})
+	if n := finished.Load(); n != 0 {
+		t.Fatalf("%d fsyncs finished while the gate was shut", n)
 	}
-	wg.Wait()
-	writesDone := time.Since(start)
-	syncedDuringWrites := synced.Load()
 	sort.Slice(lat, func(i, j int) bool { return lat[i] < lat[j] })
-	p99, max := lat[len(lat)*99/100], lat[len(lat)-1]
-	t.Logf("%d writes in %v; latency p50 %v p99 %v max %v; %d/%d old files fsynced by then",
-		len(lat), writesDone, lat[len(lat)/2], p99, max, syncedDuringWrites, devices)
-	if max >= slowSync/2 {
-		t.Fatalf("a write took %v, so it waited for a closed file's fsync (%v)", max, slowSync)
-	}
+	t.Logf("%d writes with all %d old files' fsyncs pending; latency p50 %v p99 %v max %v",
+		len(lat), devices, lat[len(lat)/2], lat[len(lat)*99/100], lat[len(lat)-1])
+
+	release()
 	if err := e.s.Close(); err != nil {
 		t.Fatal(err)
 	}
 	e.s = nil
-	if n := synced.Load(); n != devices {
+	if n := finished.Load(); n != devices {
 		t.Fatalf("%d of %d closed files fsynced", n, devices)
 	}
-	for _, a := range addrs {
+	for i, a := range addrs {
 		ls := readLines(t, e.dir, model.DeviceID(a))
-		if len(ls) != 1+writers*perDevice || string(ls[0].Raw()) != "yesterday" {
-			t.Fatalf("%v: %d lines", a, len(ls))
+		want := 1 + writers*perDevice
+		if i < devices/2 {
+			want++
+		}
+		if len(ls) != want || string(ls[0].Raw()) != "yesterday" {
+			t.Fatalf("%v: %d lines, want %d", a, len(ls), want)
 		}
 		if got := e.files(a); len(got) != 2 || got[1] != "2026-11-11.log" {
 			t.Fatalf("%v: files %v", a, got)

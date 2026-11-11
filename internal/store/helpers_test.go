@@ -75,12 +75,18 @@ func (f *fakeDisk) usage(string) (uint64, uint64, error) {
 	return f.total - used, f.total, nil
 }
 
+// duLogs sums the sizes of every file under logs/. It stats each file through a
+// handle: on Windows a directory listing's size is stale for files open for writing
+// (the active files), which made this helper under-count, not the store over-count.
 func duLogs(dataDir string) int64 {
 	var n int64
 	filepath.WalkDir(filepath.Join(dataDir, logfile.LogsDir), func(p string, d fs.DirEntry, err error) error {
 		if err == nil && d.Type().IsRegular() {
-			if info, err := d.Info(); err == nil {
-				n += info.Size()
+			if f, err := logfile.OpenFile(p); err == nil {
+				if st, err := f.Stat(); err == nil {
+					n += st.Size()
+				}
+				f.Close()
 			}
 		}
 		return nil
