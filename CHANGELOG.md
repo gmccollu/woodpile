@@ -51,8 +51,12 @@ as plain files within a disk budget and has a web UI for watching, searching and
 
 ### Security
 - The UI listens on `127.0.0.1:8514` only by default.
-- LAN mode: HTTPS with a self-signed certificate (or your own), a password (Argon2id), secure session cookies,
-  CSRF tokens and a login lockout. `woodpile reset-password` recovers a forgotten password.
+- LAN mode: HTTPS with a self-signed certificate (or your own) and a password (Argon2id). Sessions need both a
+  cookie and a per-session secret header, so a stolen cookie alone is useless. Failed logins back off per address
+  and per network, and a browser that logged in before stays remembered. `woodpile reset-password` recovers a
+  forgotten password.
+- Setting a password also turns on "require login on this machine", so other local users can't change settings;
+  it can be turned off.
 - No outbound connections, no telemetry and no update checks; a test asserts that no code path dials out.
 - Runs with the least privilege each OS allows: a `woodpile` system user with only `CAP_NET_BIND_SERVICE` (Linux),
   the virtual account `NT SERVICE\Woodpile` (Windows), a hidden `_woodpile` user (macOS).
