@@ -1,0 +1,256 @@
+package service
+
+import (
+	"errors"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/gmccollu/woodpile/packaging"
+)
+
+// fakeRunner records commands; fail lists command prefixes that fail.
+type fakeRunner struct {
+	cmds []string
+	fail []string
+	outs map[string]string
+}
+
+func (f *fakeRunner) run(name string, args ...string) (string, error) {
+	c := strings.Join(append([]string{name}, args...), " ")
+	f.cmds = append(f.cmds, c)
+	for _, p := range f.fail {
+		if strings.HasPrefix(c, p) {
+			return "", errors.New("exit status 2")
+		}
+	}
+	return f.outs[c], nil
+}
+
+func (f *fakeRunner) ran(prefix string) bool {
+	for _, c := range f.cmds {
+		if strings.HasPrefix(c, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func fakeHost(t *testing.T, r *fakeRunner, dirs ...string) *host {
+	t.Helper()
+	h := &host{runner: r, root: t.TempDir(), out: io.Discard}
+	for _, d := range dirs {
+		if err := os.MkdirAll(h.path(d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return h
+}
+
+func fakeExe(t *testing.T) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "woodpile")
+	if err := os.WriteFile(p, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func TestSystemdUnitIsThePackagedOne(t *testing.T) {
+	u, err := systemdUnit(linuxBin, "/etc/woodpile/woodpile.toml", "/var/lib/woodpile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := strings.Replace(packaging.SystemdUnit, "/usr/bin/woodpile run", "/usr/local/bin/woodpile run", 1)
+	if got := strings.TrimPrefix(u, installedByTag+"\n"); got != want {
+		t.Errorf("default install differs from the package's unit beyond the binary path:\n%s", got)
+	}
+	for _, line := range []string{"User=woodpile", "AmbientCapabilities=CAP_NET_BIND_SERVICE", "ProtectSystem=strict", "NoNewPrivileges=yes"} {
+		if !strings.Contains(u, line+"\n") {
+			t.Errorf("unit lacks %s", line)
+		}
+	}
+	// A custom config: ExecStart, ReadWritePaths and WorkingDirectory follow it.
+	u, err = systemdUnit(linuxBin, "/srv/wp conf/woodpile.toml", "/srv/wp data")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range []string{
+		`ExecStart=/usr/local/bin/woodpile run --service --config "/srv/wp conf/woodpile.toml"`,
+		`ReadWritePaths="/srv/wp data" "/srv/wp conf"`,
+		`WorkingDirectory="/srv/wp data"`,
+	} {
+		if !strings.Contains(u, line+"\n") {
+			t.Errorf("custom unit lacks %s:\n%s", line, u)
+		}
+	}
+	bin, cfg, data := unitPaths(u)
+	if bin != linuxBin || cfg != "/srv/wp conf/woodpile.toml" || data != "/srv/wp data" {
+		t.Errorf("unitPaths = %q %q %q", bin, cfg, data)
+	}
+}
+
+func TestInstallSystemd(t *testing.T) {
+	r := &fakeRunner{fail: []string{"getent"}} // neither the group nor the user exists yet
+	h := fakeHost(t, r, "/run/systemd/system", "/usr/sbin")
+	os.WriteFile(h.path("/usr/sbin/nologin"), nil, 0o755)
+	o := InstallOptions{ConfigPath: "/etc/woodpile/woodpile.toml", Exe: fakeExe(t)}
+	res, err := installSystemd(h, o, "/var/lib/woodpile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Account != "woodpile" || res.Exe != linuxBin {
+		t.Errorf("result %+v", res)
+	}
+	for _, c := range []string{
+		"groupadd --system woodpile",
+		"useradd --system --gid woodpile --home-dir /var/lib/woodpile --no-create-home --shell /usr/sbin/nologin --comment Woodpile syslog server woodpile",
+		"chown -R woodpile:woodpile /var/lib/woodpile",
+		"chown woodpile:woodpile /etc/woodpile",
+		"sysctl -q -p /etc/sysctl.d/60-woodpile.conf",
+		"systemctl daemon-reload",
+		"systemctl enable woodpile.service",
+		"systemctl start woodpile.service",
+	} {
+		if !r.ran(c) {
+			t.Errorf("didn't run %q; ran:\n%s", c, strings.Join(r.cmds, "\n"))
+		}
+	}
+	for path, want := range map[string]string{linuxSysctl: packaging.SysctlDropIn} {
+		if got, _ := h.readFile(path); got != want {
+			t.Errorf("%s = %q", path, got)
+		}
+	}
+	if u, _ := h.readFile(linuxManualUnit); !strings.Contains(u, "ExecStart=/usr/local/bin/woodpile run --service --config /etc/woodpile/woodpile.toml\n") {
+		t.Errorf("unit:\n%s", u)
+	}
+	if fi, err := os.Stat(h.path(linuxBin)); err != nil || fi.Mode().Perm() != 0o755 {
+		t.Errorf("binary: %v %v", fi, err)
+	}
+
+	// Uninstall keeps the data by default...
+	os.MkdirAll(h.path("/var/lib/woodpile/logs"), 0o750)
+	os.WriteFile(h.path("/etc/woodpile/woodpile.toml"), []byte("x"), 0o640)
+	r.cmds = nil
+	res, err = uninstallSystemd(h, UninstallOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h.exists(linuxManualUnit) || h.exists(linuxBin) || h.exists(linuxSysctl) || !h.exists("/var/lib/woodpile/logs") || !h.exists("/etc/woodpile/woodpile.toml") {
+		t.Error("uninstall removed the wrong things")
+	}
+	if !r.ran("systemctl stop woodpile.service") || !r.ran("systemctl disable woodpile.service") || len(res.Notes) == 0 {
+		t.Errorf("uninstall: %v %+v", r.cmds, res)
+	}
+	// ...and --delete-logs deletes it.
+	installSystemd(h, o, "/var/lib/woodpile")
+	if _, err := uninstallSystemd(h, UninstallOptions{DeleteLogs: true}); err != nil {
+		t.Fatal(err)
+	}
+	if h.exists("/var/lib/woodpile") || h.exists("/etc/woodpile/woodpile.toml") {
+		t.Error("--delete-logs left the data")
+	}
+}
+
+func TestInstallSystemdNeedsSystemd(t *testing.T) {
+	h := fakeHost(t, &fakeRunner{})
+	_, err := installSystemd(h, InstallOptions{ConfigPath: "/etc/woodpile/woodpile.toml", Exe: fakeExe(t)}, "/var/lib/woodpile")
+	if err == nil || !strings.Contains(err.Error(), "systemd isn't running") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestLaunchdPlistIsThePackagedOne(t *testing.T) {
+	p, err := launchdPlist(darwinPkgConfig, darwinPkgData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(p, "Installed by `woodpile install`") {
+		t.Error("no marker comment")
+	}
+	stripped := strings.Replace(p, "<!-- Installed by `woodpile install`; remove it with `woodpile uninstall`. -->\n", "", 1)
+	if stripped != packaging.LaunchdPlist {
+		t.Errorf("the default plist isn't the package's:\n%s", p)
+	}
+	p, err = launchdPlist("/Users/x/w & p/woodpile.toml", "/Users/x/w & p")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(p, "<string>/Users/x/w &amp; p/woodpile.toml</string>") {
+		t.Errorf("custom plist:\n%s", p)
+	}
+	if cfg, data := plistPaths(p); cfg != "/Users/x/w & p/woodpile.toml" || data != "/Users/x/w & p" {
+		t.Errorf("plistPaths = %q %q", cfg, data)
+	}
+}
+
+func TestInstallLaunchd(t *testing.T) {
+	r := &fakeRunner{fail: []string{"launchctl print"}}
+	h := fakeHost(t, r)
+	o := InstallOptions{ConfigPath: darwinPkgConfig, Exe: fakeExe(t)}
+	if _, err := installLaunchd(h, o, darwinPkgData); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []string{
+		"/bin/sh -c . \"$1\" && ensure_service_account sh ",
+		"chown -R _woodpile:_woodpile /Library/Application Support/Woodpile",
+		"chown _woodpile:_woodpile /Library/Logs/Woodpile",
+		"chown root:wheel " + darwinPlist,
+		"launchctl enable system/com.woodpile.daemon",
+		"launchctl bootstrap system " + darwinPlist,
+	} {
+		if !r.ran(c) {
+			t.Errorf("didn't run %q; ran:\n%s", c, strings.Join(r.cmds, "\n"))
+		}
+	}
+	if got, _ := h.readFile(darwinNewsyslog); got != packaging.NewsyslogConf {
+		t.Errorf("newsyslog = %q", got)
+	}
+	r.fail = nil // loaded now
+	r.cmds = nil
+	if _, err := uninstallLaunchd(h, UninstallOptions{DeleteLogs: true}); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []string{"launchctl bootout system/com.woodpile.daemon", "dscl . -delete /Users/_woodpile", "dscl . -delete /Groups/_woodpile"} {
+		if !r.ran(c) {
+			t.Errorf("uninstall didn't run %q: %v", c, r.cmds)
+		}
+	}
+	if h.exists(darwinPlist) || h.exists(darwinBin) || h.exists(darwinPkgData) || h.exists(darwinLogDir) {
+		t.Error("uninstall --delete-logs left files")
+	}
+}
+
+func TestMacAccountScriptIsSourceable(t *testing.T) {
+	if !strings.Contains(packaging.MacAccountScript, "ensure_service_account()") {
+		t.Fatal("packaging/macos/scripts/common.sh no longer defines ensure_service_account")
+	}
+}
+
+func TestStatusParsers(t *testing.T) {
+	r := &fakeRunner{outs: map[string]string{"systemctl is-active woodpile.service": "active"}}
+	h := fakeHost(t, r, "/etc/systemd/system")
+	if st, _ := statusSystemd(h); st != StateNotInstalled {
+		t.Errorf("no unit: %s", st)
+	}
+	os.WriteFile(h.path(linuxManualUnit), nil, 0o644)
+	if st, _ := statusSystemd(h); st != StateRunning {
+		t.Errorf("active: %s", st)
+	}
+	r.outs["systemctl is-active woodpile.service"] = "inactive"
+	if st, _ := statusSystemd(h); st != StateStopped {
+		t.Errorf("inactive: %s", st)
+	}
+	r.outs["launchctl print system/com.woodpile.daemon"] = "system/com.woodpile.daemon = {\n\tactive count = 1\n\tstate = running\n}"
+	os.MkdirAll(filepath.Dir(h.path(darwinPlist)), 0o755)
+	os.WriteFile(h.path(darwinPlist), nil, 0o644)
+	if st, _ := statusLaunchd(h); st != StateRunning {
+		t.Errorf("launchd running: %s", st)
+	}
+	r.fail = []string{"launchctl print"}
+	if st, _ := statusLaunchd(h); st != StateStopped {
+		t.Errorf("launchd not loaded: %s", st)
+	}
+}

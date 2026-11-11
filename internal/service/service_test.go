@@ -9,15 +9,15 @@ import (
 )
 
 type fakeProber struct {
-	files   map[string]bool
-	svc     bool
-	account string
-	err     error
+	files map[string]bool
+	svc   bool
+	msi   bool
+	err   error
 }
 
 func (f fakeProber) exists(p string) bool { return f.files[p] }
-func (f fakeProber) windowsService(string) (bool, string, error) {
-	return f.svc, f.account, f.err
+func (f fakeProber) windowsService(string) (bool, bool, error) {
+	return f.svc, f.msi, f.err
 }
 
 func files(paths ...string) map[string]bool {
@@ -57,11 +57,11 @@ func TestDetectAndRefusals(t *testing.T) {
 		{name: "darwin manual plist", goos: "darwin", p: fakeProber{files: files(darwinPlist)},
 			exists: true, installErr: "already installed"},
 		{name: "windows nothing", goos: "windows", p: fakeProber{}, unErr: "no Woodpile service"},
-		{name: "windows MSI", goos: "windows", p: fakeProber{svc: true, account: `NT SERVICE\Woodpile`},
+		{name: "windows MSI", goos: "windows", p: fakeProber{svc: true, msi: true},
 			exists: true, pkg: true, installErr: "package already installed", unErr: "Apps"},
-		{name: "windows MSI account in other case", goos: "windows", p: fakeProber{svc: true, account: `nt service\woodpile`},
+		{name: "windows MSI key without its service", goos: "windows", p: fakeProber{msi: true},
 			exists: true, pkg: true, installErr: "package", unErr: "package"},
-		{name: "windows manual", goos: "windows", p: fakeProber{svc: true, account: "LocalSystem"},
+		{name: "windows manual (same account as the MSI, no MSI key)", goos: "windows", p: fakeProber{svc: true},
 			exists: true, installErr: "already installed"},
 	}
 	for _, c := range cases {
@@ -96,17 +96,10 @@ func TestDetectWindowsError(t *testing.T) {
 	}
 }
 
-func TestNamesAndConfig(t *testing.T) {
+func TestNames(t *testing.T) {
 	for goos, want := range map[string]string{"windows": "Woodpile", "linux": "woodpile", "darwin": "com.woodpile.daemon"} {
 		if got := Name(goos); got != want {
 			t.Errorf("Name(%s) = %q, want %q", goos, got, want)
-		}
-		c := Config(goos, "/etc/woodpile/woodpile.toml", "/usr/bin/woodpile")
-		if c.Name != want {
-			t.Errorf("%s: Config.Name = %q", goos, c.Name)
-		}
-		if got := strings.Join(c.Arguments, " "); got != "run --service --config /etc/woodpile/woodpile.toml" {
-			t.Errorf("%s: arguments %q", goos, got)
 		}
 	}
 }

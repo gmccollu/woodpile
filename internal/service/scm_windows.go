@@ -8,21 +8,26 @@ import (
 	"golang.org/x/sys/windows/registry"
 )
 
-// windowsServiceAccount reads the service's registry entry (readable without
-// administrator rights, unlike opening the SCM for configuration): whether it
-// exists and the account it runs as (ObjectName).
-func windowsServiceAccount(name string) (bool, string, error) {
+// windowsServiceState reads the registry (readable without administrator rights,
+// unlike opening the SCM for configuration): whether the service's entry exists,
+// and whether the MSI's key HKLM\Software\Woodpile does. Only the MSI writes that
+// key (its Start menu component), so it marks a package install.
+func windowsServiceState(name string) (exists, msi bool, err error) {
 	k, err := registry.OpenKey(registry.LOCAL_MACHINE, `SYSTEM\CurrentControlSet\Services\`+name, registry.QUERY_VALUE)
-	if errors.Is(err, registry.ErrNotExist) {
-		return false, "", nil
+	switch {
+	case err == nil:
+		exists = true
+		k.Close()
+	case !errors.Is(err, registry.ErrNotExist):
+		return false, false, err
 	}
-	if err != nil {
-		return false, "", err
+	k, err = registry.OpenKey(registry.LOCAL_MACHINE, `Software\Woodpile`, registry.QUERY_VALUE|registry.WOW64_64KEY)
+	switch {
+	case err == nil:
+		msi = true
+		k.Close()
+	case !errors.Is(err, registry.ErrNotExist):
+		return exists, false, err
 	}
-	defer k.Close()
-	account, _, err := k.GetStringValue("ObjectName")
-	if err != nil && !errors.Is(err, registry.ErrNotExist) {
-		return true, "", err
-	}
-	return true, account, nil
+	return exists, msi, nil
 }

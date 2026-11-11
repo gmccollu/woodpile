@@ -1,17 +1,25 @@
 // Package service runs Woodpile under the OS service manager (Windows SCM,
-// systemd, launchd) and installs or removes the service, with the names in
-// docs/service-contract.md.
+// systemd, launchd) and installs or removes the service, with the names, paths,
+// accounts and log destinations in docs/service-contract.md.
 //
-// `woodpile install` and `uninstall` are for machines without a package. They
-// refuse when the package installed the service (the systemd unit in
-// /usr/lib/systemd/system, the macOS pkg receipt, the MSI's service account), so
-// a machine never ends up with two services or a package whose service vanished.
+// `woodpile install` is for machines without a package, and sets the service up
+// the way the package does: the same service definition (the packaged systemd unit
+// and launchd plist are embedded, see package packaging), the same least-privilege
+// account (`woodpile`, `_woodpile`, `NT SERVICE\Woodpile`), the same data-folder
+// permissions, the same log destination. The binary is copied to a system location
+// (/usr/local/bin/woodpile, or %ProgramFiles%\Woodpile\woodpile.exe) the account can
+// read.
+//
+// install and uninstall refuse when the package installed the service (the unit in
+// /usr/lib/systemd/system, the pkg receipt, the MSI's registry key), so a machine
+// never ends up with two services or a package whose service vanished.
 package service
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -35,7 +43,15 @@ const (
 // DisplayName and Description are shown by the service managers.
 const (
 	DisplayName = "Woodpile syslog server"
-	Description = "Receives syslog and stores it as plain files. UI: http://127.0.0.1:8514/"
+	Description = "Receives syslog on port 514 and stores it as plain files. UI: http://127.0.0.1:8514/"
+)
+
+// Service accounts, as the packages create them.
+const (
+	LinuxUser  = "woodpile"
+	DarwinUser = "_woodpile"
+	// WindowsAccount is the service's virtual account.
+	WindowsAccount = `NT SERVICE\` + WindowsName
 )
 
 // Name returns the service name on goos.
@@ -49,39 +65,16 @@ func Name(goos string) string {
 	return LinuxName
 }
 
-// Config returns the service definition: run `exe run --service --config
-// cfgPath` at boot, restarted on failure.
-func Config(goos, cfgPath, exe string) *ksvc.Config {
-	c := &ksvc.Config{
-		Name:        Name(goos),
+// runConfig is the kardianos definition used to run under the service manager.
+// Install doesn't use it: it installs the packaged definitions instead.
+func runConfig(cfgPath string) *ksvc.Config {
+	return &ksvc.Config{
+		Name:        Name(runtime.GOOS),
 		DisplayName: DisplayName,
 		Description: Description,
 		Arguments:   []string{"run", "--service", "--config", cfgPath},
-		Executable:  exe,
-		Option:      ksvc.KeyValue{},
 	}
-	switch goos {
-	case "windows":
-		c.Option["StartType"] = "automatic"
-		c.Option["OnFailure"] = "restart"
-		c.Option["OnFailureDelayDuration"] = "5s"
-		c.Option["OnFailureResetPeriod"] = 86400
-	case "darwin":
-		c.Option["KeepAlive"] = true
-		c.Option["RunAtLoad"] = true
-		c.Option["LogDirectory"] = DarwinLogDir
-	default:
-		c.Option["Restart"] = "on-failure"
-		c.Option["LimitNOFILE"] = 65536
-		c.Dependencies = []string{"After=network.target"}
-	}
-	return c
 }
-
-// DarwinLogDir is where a launchd daemon installed by `woodpile install` writes
-// its stdout and stderr (the package's daemon uses woodpile.log in the same
-// folder).
-const DarwinLogDir = "/Library/Logs/Woodpile"
 
 // ---- running under the service manager ----
 
@@ -89,13 +82,13 @@ const DarwinLogDir = "/Library/Logs/Woodpile"
 type RunFunc func(ctx context.Context, log *slog.Logger) error
 
 // Run runs fn as the service. Logs go to the Windows Application event log
-// (source "Woodpile", registered by the MSI) on Windows and to stdout elsewhere
-// (journald and the launchd log file pick them up). It returns when the service
-// manager stops the service; if fn fails on its own, the process exits with
-// status 1 so the manager can restart it.
+// (source "Woodpile", registered by the MSI or `woodpile install`) on Windows and
+// to stdout elsewhere (journald and the launchd log file pick them up). It
+// returns when the service manager stops the service; if fn fails on its own, the
+// process exits with status 1 so the manager can restart it.
 func Run(cfgPath string, stopTimeout time.Duration, fn RunFunc) error {
 	prg := &program{run: fn, stopTimeout: stopTimeout}
-	s, err := ksvc.New(prg, Config(runtime.GOOS, cfgPath, ""))
+	s, err := ksvc.New(prg, runConfig(cfgPath))
 	if err != nil {
 		return err
 	}
@@ -103,8 +96,6 @@ func Run(cfgPath string, stopTimeout time.Duration, fn RunFunc) error {
 	if runtime.GOOS == "windows" {
 		l, err := s.Logger(nil)
 		if err != nil {
-			// The event source is registered by the MSI; without it, fall back to
-			// stderr so the error is at least visible somewhere.
 			fmt.Fprintf(os.Stderr, "woodpile: the event log source %q isn't available (%v); logging to stderr\n", WindowsName, err)
 			prg.log = slog.New(slog.NewTextHandler(os.Stderr, nil))
 		} else {
@@ -158,7 +149,7 @@ func (p *program) Stop(s ksvc.Service) error {
 	}
 }
 
-// ---- install, uninstall, status ----
+// ---- detecting an installed service ----
 
 // Installed describes the Woodpile service found on this machine.
 type Installed struct {
@@ -172,34 +163,36 @@ type Installed struct {
 // prober is how Detect looks at the machine (faked in tests).
 type prober interface {
 	exists(path string) bool
-	// windowsService reads the SCM entry: whether it exists and the account it
-	// runs as.
-	windowsService(name string) (exists bool, account string, err error)
+	// windowsService reports whether the SCM has the service, and whether the
+	// MSI's registry key (HKLM\Software\Woodpile) exists.
+	windowsService(name string) (exists, msi bool, err error)
 }
 
-// Package paths (docs/install.md, packaging/).
+// Package and install paths (docs/install.md, packaging/).
 var (
 	linuxPackageUnits = []string{"/usr/lib/systemd/system/woodpile.service", "/lib/systemd/system/woodpile.service"}
-	linuxManualUnits  = []string{"/etc/systemd/system/woodpile.service"}
+	linuxManualUnit   = "/etc/systemd/system/woodpile.service"
 	darwinPlist       = "/Library/LaunchDaemons/" + DarwinName + ".plist"
 	darwinPkgMarkers  = []string{"/var/db/receipts/com.woodpile.pkg.plist", "/var/db/receipts/com.woodpile.pkg.bom", "/usr/local/share/woodpile/uninstall.sh"}
-	// The MSI runs the service as its virtual account; `woodpile install` doesn't.
-	windowsPackageAccount = `NT SERVICE\` + WindowsName
 )
 
 func detect(goos string, p prober) (Installed, error) {
 	switch goos {
 	case "windows":
-		ok, account, err := p.windowsService(WindowsName)
+		ok, msi, err := p.windowsService(WindowsName)
 		if err != nil {
 			return Installed{}, fmt.Errorf("read the service list: %w", err)
 		}
-		if !ok {
-			return Installed{}, nil
+		in := Installed{}
+		if ok {
+			in.Exists, in.Where = true, `service "`+WindowsName+`"`
 		}
-		in := Installed{Exists: true, Where: `service "` + WindowsName + `"`}
-		if strings.EqualFold(strings.TrimSpace(account), windowsPackageAccount) {
-			in.Package = true
+		if msi {
+			// The MSI's key without its service still means the package is installed.
+			in.Exists, in.Package = true, true
+			if in.Where == "" {
+				in.Where = `HKLM\Software\Woodpile`
+			}
 			in.Remove = "Settings > Apps > Woodpile > Uninstall (or msiexec /x with the MSI)"
 		}
 		return in, nil
@@ -213,7 +206,6 @@ func detect(goos string, p prober) (Installed, error) {
 				in.Package = true
 				in.Remove = "sudo /usr/local/share/woodpile/uninstall.sh"
 				if !in.Exists {
-					// The package is installed even if its plist is gone: still one service.
 					in.Exists, in.Where = true, m
 				}
 				break
@@ -221,19 +213,16 @@ func detect(goos string, p prober) (Installed, error) {
 		}
 		return in, nil
 	default:
-		in := Installed{}
 		for _, u := range linuxPackageUnits {
 			if p.exists(u) {
 				return Installed{Exists: true, Package: true, Where: u,
 					Remove: "your package manager (apt remove woodpile, dnf remove woodpile)"}, nil
 			}
 		}
-		for _, u := range linuxManualUnits {
-			if p.exists(u) {
-				in.Exists, in.Where = true, u
-			}
+		if p.exists(linuxManualUnit) {
+			return Installed{Exists: true, Where: linuxManualUnit}, nil
 		}
-		return in, nil
+		return Installed{}, nil
 	}
 }
 
@@ -271,74 +260,106 @@ func (osProber) exists(path string) bool {
 	return err == nil
 }
 
-func (osProber) windowsService(name string) (bool, string, error) { return windowsServiceAccount(name) }
+func (osProber) windowsService(name string) (bool, bool, error) { return windowsServiceState(name) }
 
-// Install installs the service for cfgPath (the OS default when empty) and
-// starts it. It needs administrator rights.
-func Install(cfgPath string) (Installed, error) {
+// ---- install and uninstall ----
+
+// InstallOptions configures Install.
+type InstallOptions struct {
+	ConfigPath string    // the config the service runs with (default: this OS's)
+	Exe        string    // the binary to install (default: this program)
+	Out        io.Writer // progress lines (default: discarded)
+}
+
+// UninstallOptions configures Uninstall.
+type UninstallOptions struct {
+	// DeleteLogs also deletes the data folder (logs, index, config) and, on macOS,
+	// the _woodpile account, as the package uninstallers do when asked.
+	DeleteLogs bool
+	Out        io.Writer
+}
+
+// Result says what Install or Uninstall did, for the CLI.
+type Result struct {
+	Where   string // the unit, plist or service installed or removed
+	Exe     string // the installed binary
+	Config  string
+	DataDir string
+	Account string
+	Notes   []string // anything the user should know (kept data, a binary left behind)
+}
+
+// Install installs the service as the package would and starts it. It needs
+// administrator rights.
+func Install(o InstallOptions) (Result, error) {
 	in, err := Detect()
 	if err != nil {
-		return in, err
+		return Result{}, err
 	}
 	if err := checkInstall(in); err != nil {
-		return in, err
+		return Result{}, err
 	}
-	if cfgPath == "" {
-		cfgPath = config.DefaultConfigPath()
+	if o.ConfigPath == "" {
+		o.ConfigPath = config.DefaultConfigPath()
 	}
-	cfgPath, err = filepath.Abs(cfgPath)
-	if err != nil {
-		return in, err
+	if o.ConfigPath, err = filepath.Abs(o.ConfigPath); err != nil {
+		return Result{}, err
 	}
-	exe, err := os.Executable()
-	if err != nil {
-		return in, fmt.Errorf("find this program's path: %w", err)
-	}
-	if real, err := filepath.EvalSymlinks(exe); err == nil {
-		exe = real
-	}
-	if runtime.GOOS == "darwin" {
-		if err := os.MkdirAll(DarwinLogDir, 0o755); err != nil {
-			return in, adminHint(fmt.Errorf("create %s: %w", DarwinLogDir, err))
+	if o.Exe == "" {
+		if o.Exe, err = os.Executable(); err != nil {
+			return Result{}, fmt.Errorf("find this program's path: %w", err)
 		}
 	}
-	s, err := ksvc.New(nopProgram{}, Config(runtime.GOOS, cfgPath, exe))
-	if err != nil {
-		return in, err
+	if real, err := filepath.EvalSymlinks(o.Exe); err == nil {
+		o.Exe = real
 	}
-	if err := s.Install(); err != nil {
-		return in, adminHint(fmt.Errorf("install the service: %w", err))
+	if o.Out == nil {
+		o.Out = io.Discard
 	}
-	if err := s.Start(); err != nil {
-		return in, adminHint(fmt.Errorf("the service is installed but didn't start: %w", err))
+	if err := requireAdmin(); err != nil {
+		return Result{}, err
 	}
-	return Detect()
+	return installOS(o)
 }
 
 // Uninstall stops and removes a service installed by Install. It keeps the
-// config and the logs.
-func Uninstall() error {
+// config and the logs unless DeleteLogs is set.
+func Uninstall(o UninstallOptions) (Result, error) {
 	in, err := Detect()
 	if err != nil {
-		return err
+		return Result{}, err
 	}
 	if err := checkUninstall(in); err != nil {
-		return err
+		return Result{}, err
 	}
-	s, err := ksvc.New(nopProgram{}, Config(runtime.GOOS, config.DefaultConfigPath(), ""))
-	if err != nil {
-		return err
+	if o.Out == nil {
+		o.Out = io.Discard
 	}
-	if st, err := s.Status(); err == nil && st == ksvc.StatusRunning {
-		if err := s.Stop(); err != nil {
-			return adminHint(fmt.Errorf("stop the service: %w", err))
-		}
+	if err := requireAdmin(); err != nil {
+		return Result{}, err
 	}
-	if err := s.Uninstall(); err != nil {
-		return adminHint(fmt.Errorf("remove the service: %w", err))
-	}
-	return nil
+	return uninstallOS(o)
 }
+
+// dataDirFor is the data dir a service with this config uses: the config's
+// storage.data_dir if the file exists, else what the server will create it with
+// (the OS default at the default path, the config's folder anywhere else; see
+// server.LoadConfig).
+func dataDirFor(cfgPath string) (string, error) {
+	if _, err := os.Stat(cfgPath); err == nil {
+		c, err := config.Load(cfgPath)
+		if err != nil {
+			return "", err
+		}
+		return c.Storage.DataDir, nil
+	}
+	if filepath.Clean(cfgPath) == filepath.Clean(config.DefaultConfigPath()) {
+		return config.DefaultDataDir(), nil
+	}
+	return filepath.Dir(cfgPath), nil
+}
+
+// ---- status ----
 
 // State is what the service manager says about the service.
 type State string
@@ -354,44 +375,14 @@ const (
 // Status asks the service manager about the service. It never needs
 // administrator rights; when the manager can't say, it returns StateUnknown and
 // the reason.
-func Status() (State, error) {
-	s, err := ksvc.New(nopProgram{}, Config(runtime.GOOS, config.DefaultConfigPath(), ""))
-	if err != nil {
-		return StateUnknown, err
-	}
-	st, err := s.Status()
-	if errors.Is(err, ksvc.ErrNotInstalled) {
-		return StateNotInstalled, nil
-	}
-	if err != nil {
-		return StateUnknown, err
-	}
-	switch st {
-	case ksvc.StatusRunning:
-		return StateRunning, nil
-	case ksvc.StatusStopped:
-		return StateStopped, nil
-	}
-	return StateUnknown, nil
-}
+func Status() (State, error) { return statusOS(execRunner{}) }
 
 // Restart asks the service manager to restart the service (administrator
 // rights needed).
-func Restart() error {
-	s, err := ksvc.New(nopProgram{}, Config(runtime.GOOS, config.DefaultConfigPath(), ""))
-	if err != nil {
-		return err
-	}
-	return adminHint(s.Restart())
-}
+func Restart() error { return adminHint(restartOS(execRunner{})) }
 
 // Platform names the service manager in use, for messages.
 func Platform() string { return ksvc.Platform() }
-
-type nopProgram struct{}
-
-func (nopProgram) Start(ksvc.Service) error { return nil }
-func (nopProgram) Stop(ksvc.Service) error  { return nil }
 
 // adminHint adds how to get the rights to a permission error.
 func adminHint(err error) error {

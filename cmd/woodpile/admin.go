@@ -27,38 +27,74 @@ import (
 
 func cmdInstall(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("install", "", `
-Install Woodpile as a system service (`+service.Name(runtime.GOOS)+`) and start it. Needs
-administrator rights (sudo, or an administrator prompt on Windows).
+Install Woodpile as a system service (`+service.Name(runtime.GOOS)+`) and start it, set up
+the way Woodpile's installer package does it: the same service definition, the
+same unprivileged account (`+installAccount()+`), the same folders and
+permissions. The binary is copied to `+installedExe()+`.
+Needs administrator rights (sudo, or an administrator prompt on Windows).
 
-This is for machines without Woodpile's installer package. If the package
-already installed the service, install refuses, so there's never a second one.`, stderr)
+This is for machines without the package. If the package already installed the
+service, install refuses, so there's never a second one.`, stderr)
 	cfg := configFlag(fs)
 	if code, done := parse(fs, args, stdout); done {
 		return code
 	}
-	in, err := service.Install(*cfg)
+	fmt.Fprintln(stdout, "Installing the Woodpile service:")
+	res, err := service.Install(service.InstallOptions{ConfigPath: *cfg, Out: stdout})
 	if err != nil {
 		return fail(stderr, "install", err)
 	}
-	fmt.Fprintf(stdout, "Installed and started the Woodpile service (%s, %s).\n", in.Where, service.Platform())
-	fmt.Fprintf(stdout, "Config: %s\nUI: %s (run `woodpile status` to check the listeners)\n", *cfg, uiURL(readConfigOrDefault(*cfg)))
+	for _, n := range res.Notes {
+		fmt.Fprintf(stdout, "  note: %s\n", n)
+	}
+	fmt.Fprintf(stdout, "Installed and started %s, running as %s.\n", res.Where, res.Account)
+	fmt.Fprintf(stdout, "Config: %s\nData:   %s\nUI:     %s (run `woodpile status` to check the listeners)\n",
+		res.Config, res.DataDir, uiURL(readConfigOrDefault(res.Config)))
 	return 0
+}
+
+func installAccount() string {
+	switch runtime.GOOS {
+	case "windows":
+		return service.WindowsAccount
+	case "darwin":
+		return service.DarwinUser
+	}
+	return service.LinuxUser
+}
+
+func installedExe() string {
+	if runtime.GOOS == "windows" {
+		return `%ProgramFiles%\Woodpile\woodpile.exe`
+	}
+	return "/usr/local/bin/woodpile"
 }
 
 func cmdUninstall(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("uninstall", "", `
-Stop and remove the system service installed by "woodpile install". The config
-and the received logs are kept. Needs administrator rights.
+Stop and remove the system service installed by "woodpile install", and the
+binary it copied. The config and the received logs are kept unless you pass
+--delete-logs. Needs administrator rights.
 
 A service installed by Woodpile's package is left alone: remove the package
 instead (the error says how).`, stderr)
+	deleteLogs := fs.Bool("delete-logs", false, "also delete the data folder (logs, index, config)"+map[bool]string{true: " and the _woodpile account"}[runtime.GOOS == "darwin"])
 	if code, done := parse(fs, args, stdout); done {
 		return code
 	}
-	if err := service.Uninstall(); err != nil {
+	fmt.Fprintln(stdout, "Removing the Woodpile service:")
+	res, err := service.Uninstall(service.UninstallOptions{DeleteLogs: *deleteLogs, Out: stdout})
+	if err != nil {
 		return fail(stderr, "uninstall", err)
 	}
-	fmt.Fprintln(stdout, "Removed the Woodpile service. The config and logs are kept.")
+	for _, n := range res.Notes {
+		fmt.Fprintf(stdout, "  note: %s\n", n)
+	}
+	if *deleteLogs {
+		fmt.Fprintln(stdout, "Woodpile is uninstalled, and its logs and config are deleted.")
+	} else {
+		fmt.Fprintln(stdout, "Woodpile is uninstalled. The logs and config are kept.")
+	}
 	return 0
 }
 
