@@ -1,15 +1,346 @@
 <script lang="ts">
-  import ComingSoon from '../components/ComingSoon.svelte';
+  import {
+    ALL_SEVS,
+    createExport,
+    deleteExport,
+    estimateExport,
+    downloadsViaTransport,
+    exportDownloadUrl,
+    listExports,
+    transportDownload,
+    type ExportEstimate,
+    type ExportInfo,
+    type ExportRequest,
+    type SevKey,
+  } from '../lib/api';
+  import { ago, bytes, num, remaining, stamp } from '../lib/format';
+  import { prefs } from '../lib/prefs.svelte';
+  import { defaultRange, rangeFromQuery, resolveRange, type Range } from '../lib/range';
+  import { router } from '../lib/router.svelte';
+  import { scopeDeviceIds, scopeFromQuery, sevFromQuery, type Scope } from '../lib/scope';
+  import { deviceName, live } from '../lib/status.svelte';
+  import DevicePicker from '../components/DevicePicker.svelte';
+  import Icon from '../components/Icon.svelte';
+  import SeverityChips from '../components/SeverityChips.svelte';
+  import TimeRange from '../components/TimeRange.svelte';
+
+  const DAY = 86_400_000;
+
+  // ----- the form; "Export these results" from Search fills it through the URL -----
+  let scope = $state<Scope>({ mode: 'all', group: '', devices: [] });
+  let range = $state<Range>(defaultRange());
+  let sev = $state<SevKey[]>([...ALL_SEVS]);
+  let q = $state('');
+  let fromSearch = $state(false);
+
+  $effect(() => {
+    const s = router.query;
+    if (!s) return;
+    const p = new URLSearchParams(s);
+    scope = scopeFromQuery(p);
+    range = rangeFromQuery(p);
+    sev = sevFromQuery(p);
+    q = p.get('q') ?? '';
+    fromSearch = true;
+  });
+
+  const ids = $derived(scopeDeviceIds(scope, live.devices ?? []));
+  const formError = $derived(
+    !ids.length ? 'Pick at least one device.' : !sev.length ? 'Pick at least one severity, or All.' : '',
+  );
+
+  function request(): ExportRequest {
+    const { from, to } = resolveRange(range);
+    return { devices: ids, from, to, severities: sev, q: q.trim() };
+  }
+
+  // ----- estimate (an upper bound from the index, before building) -----
+  let est = $state<ExportEstimate | null>(null);
+  let estError = $state('');
+  let estBusy = $state(false);
+  $effect(() => {
+    const key = JSON.stringify({ ids, range, sev, q, e: formError });
+    void key;
+    if (formError) {
+      est = null;
+      return;
+    }
+    const ctrl = new AbortController();
+    const t = setTimeout(async () => {
+      estBusy = true;
+      try {
+        est = await estimateExport(request(), ctrl.signal);
+        estError = '';
+      } catch (x) {
+        if ((x as Error).name !== 'AbortError') {
+          est = null;
+          estError = (x as Error).message;
+        }
+      } finally {
+        estBusy = false;
+      }
+    }, 350);
+    return () => {
+      clearTimeout(t);
+      ctrl.abort();
+    };
+  });
+
+  // ----- the list -----
+  let list = $state<ExportInfo[] | null>(null);
+  let listError = $state('');
+  let building = $state(false);
+  let buildError = $state('');
+  let now = $state(Date.now());
+
+  async function refresh() {
+    try {
+      list = await listExports();
+      listError = '';
+    } catch (x) {
+      listError = (x as Error).message;
+    }
+  }
+
+  // Poll fast while something is queued or building.
+  $effect(() => {
+    let stop = false;
+    let t = 0;
+    const loop = async () => {
+      await refresh();
+      now = Date.now();
+      if (stop) return;
+      const busy = list?.some((e) => e.state === 'queued' || e.state === 'building');
+      t = window.setTimeout(loop, busy ? 1000 : 5000);
+    };
+    loop();
+    const clock = setInterval(() => (now = Date.now()), 30_000);
+    return () => {
+      stop = true;
+      clearTimeout(t);
+      clearInterval(clock);
+    };
+  });
+
+  async function build() {
+    if (formError || building) return;
+    building = true;
+    buildError = '';
+    try {
+      await createExport(request());
+      await refresh();
+    } catch (x) {
+      buildError = (x as Error).message;
+    } finally {
+      building = false;
+    }
+  }
+
+  async function remove(e: ExportInfo) {
+    try {
+      await deleteExport(e.id);
+    } catch (x) {
+      listError = (x as Error).message;
+    }
+    await refresh();
+  }
+
+  // A plain link streams the zip; only mock mode (no server) needs to go through the transport.
+  function download(ev: MouseEvent, e: ExportInfo) {
+    if (!downloadsViaTransport()) return;
+    ev.preventDefault();
+    transportDownload(exportDownloadUrl(e.id));
+  }
+
+  const names = (devs: string[]) => devs.slice(0, 3).map(deviceName).join(', ');
+  const more = (devs: string[]) => (devs.length > 3 ? `+${devs.length - 3}` : '');
+  // docs/api.md: deleted 24 h after they're ready. Without a ready time, count from creation.
+  const expiresIn = (e: ExportInfo) => Date.parse(e.ready_at ?? e.created) + DAY - now;
+  const STATE: Record<string, string> = { queued: 'Queued', building: 'Building', ready: 'Ready', failed: 'Failed', expired: 'Expired' };
 </script>
 
-<ComingSoon
-  title="Export"
-  intro="Package logs as a zip to send to someone else."
-  points={[
-    'Pick devices and a time range',
-    'One plain-text file per device per day, decompressed so anyone can open it',
-    "A manifest with line counts, checksums and any gaps (for example while the listener was down)",
-    "Woodpile's own events for the range, so the recipient can tell 'the device sent nothing' from 'Woodpile wasn't running'",
-    'Recent exports stay here for download for 24 hours',
-  ]}
-/>
+<div class="grid gap-4 xl:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)]">
+  <div class="space-y-4">
+    <section class="card space-y-4" aria-labelledby="ex-title">
+      <div>
+        <h1 id="ex-title" class="m-0 text-xl font-bold tracking-tight">Export logs</h1>
+        <p class="mt-1 mb-0 text-[13.5px] text-muted">
+          {fromSearch ? 'Filled in from your search. Check it, then build.' : 'Build a zip of the raw logs to send to someone else.'}
+        </p>
+      </div>
+
+      <div class="row">
+        <span class="lbl">Devices</span>
+        <DevicePicker bind:value={scope} devices={live.devices ?? []} />
+        <span class="text-[13px] text-muted">{num(ids.length)} device{ids.length === 1 ? '' : 's'}</span>
+      </div>
+      <div class="row">
+        <span class="lbl">Time range</span>
+        <TimeRange bind:value={range} />
+      </div>
+      <div class="row">
+        <span class="lbl">Severities</span>
+        <div class="sevbar"><SeverityChips bind:value={sev} label="Export severities" /></div>
+      </div>
+      <label class="row">
+        <span class="lbl">Only lines containing</span>
+        <input class="field max-w-md font-mono" bind:value={q} placeholder="Optional text (case-insensitive)" spellcheck="false" />
+      </label>
+
+      <div class="estimate" aria-live="polite">
+        {#if formError}
+          <span class="text-bad-fg font-medium">{formError}</span>
+        {:else if estError}
+          <span class="text-bad-fg font-medium">{estError}</span>
+        {:else if est}
+          <span>Up to <b>{num(est.lines)}</b> lines from <b>{num(est.files)}</b> file{est.files === 1 ? '' : 's'}, about <b>{bytes(est.bytes)}</b> before compression.</span>
+          {#if estBusy}<span class="text-muted"> Updating…</span>{/if}
+        {:else}
+          <span class="text-muted">Estimating…</span>
+        {/if}
+      </div>
+
+      <div class="flex flex-wrap items-center gap-3">
+        <button type="button" class="pill-btn px-5 py-2.5" onclick={build} disabled={!!formError || building}>
+          <Icon name="export" size={15} />{building ? 'Starting…' : 'Build the zip'}
+        </button>
+        {#if buildError}<span class="text-[13.5px] font-medium text-bad-fg" role="alert">{buildError}</span>{/if}
+        <span class="text-[13px] text-muted">One export builds at a time; others wait in the queue.</span>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2 class="m-0 mb-2 text-[16px] font-bold">What's in the zip</h2>
+      <ul class="m-0 list-disc space-y-1.5 pl-5 text-[14px] leading-relaxed">
+        <li><b>The logs</b>, one plain-text file per device per day, exactly as received, so anyone can open them.</li>
+        <li><b>A manifest</b> with the devices, range and filters, and a line count and SHA-256 checksum for every file, so the recipient can tell nothing was changed or lost.</li>
+        <li><b>A gaps report</b>: times when Woodpile wasn't running or a listener was down. "No logs at 14:05" then means something definite.</li>
+        <li><b>Woodpile's own events</b> for the range (restarts, rotations, deletions, drops), so "the device sent nothing" can be told apart from "Woodpile wasn't listening".</li>
+      </ul>
+    </section>
+  </div>
+
+  <section class="card self-start" aria-labelledby="ex-list">
+    <h2 id="ex-list" class="m-0 mb-1 text-[16px] font-bold">Recent exports</h2>
+    <p class="mt-0 mb-3 text-[13px] text-muted">Each zip is kept for 24 hours after it's ready.</p>
+    {#if listError}<p class="text-[13.5px] text-bad-fg" role="alert">{listError}</p>{/if}
+    {#if list === null}
+      <p class="text-muted">Loading…</p>
+    {:else if !list.length}
+      <p class="text-muted">No exports yet.</p>
+    {:else}
+      <ul class="m-0 list-none space-y-2.5 p-0">
+        {#each list as e (e.id)}
+          <li class="ex" data-id={e.id} data-state={e.state}>
+            <div class="flex items-start gap-3">
+              <div class="min-w-0 grow">
+                <div class="flex min-w-0 items-center gap-2">
+                  <span class="shrink-0 badge {e.state}">{STATE[e.state] ?? e.state}</span>
+                  <b class="min-w-0 truncate text-[14px]" title={e.devices.map(deviceName).join(', ')}>{names(e.devices)}</b>
+                  {#if more(e.devices)}<span class="shrink-0 text-[13px] text-muted">{more(e.devices)}</span>{/if}
+                </div>
+                <div class="mt-1 text-[12.5px] text-muted">
+                  {stamp(e.from, prefs.utc).slice(0, 11)} → {stamp(e.to, prefs.utc).slice(0, 11)}{prefs.utc ? ' UTC' : ''} · created {ago(e.created, now)}
+                </div>
+              </div>
+              <div class="flex shrink-0 items-center gap-2">
+                {#if e.state === 'ready'}
+                  <a class="pill-btn no-underline" href={exportDownloadUrl(e.id)} download onclick={(ev) => download(ev, e)}>
+                    <Icon name="download" size={14} />Download
+                  </a>
+                {/if}
+                <button type="button" class="ghost-btn" onclick={() => remove(e)}>
+                  {e.state === 'queued' || e.state === 'building' ? 'Cancel' : 'Delete'}
+                </button>
+              </div>
+            </div>
+            {#if e.state === 'building'}
+              <div class="bar mt-2" role="progressbar" aria-label="Export progress" aria-valuenow={Math.round(e.progress * 100)} aria-valuemin={0} aria-valuemax={100}>
+                <i style:width="{Math.max(2, e.progress * 100)}%"></i>
+              </div>
+              <div class="mt-1 text-[12.5px] text-muted">{Math.round(e.progress * 100)} % · {num(e.lines)} lines so far</div>
+            {:else if e.state === 'queued'}
+              <div class="mt-1 text-[12.5px] text-muted">Waiting for the export ahead of it.</div>
+            {:else if e.state === 'ready'}
+              <div class="mt-1 text-[12.5px] text-muted">
+                {num(e.lines)} lines · {bytes(e.size_bytes)} · expires in {remaining(expiresIn(e))}
+              </div>
+            {:else if e.state === 'failed'}
+              <div class="mt-1 text-[12.5px] font-medium text-bad-fg">{e.error || 'The build failed.'}</div>
+            {:else if e.state === 'expired'}
+              <div class="mt-1 text-[12.5px] text-muted">Deleted after 24 hours. Build it again if you still need it.</div>
+            {/if}
+          </li>
+        {/each}
+      </ul>
+    {/if}
+  </section>
+</div>
+
+<style>
+  .row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 14px;
+  }
+  .lbl {
+    width: 150px;
+    font-size: 13.5px;
+    font-weight: 600;
+  }
+  .sevbar {
+    display: inline-flex;
+    padding: 6px 10px;
+    border-radius: 14px;
+    background: var(--log-bar);
+    border: 1px solid var(--log-border);
+  }
+  .estimate {
+    padding: 10px 14px;
+    border-radius: 14px;
+    background: var(--glass-strong);
+    border: 1px solid var(--border);
+    font-size: 14px;
+  }
+  .ex {
+    padding: 12px 14px;
+    border-radius: 16px;
+    background: var(--glass-strong);
+    border: 1px solid var(--border);
+  }
+  .badge {
+    font-size: 11.5px;
+    font-weight: 700;
+    padding: 2px 8px;
+    border-radius: 999px;
+    border: 1px solid var(--divider);
+    background: var(--chip);
+  }
+  .badge.ready {
+    color: var(--ok-fg);
+  }
+  .badge.building,
+  .badge.queued {
+    color: var(--link);
+  }
+  .badge.failed {
+    color: var(--bad-fg);
+  }
+  .badge.expired {
+    color: var(--muted);
+  }
+  .bar {
+    height: 8px;
+    border-radius: 99px;
+    background: var(--divider);
+    overflow: hidden;
+  }
+  .bar i {
+    display: block;
+    height: 100%;
+    border-radius: 99px;
+    background: var(--spark);
+    transition: width 0.25s;
+  }
+</style>

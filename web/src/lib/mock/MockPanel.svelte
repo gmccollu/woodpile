@@ -57,6 +57,8 @@
           <button class="ghost-btn" onclick={firstRun}>Restart as first run</button>
           <button class="ghost-btn" onclick={testMessage} disabled={!mock.firstRun}>Send test message</button>
         </div>
+        <label class="row"><input type="checkbox" bind:checked={mock.slowScan} /> Slow search scans (partial pages)</label>
+        <label class="row"><input type="checkbox" bind:checked={mock.exportFail} /> Exports fail at 40 %</label>
         <label class="row"><input type="checkbox" checked={mock.lan} onchange={lan} /> LAN mode with auth</label>
         <div class="row presets">
           <button class="ghost-btn" onclick={expire} disabled={!mock.lan || !mock.loggedIn}>Expire session</button>

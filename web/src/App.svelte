@@ -31,11 +31,11 @@
   const showLogin = $derived(auth.needLogin);
   const canLogout = $derived(!auth.needLogin && !!auth.session && auth.session.auth_required && auth.session.authenticated);
 
-  const NAV: { r: Route; label: string; icon: IconName; soon?: boolean }[] = [
+  const NAV: { r: Route; label: string; icon: IconName }[] = [
     { r: 'dashboard', label: 'Dashboard', icon: 'home' },
     { r: 'devices', label: 'Devices', icon: 'devices' },
-    { r: 'search', label: 'Search', icon: 'search', soon: true },
-    { r: 'export', label: 'Export', icon: 'export', soon: true },
+    { r: 'search', label: 'Search', icon: 'search' },
+    { r: 'export', label: 'Export', icon: 'export' },
     { r: 'settings', label: 'Settings', icon: 'settings' },
     { r: 'about', label: 'About', icon: 'about' },
     { r: 'welcome', label: 'Setup', icon: 'welcome' },
@@ -73,8 +73,8 @@
 
 <a href="#main" class="skip">Skip to content</a>
 
-<div class="mx-auto max-w-[1320px] p-3 sm:p-6 lg:p-10">
-  <div class="shell glass">
+<div class="mx-auto max-w-[2400px] p-3 sm:p-5 xl:p-6">
+  <div class="shell">
     <header class="mb-5 flex flex-wrap items-center gap-3 sm:gap-5">
       <a class="brand glass" href={href('dashboard')} aria-label="Woodpile dashboard">
         <span class="grid size-11 place-items-center rounded-full bg-chip shadow-[var(--shadow-chip)]"><Logo /></span>
@@ -117,7 +117,6 @@
           <a href={href(n.r)} class="navi" aria-current={router.route === n.r ? 'page' : undefined}>
             <span class="ico"><Icon name={n.icon} size={19} /></span>
             <span class="lab">{n.label}</span>
-            {#if n.soon}<span class="soon" title="Coming in M3">M3</span>{/if}
           </a>
         {/each}
       </nav>
@@ -159,7 +158,10 @@
     padding: 8px 12px;
     border-radius: 10px;
   }
+  /* No backdrop-filter here: it would make every position:fixed child (full-screen tail,
+     search context panel) fixed to the shell instead of the window. */
   .shell {
+    border: 1px solid var(--border);
     background: var(--shell);
     border-radius: 36px;
     padding: 24px;
@@ -279,19 +281,6 @@
   .navi[aria-current='page'] .lab {
     color: var(--fg);
     font-weight: 650;
-  }
-  .soon {
-    position: absolute;
-    top: 0;
-    right: 4px;
-    font-size: 10px;
-    font-weight: 700;
-    line-height: 1;
-    padding: 3px 5px;
-    border-radius: 999px;
-    background: var(--chip);
-    color: var(--accent-fg);
-    box-shadow: var(--shadow-chip);
   }
   .panel {
     background: var(--panel);

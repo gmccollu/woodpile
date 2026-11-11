@@ -18,12 +18,14 @@
 //   mock_loggedin=1   with mock_auth: start logged in
 //   mock_locked=1     with mock_auth: logins from "this address" are locked out for 15 minutes
 //   mock_password=1   localhost mode, but a password is already set (so LAN mode can be turned on)
+//   mock_slow_scan=1  search pages come back partial (budget used up) so the UI keeps fetching
+//   mock_export_fail=1 exports fail at 40 %
+//   mock_export_secs=N seconds an export takes to build (default 8)
 
 import type {
   Device,
   EventStream,
   ExportInfo,
-  LiveFilters,
   RejectedSender,
   Settings,
   Stats,
@@ -33,6 +35,7 @@ import type {
 } from '../api';
 import { isKnown } from '../severity';
 import { FLEET, line, testLine, weighted, type GenLine, type MockDeviceDef } from './gen';
+import { STEP, deviceAt, lineAt, shareOf } from './history';
 
 const P = new URLSearchParams(location.search);
 const n = (k: string, d: number) => {
@@ -53,6 +56,12 @@ export const mock = $state({
   /** LAN mode with auth (mirrors settings.ui.lan_mode). */
   lan: P.get('mock_auth') === '1',
   loggedIn: P.get('mock_loggedin') === '1',
+  /** Search scans run out of budget quickly, so results arrive as partial pages. */
+  slowScan: P.get('mock_slow_scan') === '1',
+  /** The next export fails part-way. */
+  exportFail: P.get('mock_export_fail') === '1',
+  /** Seconds an export takes to build. */
+  exportSecs: n('mock_export_secs', 8),
 });
 
 export const MOCK_PASSWORD = 'woodpile-demo';
@@ -70,7 +79,7 @@ function newToken(): string {
 }
 
 /** For the smoke checks in scripts/screenshots.mjs: the last X-CSRF-Token the mock received. */
-const probe = { lastCsrf: '' as string | null, get csrf() { return authState.csrf; } };
+const probe = { lastCsrf: '' as string | null, livePaths: [] as string[], get csrf() { return authState.csrf; } };
 (window as unknown as { __woodpileMock: typeof probe }).__woodpileMock = probe;
 
 /** Mock panel: switch LAN mode with auth on (logged out) or off. */
@@ -384,13 +393,58 @@ setInterval(secondTick, 1000);
 
 // ---------- Live tail ----------
 
-function matches(l: GenLine, f: LiveFilters): boolean {
-  if (f.devices?.length && !f.devices.includes(l.device_id)) return false;
+/** Filters as the mock applies them: a resolved severity set (null = all). */
+interface MockFilters {
+  devices?: string[];
+  group?: string;
+  ungrouped?: boolean;
+  sev: Set<string> | null;
+  q?: string;
+}
+
+/**
+ * docs/api.md → Severity filters: `severities=0,3,unknown` wins over `min_severity=N`
+ * (0…N plus unknown). Empty or missing means all. Throws on an invalid value.
+ */
+function sevFilter(u: URLSearchParams): Set<string> | null {
+  const list = u.get('severities');
+  if (list) {
+    const parts = list.split(',').map((x) => x.trim()).filter(Boolean);
+    for (const x of parts) if (!/^[0-7]$/.test(x) && x !== 'unknown') throw new Error(`invalid severity "${x}"`);
+    return parts.length ? new Set(parts) : null;
+  }
+  const min = u.get('min_severity');
+  if (min !== null && min !== '') {
+    if (!/^[0-7]$/.test(min)) throw new Error(`invalid min_severity "${min}"`);
+    return new Set([...Array(Number(min) + 1).keys()].map(String).concat('unknown'));
+  }
+  return null;
+}
+
+const sevKeyOf = (sev: number | null) => (isKnown(sev) ? String(sev) : 'unknown');
+
+function groupOf(ip: string): string {
+  return devs.get(ip)?.group ?? FLEET.find((d) => d.ip === ip)?.group ?? '';
+}
+
+function hiddenNow(ip: string): boolean {
+  return devs.get(ip)?.hidden ?? !!FLEET.find((d) => d.ip === ip)?.hidden;
+}
+
+/** Device-level part of a filter, checked before generating a line's text. */
+function deviceMatches(ip: string, f: MockFilters, searchHidden = false): boolean {
+  if (f.devices?.length) return f.devices.includes(ip);
+  if (searchHidden && hiddenNow(ip)) return false; // hidden devices only when named
   if (f.group || f.ungrouped) {
-    const g = devs.get(l.device_id)?.group ?? '';
+    const g = groupOf(ip);
     if (f.ungrouped ? g !== '' : g !== f.group) return false;
   }
-  if (f.min_severity !== undefined && isKnown(l.severity) && l.severity > f.min_severity) return false;
+  return true;
+}
+
+function matches(l: GenLine, f: MockFilters): boolean {
+  if (!deviceMatches(l.device_id, f)) return false;
+  if (f.sev && !f.sev.has(sevKeyOf(l.severity))) return false;
   if (f.q && !l.raw.toLowerCase().includes(f.q.toLowerCase())) return false;
   return true;
 }
@@ -402,24 +456,31 @@ class MockEventSource implements EventStream {
   readyState = 0;
   onopen: ((e: Event) => void) | null = null;
   private listeners: Record<string, ((e: MessageEvent<string>) => void)[]> = {};
-  private filters: LiveFilters;
+  private filters: MockFilters;
   private sentThisSecond = 0;
   private matchedThisSecond = 0;
   private closed = false;
 
   constructor(path: string) {
     const u = new URL(path, location.origin);
-    const sev = u.searchParams.get('min_severity');
+    probe.livePaths.push(u.pathname + u.search);
+    let sev: Set<string> | null = null;
+    let bad = false;
+    try {
+      sev = sevFilter(u.searchParams);
+    } catch {
+      bad = true; // the real server answers 400, which EventSource reports as an error
+    }
     this.filters = {
       devices: u.searchParams.get('devices')?.split(',').filter(Boolean),
       group: u.searchParams.get('group') ?? undefined,
       ungrouped: u.searchParams.get('ungrouped') === 'true',
-      min_severity: sev === null ? undefined : Number(sev),
+      sev,
       q: u.searchParams.get('q') ?? undefined,
     };
     setTimeout(() => {
       if (this.closed) return;
-      if (mock.lan && !mock.loggedIn) {
+      if (bad || (mock.lan && !mock.loggedIn)) {
         // The real server answers 401: EventSource reports an error and closes for good.
         this.readyState = 2;
         this.onerror?.(new Event('error'));
@@ -592,18 +653,75 @@ function rejected(now: number): RejectedSender[] {
   }));
 }
 
-const exportsList: ExportInfo[] = [
+// ---------- Exports ----------
+
+const H = 60 * MIN;
+const EXPIRE_MS = 24 * H;
+
+interface MockExport extends ExportInfo {
+  severities?: unknown[];
+  q?: string;
+  estimate: number;
+}
+
+const exportsList: MockExport[] = [
   {
-    id: 'exp_7Hq2',
-    created: new Date(Date.now() - 26 * 60 * MIN).toISOString(),
-    devices: ['10.1.0.1', '10.1.0.2'],
-    from: new Date(Date.now() - 50 * 60 * MIN).toISOString(),
-    to: new Date(Date.now() - 26 * 60 * MIN).toISOString(),
-    state: 'ready',
-    size_bytes: 48 * MiB,
-    error: '',
+    id: 'exp_7Hq2', created: new Date(Date.now() - 23 * H - 10 * MIN).toISOString(),
+    ready_at: new Date(Date.now() - 23 * H).toISOString(),
+    devices: ['10.1.0.1', '10.1.0.2'], from: new Date(Date.now() - 48 * H).toISOString(), to: new Date(Date.now() - 24 * H).toISOString(),
+    state: 'ready', progress: 1, lines: 1_204_332, size_bytes: 48 * MiB, error: '', estimate: 0,
+  },
+  {
+    id: 'exp_3kPz', created: new Date(Date.now() - 5 * H).toISOString(),
+    devices: ['10.2.0.1'], from: new Date(Date.now() - 7 * 24 * H).toISOString(), to: new Date(Date.now() - 5 * H).toISOString(),
+    state: 'failed', progress: 0.4, lines: 0, size_bytes: 0, error: 'Not enough free disk space to build the zip.', estimate: 0,
+  },
+  {
+    id: 'exp_9aLm', created: new Date(Date.now() - 30 * H).toISOString(), ready_at: new Date(Date.now() - 29.9 * H).toISOString(),
+    devices: ['10.8.0.1'], from: new Date(Date.now() - 32 * H).toISOString(), to: new Date(Date.now() - 31 * H).toISOString(),
+    state: 'expired', progress: 1, lines: 8_812, size_bytes: 0, error: '', estimate: 0,
   },
 ];
+
+function estimate(b: { devices: string[]; from: string; to: string; severities?: unknown[]; q?: string }) {
+  const span = Math.max(0, Date.parse(b.to) - Date.parse(b.from));
+  let lines = Math.round((span / STEP) * shareOf(b.devices));
+  // An upper bound from the index: severity and text filters can only shrink it.
+  if (b.severities?.length) lines = Math.round(lines * Math.min(1, b.severities.length / 3));
+  const days = Math.max(1, Math.ceil(span / (24 * H)));
+  return { lines, bytes: lines * 142, files: b.devices.length * days };
+}
+
+/** One build at a time; the rest wait in the queue. */
+function exportTick() {
+  const now = Date.now();
+  for (const e of exportsList) if (e.state === 'ready' && e.ready_at && now - Date.parse(e.ready_at) > EXPIRE_MS) e.state = 'expired';
+  let cur = exportsList.find((e) => e.state === 'building');
+  if (!cur) {
+    cur = [...exportsList].reverse().find((e) => e.state === 'queued');
+    if (cur) cur.state = 'building';
+  }
+  if (!cur) return;
+  cur.progress = Math.min(1, cur.progress + 0.25 / mock.exportSecs);
+  cur.lines = Math.round(cur.estimate * 0.8 * cur.progress);
+  cur.size_bytes = Math.round(cur.lines * 32);
+  if (mock.exportFail && cur.progress >= 0.4) {
+    cur.state = 'failed';
+    cur.error = 'Not enough free disk space to build the zip.';
+  } else if (cur.progress >= 1) {
+    cur.state = 'ready';
+    cur.ready_at = new Date(now).toISOString();
+  }
+}
+setInterval(exportTick, 250);
+
+const exportJSON = (e: MockExport): ExportInfo => {
+  const { estimate: _e, severities: _s, q: _q, ...rest } = e;
+  void _e;
+  void _s;
+  void _q;
+  return rest;
+};
 
 function history(): StorageHistoryEntry[] {
   const out: StorageHistoryEntry[] = [];
@@ -627,6 +745,85 @@ function history(): StorageHistoryEntry[] {
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 const err = (status: number, error: string) => json({ error }, status);
+
+// ---------- Search ----------
+
+/** Lines scanned per request before the 10 s budget "runs out" (slow-scan mode: far fewer). */
+const scanBudget = () => (mock.slowScan ? 2500 : 120_000);
+
+function searchRoute(u: URLSearchParams, now: number): Response {
+  let sev: Set<string> | null;
+  try {
+    sev = sevFilter(u);
+  } catch (e) {
+    return err(400, (e as Error).message);
+  }
+  const q = u.get('q') ?? '';
+  const isRe = u.get('regex') === 'true';
+  const cs = u.get('case') === 'true';
+  let re: RegExp | null = null;
+  if (isRe) {
+    try {
+      re = new RegExp(q, cs ? '' : 'i');
+    } catch (e) {
+      // RE2's message style; the JS engine's detail follows.
+      return err(400, `error parsing regexp: ${(e as Error).message.replace(/^Invalid regular expression: /, '')}`);
+    }
+  }
+  const to = u.has('to') ? Date.parse(u.get('to')!) : now;
+  const from = u.has('from') ? Date.parse(u.get('from')!) : to - 24 * H;
+  if (Number.isNaN(from) || Number.isNaN(to)) return err(400, '"from" and "to" must be RFC 3339 times.');
+  if (!(from < to)) return err(400, '"from" must be before "to".');
+  const order = u.get('order') === 'asc' ? 'asc' : 'desc';
+  const limit = Math.min(5000, Math.max(1, Number(u.get('limit') || 500)));
+  const f: MockFilters = {
+    devices: u.get('devices')?.split(',').filter(Boolean),
+    group: u.get('group') ?? undefined,
+    ungrouped: u.get('ungrouped') === 'true',
+    sev,
+  };
+  // The cursor is tied to the other parameters, as on the real server.
+  const sigSrc = new URLSearchParams(u);
+  sigSrc.delete('cursor');
+  sigSrc.delete('limit');
+  sigSrc.sort();
+  const sig = [...sigSrc.toString()].reduce((h, c) => (Math.imul(h, 31) + c.charCodeAt(0)) >>> 0, 7).toString(36);
+  const lo = Math.ceil(from / STEP);
+  const hi = Math.floor(Math.min(to, now) / STEP);
+  let i = order === 'desc' ? hi : lo;
+  const cur = u.get('cursor');
+  if (cur) {
+    const [idx, s2] = cur.split('.');
+    if (s2 !== sig) return err(400, 'The cursor belongs to a different search.');
+    i = Number(idx);
+  }
+  const step = order === 'desc' ? -1 : 1;
+  const inRange = (k: number) => k >= lo && k <= hi;
+  const results: (GenLine & { ref: string })[] = [];
+  const files = new Set<string>();
+  let scanned = 0;
+  const budget = scanBudget();
+  const t0 = performance.now();
+  for (; inRange(i) && results.length < limit && scanned < budget; i += step) {
+    scanned++;
+    const d = deviceAt(i);
+    if (!deviceMatches(d.ip, f, true)) continue;
+    files.add(`${d.ip}/${Math.floor((i * STEP) / (24 * H))}`);
+    const l = lineAt(i);
+    if (sev && !sev.has(sevKeyOf(l.severity))) continue;
+    if (re ? !re.test(l.raw) : q && !(cs ? l.raw.includes(q) : l.raw.toLowerCase().includes(q.toLowerCase()))) continue;
+    results.push({ ...l, ref: `h${i}` });
+  }
+  const exhausted = !inRange(i);
+  return json({
+    results,
+    next_cursor: exhausted ? '' : `${i}.${sig}`,
+    scanned_bytes: scanned * 142,
+    scanned_files: files.size,
+    elapsed_ms: Math.round(performance.now() - t0) + (mock.slowScan ? 9800 : 40),
+    partial: !exhausted && results.length < limit,
+  });
+}
 
 async function route(method: string, url: URL, body: unknown, csrf: string | null): Promise<Response> {
   const p = url.pathname;
@@ -714,59 +911,58 @@ async function route(method: string, url: URL, body: unknown, csrf: string | nul
   }
   if (method === 'GET' && p === '/api/storage/history') return json(history());
   if (method === 'GET' && p === '/api/rejected') return json(rejected(now));
-  if (method === 'GET' && p === '/api/search') {
-    const q = url.searchParams;
-    let re: RegExp | null = null;
-    if (q.get('regex') === 'true') {
-      try {
-        re = new RegExp(q.get('q') ?? '', 'i');
-      } catch {
-        return err(400, 'That regular expression is not valid.');
-      }
-    }
-    const f: LiveFilters = {
-      devices: q.get('devices')?.split(',').filter(Boolean),
-      group: q.get('group') ?? undefined,
-      min_severity: q.has('min_severity') ? Number(q.get('min_severity')) : undefined,
-      q: re ? undefined : (q.get('q') ?? undefined),
-    };
-    const hits = ring
-      .map((l, i) => ({ ...l, ref: `r${i}` }))
-      .filter((l) => matches(l, f) && (!re || re.test(l.raw)));
-    const start = Number(q.get('cursor') || 0);
-    const limit = Number(q.get('limit') || 500);
-    const page = hits.slice(start, start + limit);
-    return json({
-      results: page,
-      next_cursor: start + limit < hits.length ? String(start + limit) : '',
-      scanned_bytes: ring.length * 140,
-      truncated: false,
-    });
-  }
+  if (method === 'GET' && p === '/api/search') return searchRoute(url.searchParams, now);
   if (method === 'GET' && p === '/api/context') {
-    const i = Number((url.searchParams.get('ref') ?? '').slice(1));
-    if (!Number.isInteger(i) || !ring[i]) return err(404, 'That result is no longer available.');
-    const before = Number(url.searchParams.get('before') ?? 50);
-    const after = Number(url.searchParams.get('after') ?? 50);
-    const lo = Math.max(0, i - before);
-    const lines = ring
-      .slice(lo, i + after + 1)
-      .map((l, k) => ({ ...l, ref: `r${lo + k}` }))
-      .filter((l) => l.device_id === ring[i].device_id);
-    return json({ lines, hit_index: lines.findIndex((l) => l.ref === `r${i}`) });
+    const m = /^h(\d+)$/.exec(url.searchParams.get('ref') ?? '');
+    if (!m) return err(404, 'That line is no longer stored.');
+    const i = Number(m[1]);
+    const before = Math.min(500, Number(url.searchParams.get('before') ?? 50));
+    const after = Math.min(500, Number(url.searchParams.get('after') ?? 50));
+    const ip = deviceAt(i).ip;
+    const lastIdx = Math.floor(now / STEP);
+    const lo: number[] = [];
+    for (let j = i - 1; lo.length < before && j > i - 400_000; j--) if (deviceAt(j).ip === ip) lo.push(j);
+    const hi: number[] = [];
+    for (let j = i + 1; hi.length < after && j <= lastIdx; j++) if (deviceAt(j).ip === ip) hi.push(j);
+    const idx = [...lo.reverse(), i, ...hi];
+    return json({ lines: idx.map((j) => ({ ...lineAt(j), ref: `h${j}` })), hit_index: lo.length });
   }
-  if (method === 'GET' && p === '/api/exports') return json(exportsList);
-  if (method === 'POST' && p === '/api/exports') {
-    const b = body as { devices: string[]; from: string; to: string };
-    if (!b?.devices?.length) return err(400, 'Pick at least one device.');
-    const e: ExportInfo = { id: `exp_${Math.random().toString(36).slice(2, 6)}`, created: new Date().toISOString(), ...b, state: 'building', size_bytes: 0, error: '' };
+  if (method === 'POST' && (p === '/api/exports' || p === '/api/exports/estimate')) {
+    const b = (body ?? {}) as { devices?: string[]; from?: string; to?: string; severities?: unknown[]; q?: string };
+    if (!b.devices?.length) return err(400, 'Pick at least one device.');
+    if (!b.from || !b.to || !(Date.parse(b.from) < Date.parse(b.to))) return err(400, '"from" must be before "to".');
+    for (const x of b.severities ?? []) if (!(x === 'unknown' || (Number.isInteger(x) && (x as number) >= 0 && (x as number) <= 7))) return err(400, `invalid severity ${JSON.stringify(x)}`);
+    const req = { devices: b.devices, from: b.from, to: b.to, severities: b.severities, q: b.q };
+    const est = estimate(req);
+    if (p === '/api/exports/estimate') return json(est);
+    const e: MockExport = {
+      id: `exp_${Math.random().toString(36).slice(2, 6)}`, created: new Date(now).toISOString(), ...req,
+      state: 'queued', progress: 0, lines: 0, size_bytes: 0, error: '', estimate: est.lines,
+    };
     exportsList.unshift(e);
-    setTimeout(() => Object.assign(e, { state: 'ready', size_bytes: 12 * MiB }), 4000);
-    return json({ id: e.id });
+    return json({ id: e.id }, 202);
   }
-  const ex = p.match(/^\/api\/exports\/([^/]+)\/download$/);
-  if (ex && method === 'GET')
-    return new Response('mock export', { status: 200, headers: { 'Content-Type': 'application/zip' } });
+  if (method === 'GET' && p === '/api/exports') return json(exportsList.map(exportJSON));
+  const ex = p.match(/^\/api\/exports\/([^/]+)(\/download)?$/);
+  if (ex) {
+    const k = exportsList.findIndex((e) => e.id === decodeURIComponent(ex[1]));
+    const e = exportsList[k];
+    if (!e) return err(404, 'No such export.');
+    if (method === 'GET' && ex[2]) {
+      if (e.state === 'expired') return err(404, 'That export has expired.');
+      if (e.state !== 'ready') return err(409, 'That export is not ready yet.');
+      const name = `woodpile-${e.from.slice(0, 16).replace(/:/g, '')}-${e.to.slice(0, 16).replace(/:/g, '')}.zip`;
+      return new Response('mock export', {
+        status: 200,
+        headers: { 'Content-Type': 'application/zip', 'Content-Disposition': `attachment; filename="${name}"` },
+      });
+    }
+    if (method === 'GET') return json(exportJSON(e));
+    if (method === 'DELETE') {
+      exportsList.splice(k, 1); // cancels a queued or building one, deletes a finished one
+      return new Response(null, { status: 204 });
+    }
+  }
   return err(404, `No route for ${method} ${p}.`);
 }
 
@@ -778,8 +974,18 @@ export const mockTransport: Transport = {
     const method = (init?.method ?? 'GET').toUpperCase();
     const body = typeof init?.body === 'string' ? JSON.parse(init.body) : undefined;
     await sleep(mock.latency * (0.5 + Math.random()));
+    if (mock.slowScan && url.pathname === '/api/search') await sleep(700);
     const csrf = new Headers(init?.headers).get('X-CSRF-Token');
     return route(method, url, body, csrf);
   },
   eventSource: (path) => new MockEventSource(path),
+  async download(path) {
+    const res = await mockTransport.fetch(path);
+    if (!res.ok) return;
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(await res.blob());
+    a.download = /filename="([^"]+)"/.exec(res.headers.get('Content-Disposition') ?? '')?.[1] ?? 'woodpile-export.zip';
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  },
 };

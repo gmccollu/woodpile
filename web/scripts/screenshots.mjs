@@ -64,10 +64,10 @@ const SHOTS = [
     mode: 'light',
     url: '/?mock_panel=0#/dashboard',
     wait: 4500,
-    check: `[...document.querySelectorAll('.dev')].find((t) => t.textContent.includes('edge-fw-01'))?.textContent.includes('now')`,
+    check: `[...document.querySelectorAll('.strip .chip')].find((t) => t.textContent.includes('edge-fw-01'))?.title.includes('last heard now')`,
   },
   { name: 'first-run-redirect', noshot: true, mode: 'light', url: '/?mock_panel=0&mock_firstrun=1&mock_firstmsg=0', check: `location.hash === '#/welcome'` },
-  ...both({ name: 'dashboard', url: '/?mock_panel=0#/dashboard', wait: 3000, check: `document.querySelectorAll('[role=log] .line').length > 50 && document.body.innerText.includes(' rejected')` }),
+  ...both({ name: 'dashboard', url: '/?mock_panel=0#/dashboard', wait: 3000, check: `document.querySelectorAll('[role=log] .logline').length > 50 && document.body.innerText.includes(' rejected')` }),
   {
     name: 'dashboard-sampled-portclash-dark',
     mode: 'dark',
@@ -90,7 +90,7 @@ const SHOTS = [
     mode: 'light',
     url: '/?mock_panel=0&mock_rate=5000#/dashboard',
     wait: 21000,
-    check: `document.querySelectorAll('[role=log] .line').length === 1000`,
+    check: `document.querySelectorAll('[role=log] .logline').length === 1000`,
   },
   {
     name: 'theme-remembered',
@@ -116,7 +116,7 @@ const SHOTS = [
     url: '/?mock_panel=0&mock_rate=200#/dashboard',
     act: `__set(document.querySelector('input[type=search]'), 'deny');`,
     after: 3000,
-    check: `(() => { const l = [...document.querySelectorAll('[role=log] .line')]; return l.length > 0 && l.every((x) => x.textContent.includes('deny')); })()`,
+    check: `(() => { const l = [...document.querySelectorAll('[role=log] .logline')]; return l.length > 0 && l.every((x) => x.textContent.includes('deny')); })()`,
   },
   {
     name: 'allow-refused-sender',
@@ -134,7 +134,7 @@ const SHOTS = [
     url: '/?mock_panel=0&mock_rate=200#/dashboard',
     act: `__btn('Ungrouped').click();`,
     after: 3000,
-    check: `(() => { const h = [...document.querySelectorAll('[role=log] .line .c.h')]; return h.length > 0 && h.every((x) => x.textContent === '192.0.2.44'); })()`,
+    check: `(() => { const h = [...document.querySelectorAll('[role=log] .logline .c.h')]; return h.length > 0 && h.every((x) => x.textContent === '192.0.2.44'); })()`,
   },
   {
     name: 'rename-saves',
@@ -183,8 +183,197 @@ const SHOTS = [
   }),
   ...both({ name: 'about', url: '/?mock_panel=0#/about' }),
   { name: 'about-linux-light', mode: 'light', url: '/?mock_panel=0&mock_os=linux#/about' },
-  ...both({ name: 'search', url: '/?mock_panel=0#/search' }),
-  ...both({ name: 'export', url: '/?mock_panel=0#/export' }),
+  // ---- Dashboard layout, wrap, severity chips ----
+  { name: 'dashboard-2000-light', mode: 'light', w: 2000, h: 1100, url: '/?mock_panel=0#/dashboard', wait: 3000 },
+  { name: 'dashboard-2000-dark', mode: 'dark', w: 2000, h: 1100, url: '/?mock_panel=0#/dashboard', wait: 3000 },
+  {
+    name: 'tail-nowrap-one-line-per-message',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/dashboard',
+    wait: 2500,
+    check: `(() => { const l = [...document.querySelectorAll('[role=log] .logline')]; return l.length > 50 && l.every((x) => x.offsetHeight <= 24)
+      && getComputedStyle(l[0]).whiteSpace === 'pre'; })()`,
+  },
+  {
+    name: 'dashboard-wrap-on-light',
+    mode: 'light',
+    url: '/?mock_panel=0#/dashboard',
+    act: `__btn('Raw').click(); await __tick(); __btn('Wrap').click();`,
+    after: 800,
+    check: `[...document.querySelectorAll('[role=log] .logline')].some((x) => x.offsetHeight > 30)`,
+  },
+  {
+    name: 'tail-debug-only-light',
+    mode: 'light',
+    url: '/?mock_panel=0#/dashboard',
+    act: `window.__woodpileMock.livePaths.length = 0;
+      document.querySelector('[aria-label="Live tail severities"] button[title^="Debug"]').dispatchEvent(new MouseEvent('click', { bubbles: true, altKey: true }));`,
+    after: 2500,
+    check: `(() => { const p = window.__woodpileMock.livePaths; const s = [...document.querySelectorAll('[role=log] .logline .c.s')];
+      return p.length > 0 && /[?&]severities=7(&|$)/.test(p[p.length - 1]) && s.length > 0 && s.every((x) => x.textContent === 'debug'); })()`,
+  },
+  {
+    name: 'chip-filters-tail',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/dashboard',
+    act: `[...document.querySelectorAll('.strip .chip')].find((c) => c.textContent.includes('edge-fw-02')).click();
+      await new Promise((r) => setTimeout(r, 2000));
+      const one = [...document.querySelectorAll('[role=log] .logline .c.h')].map((x) => x.textContent);
+      if (!one.length || one.some((h) => h !== 'edge-fw-02')) throw new Error('single chip did not filter: ' + [...new Set(one)]);
+      [...document.querySelectorAll('.strip .chip')].find((c) => c.textContent.includes('core-sw-01')).dispatchEvent(new MouseEvent('click', { bubbles: true, ctrlKey: true }));`,
+    after: 2500,
+    check: `(() => { const h = new Set([...document.querySelectorAll('[role=log] .logline .c.h')].map((x) => x.textContent));
+      return h.size === 2 && h.has('edge-fw-02') && h.has('core-sw-01'); })()`,
+  },
+  {
+    name: 'tail-fullscreen-dark',
+    mode: 'dark',
+    url: '/?mock_panel=0#/dashboard',
+    act: `__btn('Full screen').click();`,
+    check: `document.querySelector('.tail.full')?.getBoundingClientRect().width === innerWidth`,
+  },
+
+  // ---- Search ----
+  ...both({
+    name: 'search-results',
+    url: '/?mock_panel=0#/search?q=deny&r=24h',
+    wait: 3000,
+    check: `document.querySelectorAll('.logline.clickable').length === 500 && document.querySelectorAll('mark.hl').length > 100`,
+  }),
+  {
+    name: 'search-partial-light',
+    mode: 'light',
+    url: '/?mock_panel=0&mock_slow_scan=1#/search?q=failover&r=7d',
+    wait: 2600,
+    check: `/Scanned [\\d.]+ \\w+ in [\\d,]+ files…/.test(document.body.innerText) && !!__btn('Cancel')`,
+  },
+  {
+    name: 'search-context-light',
+    mode: 'light',
+    url: '/?mock_panel=0#/search?q=deny&r=24h',
+    wait: 2500,
+    act: `document.querySelectorAll('.logline.clickable')[3].click();`,
+    after: 1500,
+    check: `!!document.querySelector('[role=dialog] .logline.hit mark.hl') && document.querySelectorAll('[role=dialog] .logline').length > 60`,
+  },
+  {
+    name: 'search-regex-error-light',
+    mode: 'light',
+    url: '/?mock_panel=0#/search?q=deny%20(tcp&re=1&r=1h',
+    wait: 1500,
+    check: `document.querySelector('#sq-err')?.textContent.startsWith('error parsing regexp') && document.querySelector('#sq').getAttribute('aria-invalid') === 'true'`,
+  },
+  {
+    name: 'search-pagination-no-duplicates',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/search?r=24h',
+    wait: 2500,
+    act: `__btn('Load 500 more').click(); await new Promise((r) => setTimeout(r, 2500)); __btn('Load 500 more').click();`,
+    after: 2500,
+    check: `(() => { const refs = [...document.querySelectorAll('.logline.clickable')].map((x) => x.dataset.ref); return refs.length === 1500 && new Set(refs).size === 1500; })()`,
+  },
+  {
+    name: 'search-partial-finishes-and-cancels',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0&mock_slow_scan=1#/search?q=failover&r=24h',
+    wait: 1800,
+    act: `__btn('Cancel').click();`,
+    after: 400,
+    check: `!__btn('Cancel') && (!!__btn('Continue the scan') || document.body.innerText.includes('Cancelled before anything matched'))`,
+  },
+  {
+    name: 'search-empty-state',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/search?q=no-such-text-anywhere&r=15m',
+    wait: 1500,
+    check: `document.body.innerText.includes('No matches in this range')`,
+  },
+  {
+    name: 'search-export-these-results',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/search?q=deny&r=1h&group=HQ',
+    wait: 2000,
+    act: `__btn('Export these results').click();`,
+    after: 1500,
+    check: `location.hash.startsWith('#/export?') && document.querySelector('input[placeholder^="Optional text"]').value === 'deny'
+      && document.body.innerText.includes('Filled in from your search')`,
+  },
+
+  // ---- Export ----
+  ...both({
+    name: 'export-estimate',
+    url: '/?mock_panel=0#/export',
+    wait: 1800,
+    check: `/Up to [\\d,]+ lines from [\\d,]+ files?, about/.test(document.body.innerText)`,
+  }),
+  {
+    name: 'export-building-light',
+    mode: 'light',
+    url: '/?mock_panel=0&mock_export_secs=30#/export',
+    wait: 1500,
+    act: `__btn('Build the zip').click();`,
+    after: 3500,
+    check: `!!document.querySelector('li[data-state=building] [role=progressbar]')`,
+  },
+  {
+    name: 'export-ready-list-light',
+    mode: 'light',
+    url: '/?mock_panel=0&mock_export_secs=2#/export',
+    wait: 1500,
+    act: `__btn('Build the zip').click();`,
+    after: 5000,
+    check: `document.querySelectorAll('li[data-state=ready] a[download]').length >= 2 && document.body.innerText.includes('expires in')`,
+  },
+  {
+    name: 'export-lifecycle',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0&mock_export_secs=2#/export',
+    wait: 1500,
+    act: `const before = new Set([...document.querySelectorAll('li[data-id]')].map((x) => x.dataset.id));
+      __btn('Build the zip').click();
+      await new Promise((r) => setTimeout(r, 1200));
+      const mine = [...document.querySelectorAll('li[data-id]')].find((x) => !before.has(x.dataset.id));
+      if (!mine || !['queued', 'building'].includes(mine.dataset.state)) throw new Error('not queued/building: ' + mine?.dataset.state);
+      window.__exportId = mine.dataset.id;
+      await new Promise((r) => setTimeout(r, 3500));
+      const done = document.querySelector('li[data-id="' + window.__exportId + '"]');
+      if (done?.dataset.state !== 'ready' || !done.querySelector('a[download]')) throw new Error('not ready: ' + done?.dataset.state);
+      [...done.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Delete').click();`,
+    after: 1200,
+    check: `!document.querySelector('li[data-id="' + window.__exportId + '"]')`,
+  },
+  {
+    name: 'export-failure-shows-error',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0&mock_export_secs=2&mock_export_fail=1#/export',
+    wait: 1500,
+    act: `__btn('Build the zip').click();`,
+    after: 2500,
+    check: `[...document.querySelectorAll('li[data-state=failed]')].some((x) => x.textContent.includes('Not enough free disk space'))`,
+  },
+  {
+    name: 'export-cancel-and-failure',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0&mock_export_secs=30&mock_export_fail=1#/export',
+    wait: 1500,
+    act: `__btn('Build the zip').click(); await new Promise((r) => setTimeout(r, 1500)); __btn('Build the zip').click();
+      await new Promise((r) => setTimeout(r, 1500));
+      const q = document.querySelector('li[data-state=queued]');
+      if (!q) throw new Error('second export not queued');
+      window.__q = q.dataset.id;
+      [...q.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Cancel').click();`,
+    after: 1500,
+    check: `!document.querySelector('li[data-id="' + window.__q + '"]')`,
+  },
   // ---- LAN mode and auth ----
   ...both({
     name: 'login',
@@ -347,7 +536,11 @@ try {
 
   for (const s of SHOTS) {
     try {
-      await send('Emulation.setDeviceMetricsOverride', { width: W, height: H, deviceScaleFactor: 1, mobile: false });
+      const sw = s.w ?? W;
+      const sh = s.h ?? H;
+      await send('Emulation.setDeviceMetricsOverride', { width: sw, height: sh, deviceScaleFactor: 1, mobile: false });
+      // Fresh preferences per shot (wrap, severities, theme), so shots don't leak into each other.
+      await send('Storage.clearDataForOrigin', { origin: new URL(BASE).origin, storageTypes: 'local_storage' });
       await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: s.mode }] });
       // A fresh document each time: blank first so the hash-only change reloads the app.
       await send('Page.navigate', { url: 'about:blank' });
@@ -375,12 +568,12 @@ try {
         continue;
       }
       const height = await evaluate('return Math.ceil(document.documentElement.scrollHeight)');
-      const h = Math.max(H, Math.min(height, 3000));
-      await send('Emulation.setDeviceMetricsOverride', { width: W, height: h, deviceScaleFactor: 1, mobile: false });
+      const h = Math.max(sh, Math.min(height, 3000));
+      await send('Emulation.setDeviceMetricsOverride', { width: sw, height: h, deviceScaleFactor: 1, mobile: false });
       await sleep(250);
-      const shot = await send('Page.captureScreenshot', { format: 'png', clip: { x: 0, y: 0, width: W, height: h, scale: 1 } });
+      const shot = await send('Page.captureScreenshot', { format: 'png', clip: { x: 0, y: 0, width: sw, height: h, scale: 1 } });
       writeFileSync(join(OUT, `${s.name}.png`), Buffer.from(shot.data, 'base64'));
-      console.log(`  ${s.name}.png (${W}x${h})`);
+      console.log(`  ${s.name}.png (${sw}x${h})`);
     } catch (e) {
       failed++;
       console.error(`  ! ${s.name}: ${e.message}`);

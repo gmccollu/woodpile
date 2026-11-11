@@ -47,11 +47,39 @@ export function rate(msgsPerMin: number): string {
 
 const pad = (n: number, w = 2) => String(n).padStart(w, '0');
 
-/** HH:MM:SS.mmm in local time, for log lines. */
-export function clock(iso: string): string {
+/** HH:MM:SS.mmm in local time (or UTC), for log lines. */
+export function clock(iso: string, utc = false): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
+  if (utc) return `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}.${pad(d.getUTCMilliseconds(), 3)}`;
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}`;
+}
+
+/** MM-DD HH:MM:SS.mmm, for search results that span days. */
+export function stamp(iso: string, utc = false): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const md = utc ? `${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}` : `${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  return `${md} ${clock(iso, utc)}`;
+}
+
+/** Short age for tight spaces: "now", "41s", "13m", "2h", "3d". */
+export function agoShort(iso: string, now = Date.now(), nowWithin = 2): string {
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return '—';
+  const s = Math.max(0, Math.round((now - t) / 1000));
+  if (s < nowWithin) return 'now';
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m`;
+  if (s < 172800) return `${Math.floor(s / 3600)}h`;
+  return `${Math.floor(s / 86400)}d`;
+}
+
+/** Remaining time like "23 h 12 min" or "4 min". */
+export function remaining(ms: number): string {
+  const m = Math.max(0, Math.round(ms / 60000));
+  if (m >= 60) return `${Math.floor(m / 60)} h ${m % 60} min`;
+  return `${m} min`;
 }
 
 const dtf = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' });

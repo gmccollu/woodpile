@@ -221,6 +221,67 @@ body {
     border: 1px solid var(--log-border);
     font-family: var(--font-mono);
   }
+  /*
+   * Log lines (live tail, search, context). Fixed-width time, host and severity, then the
+   * message. Wrapped: the message wraps under a small hanging indent. Not wrapped (.nowrap
+   * on the container): one line per message and the container scrolls sideways.
+   */
+  .logview {
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+    line-height: 1.7;
+  }
+  .logline {
+    padding-left: 3ch;
+    text-indent: -3ch;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  .logview.nowrap .logline {
+    padding-left: 0;
+    text-indent: 0;
+    white-space: pre;
+    overflow-wrap: normal;
+    width: max-content;
+    min-width: 100%;
+  }
+  .logline > .c {
+    display: inline-block;
+    text-indent: 0;
+    vertical-align: top;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    margin-right: 1.2ch;
+  }
+  .logline > .c.t {
+    width: var(--tw, 12ch);
+    color: var(--log-dim);
+  }
+  .logline > .c.h {
+    width: var(--hostw, 12ch);
+    color: var(--log-host);
+  }
+  .logline > .c.s {
+    width: 7ch;
+    margin-right: 1ch;
+  }
+  .logline.hit {
+    background: rgba(157, 188, 255, 0.16);
+    box-shadow: inset 3px 0 0 var(--log-host);
+  }
+  .logline.clickable {
+    cursor: pointer;
+  }
+  .logline.clickable:hover {
+    background: rgba(255, 255, 255, 0.06);
+  }
+  mark.hl {
+    background: rgba(243, 192, 107, 0.3);
+    color: inherit;
+    border-radius: 2px;
+    box-shadow: 0 0 0 1px rgba(243, 192, 107, 0.55);
+  }
   .sev-0, .sev-1, .sev-2 { color: var(--sev-emerg); font-weight: 700; }
   .sev-3 { color: var(--sev-err); }
   .sev-4 { color: var(--sev-warn); }

@@ -26,6 +26,10 @@
     clear: 'M5 7h14M8 7v12h8V7M10 4h4',
     arrow: 'M5 12h14M13 6l6 6-6 6',
     logout: 'M14 4h5v16h-5M10 8l-4 4 4 4M6 12h10',
+    expand: 'M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5',
+    shrink: 'M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5',
+    clock: 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18zM12 7v5l3 2',
+    download: 'M12 4v11M7.5 10.5 12 15l4.5-4.5M5 19h14',
     flask: 'M9 3h6M10 3v6l-5 9a2 2 0 0 0 1.8 3h10.4A2 2 0 0 0 19 18l-5-9V3',
   } as const;
   export type IconName = keyof typeof PATHS;

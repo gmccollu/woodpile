@@ -1,6 +1,6 @@
 <script lang="ts">
   import { getStats, type Device, type Stats } from '../lib/api';
-  import { ago, bytes, num, rate } from '../lib/format';
+  import { ago, agoShort, bytes, num, rate } from '../lib/format';
   import { live, NOW_WITHIN_S } from '../lib/status.svelte';
   import { ui } from '../lib/ui.svelte';
   import LiveTail from '../components/LiveTail.svelte';
@@ -10,11 +10,13 @@
 
   const ALL = '\u0000all';
   const UNGROUPED = '\u0000none';
+  /** Chips shown in the strip before "All N devices". */
+  const STRIP_MAX = 30;
 
   let stats = $state<Stats | null>(null);
   let statsError = $state('');
   let tab = $state(ALL);
-  let picked = $state<string | null>(null);
+  let picked = $state<string[]>([]);
 
   async function load() {
     try {
@@ -37,28 +39,56 @@
   const filterText = $derived(ui.filter.trim().toLowerCase());
 
   const inTab = (d: Device) => tab === ALL || (tab === UNGROUPED ? !d.group : d.group === tab);
-  // Stable order (by name), so tiles don't jump around as rates change.
   const label = (d: Device) => d.name || d.ip;
-  const tiles = $derived(
+  // Busiest first. Rates are bucketed (powers of two) so chips don't swap places every poll.
+  const bucket = (d: Device) => Math.round(Math.log2(d.msgs_per_min + 1));
+  const inScope = $derived(
     visible
       .filter(inTab)
       .filter((d) => !filterText || `${d.name} ${d.ip}`.toLowerCase().includes(filterText))
-      .sort((a, b) => label(a).localeCompare(label(b), undefined, { numeric: true })),
+      .sort((a, b) => bucket(b) - bucket(a) || label(a).localeCompare(label(b), undefined, { numeric: true })),
   );
+  const chips = $derived(inScope.slice(0, STRIP_MAX));
 
-  // Live tail scope: one picked device, else the tab.
-  const tailDevices = $derived(picked ? [picked] : []);
-  const tailUngrouped = $derived(!picked && tab === UNGROUPED);
-  const tailGroup = $derived(picked || tab === ALL || tab === UNGROUPED ? '' : tab);
-  const pickedDevice = $derived(visible.find((d) => d.id === picked));
-  const scope = $derived(
-    pickedDevice ? pickedDevice.name || pickedDevice.ip : tab === ALL ? 'all devices' : tab === UNGROUPED ? 'ungrouped' : tab,
-  );
+  // Click selects one device (click it again to clear); Cmd/Ctrl-click adds or removes.
+  function pick(id: string, e: MouseEvent) {
+    if (e.metaKey || e.ctrlKey) picked = picked.includes(id) ? picked.filter((x) => x !== id) : [...picked, id];
+    else picked = picked.length === 1 && picked[0] === id ? [] : [id];
+  }
+
+  const tailDevices = $derived(picked);
+  const tailUngrouped = $derived(!picked.length && tab === UNGROUPED);
+  const tailGroup = $derived(picked.length || tab === ALL || tab === UNGROUPED ? '' : tab);
+  const scope = $derived.by(() => {
+    if (picked.length) {
+      const names = picked.map((id) => visible.find((d) => d.id === id)).map((d, i) => (d ? label(d) : picked[i]));
+      return names.length > 3 ? `${names.slice(0, 3).join(', ')} +${names.length - 3}` : names.join(', ');
+    }
+    return tab === ALL ? 'all devices' : tab === UNGROUPED ? 'ungrouped' : tab;
+  });
 
   function setTab(t: string) {
     tab = t;
-    picked = null;
+    picked = [];
   }
+
+  // The tail fills the rest of the window, with a sensible minimum.
+  let tailBox: HTMLDivElement | undefined = $state();
+  let tailHeight = $state(560);
+  $effect(() => {
+    const fit = () => {
+      if (!tailBox) return;
+      const top = tailBox.getBoundingClientRect().top + scrollY;
+      tailHeight = Math.max(380, Math.round(innerHeight - top - 76));
+    };
+    fit();
+    addEventListener('resize', fit);
+    const t = setInterval(fit, 1000);
+    return () => {
+      removeEventListener('resize', fit);
+      clearInterval(t);
+    };
+  });
 
   const diskPct = $derived(stats ? Math.min(100, (stats.disk.used_bytes / Math.max(1, stats.disk.cap_bytes)) * 100) : 0);
   const osName = $derived(
@@ -132,7 +162,7 @@
   </div>
 </div>
 
-<div class="mb-4 flex flex-wrap justify-center gap-2" role="tablist" aria-label="Device groups">
+<div class="mb-3 flex flex-wrap items-center gap-2" role="tablist" aria-label="Device groups">
   <button role="tab" class="tab" aria-selected={tab === ALL} onclick={() => setTab(ALL)}>All devices</button>
   {#each groups as g (g)}
     <button role="tab" class="tab" aria-selected={tab === g} onclick={() => setTab(g)}>{g}</button>
@@ -143,41 +173,39 @@
   <a class="tab" href="#/devices" title="Set groups on the Devices page" aria-label="Add a group on the Devices page"><Icon name="plus" size={16} /></a>
 </div>
 
-<div class="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.3fr)]">
-  <div class="grid content-start gap-3 [grid-template-columns:repeat(auto-fill,minmax(136px,1fr))]">
-    {#if live.devices && !tiles.length}
-      <p class="col-span-full m-0 rounded-[18px] p-4 text-sm text-muted glass">
-        {visible.length ? 'No devices match.' : 'No devices yet. Point a device at this machine on port 514.'}
-        {#if !visible.length}<a class="text-link underline" href="#/welcome">Setup help</a>{/if}
-      </p>
-    {/if}
-    {#each tiles as d (d.id)}
-      <button
-        class="dev"
-        aria-pressed={picked === d.id}
-        onclick={() => (picked = picked === d.id ? null : d.id)}
-        title="Show only {d.name || d.ip} in the live tail"
-      >
-        <b class="block truncate text-[15px]">{d.name || d.ip}</b>
-        <span class="block truncate text-xs text-muted">{d.name ? d.ip : d.group || 'unnamed'}</span>
-        <span class="mt-2.5 flex items-center justify-between gap-2 text-xs">
-          <span class="flex min-w-0 items-center gap-1.5">
-            <StatusDot status={d.status} />
-            <span class="truncate">{ago(d.last_heard, live.now, NOW_WITHIN_S)}</span>
-          </span>
-          <span class="text-muted">{rate(d.msgs_per_min)}</span>
-        </span>
-      </button>
-    {/each}
-  </div>
+<div class="strip mb-4" role="group" aria-label="Devices: click to show one in the live tail, Cmd or Ctrl-click for several">
+  {#if live.devices && !inScope.length}
+    <p class="m-0 px-1 text-sm text-muted">
+      {visible.length ? 'No devices match.' : 'No devices yet. Point a device at this machine on port 514.'}
+      {#if !visible.length}<a class="text-link underline" href="#/welcome">Setup help</a>{/if}
+    </p>
+  {/if}
+  {#each chips as d (d.id)}
+    <button
+      class="chip"
+      aria-pressed={picked.includes(d.id)}
+      onclick={(e) => pick(d.id, e)}
+      title="{label(d)}{d.name ? ` (${d.ip})` : ''} · {d.status} · last heard {ago(d.last_heard, live.now, NOW_WITHIN_S)} · {rate(d.msgs_per_min)}"
+    >
+      <StatusDot status={d.status} />
+      <span class="nm">{label(d)}</span>
+      <span class="meta">{d.status === 'online' ? rate(d.msgs_per_min) : agoShort(d.last_heard, live.now, NOW_WITHIN_S)}</span>
+    </button>
+  {/each}
+  {#if inScope.length > STRIP_MAX}
+    <a class="chip more" href="#/devices">All {inScope.length} devices →</a>
+  {/if}
+</div>
 
+<div bind:this={tailBox}>
   <LiveTail
     group={tailGroup}
     ungrouped={tailUngrouped}
     devices={tailDevices}
     q={ui.filter}
     {scope}
-    onClearScope={picked || tab !== ALL ? () => setTab(ALL) : undefined}
+    height="{tailHeight}px"
+    onClearScope={picked.length || tab !== ALL ? () => setTab(ALL) : undefined}
   />
 </div>
 
@@ -200,23 +228,50 @@
     font-weight: 500;
     letter-spacing: 0;
   }
-  .dev {
-    text-align: left;
+  .strip {
+    display: flex;
+    gap: 8px;
+    overflow-x: auto;
+    padding: 2px 2px 6px;
+    scrollbar-width: thin;
+  }
+  .chip {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    padding: 7px 12px;
+    border-radius: 999px;
     background: var(--glass);
     border: 1px solid var(--border);
-    border-radius: 18px;
-    padding: 12px 13px;
     color: var(--fg);
-    cursor: pointer;
-    min-width: 0;
     font: inherit;
+    font-size: 13.5px;
+    cursor: pointer;
+    white-space: nowrap;
+    text-decoration: none;
   }
-  .dev:hover {
+  .chip:hover {
     background: var(--glass-strong);
   }
-  .dev[aria-pressed='true'] {
+  .chip[aria-pressed='true'] {
     background: var(--chip);
     box-shadow: var(--shadow-chip), 0 0 0 2px var(--spark);
+  }
+  .chip .nm {
+    font-weight: 600;
+    max-width: 28ch;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .chip .meta {
+    color: var(--muted);
+    font-size: 12.5px;
+    font-variant-numeric: tabular-nums;
+  }
+  .chip.more {
+    color: var(--link);
+    font-weight: 600;
   }
   .tab {
     display: inline-flex;
