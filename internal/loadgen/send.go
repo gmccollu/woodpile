@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"strconv"
 	"strings"
 	"syscall"
@@ -40,6 +41,14 @@ type SendOptions struct {
 	RunID    string // tag carried in every message (default random)
 	FirstSeq int    // sequence number of the first message (default 0)
 	Hostname string // the message's HOSTNAME field (default "woodpile-send")
+
+	// Message, if set, replaces the padding: each message is the sequence tag and
+	// number, a space and Message, and Size is ignored. It can't contain CR, LF or
+	// NUL (they would split the message under newline framing).
+	Message string
+	// Source is the local IP address to send from (for example 127.0.0.2, to test
+	// several senders from one machine). Empty lets the OS choose.
+	Source string
 }
 
 // SendResult describes a Send.
@@ -74,6 +83,10 @@ func message(dst []byte, o *SendOptions, seq int, now time.Time) []byte {
 	dst = append(dst, " woodpile - - - "...)
 	dst = append(dst, SeqTag(o.RunID)...)
 	dst = strconv.AppendInt(dst, int64(seq), 10)
+	if o.Message != "" {
+		dst = append(dst, ' ')
+		return append(dst, o.Message...)
+	}
 	if pad := o.Size - (len(dst) - start) - 1; pad > 0 {
 		dst = append(dst, ' ')
 		for i := 0; i < pad; i++ {
@@ -119,7 +132,29 @@ func (o *SendOptions) defaults() error {
 	if o.Hostname == "" {
 		o.Hostname = DefaultHostname
 	}
+	if strings.ContainsAny(o.Message, "\r\n\x00") {
+		return errors.New("loadgen: Message can't contain CR, LF or NUL")
+	}
+	if o.Source != "" {
+		if _, err := netip.ParseAddr(o.Source); err != nil {
+			return fmt.Errorf("loadgen: Source %q is not an IP address", o.Source)
+		}
+	}
 	return nil
+}
+
+// dialer returns a dialer bound to o.Source, if set.
+func (o *SendOptions) dialer(proto string) net.Dialer {
+	var d net.Dialer
+	if o.Source != "" {
+		ip := net.IP(netip.MustParseAddr(o.Source).AsSlice())
+		if proto == "udp" {
+			d.LocalAddr = &net.UDPAddr{IP: ip}
+		} else {
+			d.LocalAddr = &net.TCPAddr{IP: ip}
+		}
+	}
+	return d
 }
 
 // pacer spreads sends evenly at a rate: due returns how many messages should have
@@ -175,7 +210,8 @@ func Send(ctx context.Context, o SendOptions) (SendResult, error) {
 }
 
 func sendUDP(ctx context.Context, o *SendOptions, res *SendResult) error {
-	c, err := net.Dial("udp", o.Addr)
+	d := o.dialer("udp")
+	c, err := d.DialContext(ctx, "udp", o.Addr)
 	if err != nil {
 		return fmt.Errorf("loadgen: %w", err)
 	}
@@ -214,7 +250,7 @@ func sendUDP(ctx context.Context, o *SendOptions, res *SendResult) error {
 }
 
 func sendTCP(ctx context.Context, o *SendOptions, res *SendResult) error {
-	var d net.Dialer
+	d := o.dialer("tcp")
 	c, err := d.DialContext(ctx, "tcp", o.Addr)
 	if err != nil {
 		return fmt.Errorf("loadgen: %w", err)
