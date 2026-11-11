@@ -215,8 +215,19 @@ switch ($Mode) {
         # Review M3: an ordinary user pre-creates a child folder that everyone can write.
         New-Item -ItemType Directory -Force -Path (Join-Path $Data "logs") | Out-Null
         icacls (Join-Path $Data "logs") /grant "*S-1-1-0:(OI)(CI)F" | Out-Null
+        # A junction planted inside: install removes it (as the MSI does), never follows it.
+        $target = Join-Path $env:RUNNER_TEMP "junction-target"
+        New-Item -ItemType Directory -Force -Path $target | Out-Null
+        Set-Content (Join-Path $target "keep.txt") "keep"
+        cmd /c mklink /J (Join-Path $Data "logs\evil-junction") $target | Out-Null
         Say "woodpile install (no package)"
-        Native $bin @("install")
+        $installOut = & $bin install 2>&1 | Out-String
+        Write-Host $installOut
+        if ($LASTEXITCODE -ne 0) { Die "woodpile install exited $LASTEXITCODE" }
+        if (Test-Path (Join-Path $Data "logs\evil-junction")) { Die "the planted junction survived the install" }
+        if (-not (Test-Path (Join-Path $target "keep.txt"))) { Die "the junction's target was changed" }
+        if ($installOut -notmatch "removed .*evil-junction") { Die "install didn't say it removed the junction" }
+        Ok "install removed a planted junction (and said so), leaving its target alone"
         Check-Running | Out-Null
         $child = (Get-Acl (Join-Path $Data "logs")).Sddl
         Write-Host "logs ACL: $child"
