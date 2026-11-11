@@ -24,9 +24,16 @@ Change this file first if the contract changes.
   "host_ips": ["10.1.0.50", "fd00::50"],
   "ui_cert_fingerprint": "",                  // LAN mode: SHA-256 of the UI's certificate, "AB:CD:…" (64 hex pairs); "" on localhost
   "banners": [{"kind": "listener_bind", "level": "error", "text": "TCP 514 is in use by syslogd (pid 312).",
-               "action": "retry_listeners"}]   // action: "" | "retry_listeners"; kinds: listener_bind, writes_paused, low_disk
+               "action": "retry_listeners"}]   // action: "" | "retry_listeners"; kinds: listener_bind, writes_paused, low_disk, ui_port_busy
 }
 ```
+A listener that failed to bind may also carry, when known, `holder_kind` (`"woodpile_service"`: the installed Woodpile
+service; `"woodpile"`: another running copy of Woodpile; omitted otherwise), `holder_pid` (integer) and `holder_ui_url`
+(that Woodpile's UI address). Another user's process (the service runs as its own account) is invisible to `lsof` and
+`/proc` for an ordinary user, so when the holder can't be seen and an installed Woodpile service is running (or the
+default data folder's run-state file names another live Woodpile), that one is reported as the likely holder.
+Banner kind `ui_port_busy` (warn): another Woodpile (usually the installed service) is running but can't open its UI
+because this copy holds the UI port.
 
 `POST /api/listeners/retry` → `204`, then re-read `/api/status`.
 
