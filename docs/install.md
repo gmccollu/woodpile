@@ -140,15 +140,120 @@ Removing the package stops and disables the service and deletes the sysctl drop-
 in effect until the next reboot. The `woodpile` user is left in place, as distribution policy recommends; remove
 it with `sudo userdel woodpile` if you want.
 
-**Tarball (no package manager):** unpack it, then either run `./woodpile run` in a terminal (as root, or grant
-the capability with `sudo setcap cap_net_bind_service=+ep ./woodpile`), or copy `woodpile` to `/usr/bin` and set up
-the user, folders and `woodpile.service` from `packaging/linux/` in the source tree the way the package does.
+**Tarball (no package manager):** unpack it and either run `./woodpile run` in a terminal, or install it as a
+service with `sudo ./woodpile install` (next section).
+
+## Without a package: `woodpile install`
+
+For machines where you don't use the installer package (a tarball, a build from source), `woodpile install` sets up
+the service the way the package does, and `woodpile uninstall` removes it again. Both need administrator rights
+(`sudo`, or an administrator prompt on Windows).
+
+```sh
+sudo ./woodpile install              # Linux, macOS
+sudo woodpile uninstall              # keeps the logs and config
+sudo woodpile uninstall --delete-logs
+```
+
+```powershell
+.\woodpile.exe install              # elevated PowerShell
+woodpile uninstall [--delete-logs]
+```
+
+| | Linux | macOS | Windows |
+|---|---|---|---|
+| Program | copied to `/usr/local/bin/woodpile` | copied to `/usr/local/bin/woodpile` | copied to `C:\Program Files\Woodpile\woodpile.exe` |
+| Service | the package's unit, as `/etc/systemd/system/woodpile.service` | the package's plist, `/Library/LaunchDaemons/com.woodpile.daemon.plist` | `Woodpile`, automatic start, restarted on failure |
+| Account | `woodpile` system user (created if missing) with only `CAP_NET_BIND_SERVICE` | `_woodpile` user and group, created by the package's own script | `NT SERVICE\Woodpile` |
+| Data folder | `/var/lib/woodpile`, owned by `woodpile`, mode 0750 | `/Library/Application Support/Woodpile`, owned by `_woodpile`, mode 0750 | `C:\ProgramData\Woodpile` with the MSI's ACL (below) |
+| Also | `/etc/sysctl.d/60-woodpile.conf` (32 MiB UDP buffer) | `/etc/newsyslog.d/com.woodpile.daemon.conf` | the `Woodpile` event source; firewall rules for UDP and TCP 514 |
+
+`--config FILE` points the service at another config; its data folder is the config's `storage.data_dir` (or, for a
+new config, the config's own folder).
+
+`install` refuses when the package already installed the service (the unit in `/usr/lib/systemd/system`, the pkg
+receipt, or the MSI's `HKLM\Software\Woodpile` key), and `uninstall` refuses to remove a package's service: use the
+package to remove it. So a machine never has two Woodpile services. Remove a `woodpile install` service before
+installing the package.
+
+`uninstall --delete-logs` deletes the data folder and the config; on macOS it also deletes the `_woodpile` account,
+like the pkg's `uninstall.sh --delete-logs`. On Linux the `woodpile` user is kept, as with the package.
+
+**The Windows data-folder ACL** (the same as the MSI's): owner Administrators, inheritance from ProgramData turned
+off, full control for SYSTEM and Administrators, and modify (read, write, delete; no permission changes) for
+`NT SERVICE\Woodpile`. Ordinary users get no access. As SDDL:
+
+```
+O:BAG:SYD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1301bf;;;S-1-5-80-276366627-2944175572-1807786847-528126453-1705305312)
+```
+
+`woodpile install` sets it with `SetNamedSecurityInfo`. To set it by hand (an elevated prompt):
+
+```powershell
+$acl = Get-Acl C:\ProgramData\Woodpile
+$acl.SetSecurityDescriptorSddlForm("O:BAG:SYD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1301bf;;;S-1-5-80-276366627-2944175572-1807786847-528126453-1705305312)")
+Set-Acl C:\ProgramData\Woodpile $acl
+```
+
+Or with icacls, which gives the same DACL (`M` is 0x1301bf) but leaves the owner as it is:
+`icacls C:\ProgramData\Woodpile /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" "NT SERVICE\Woodpile:(OI)(CI)M"`.
+
+## Files in the data folder
+
+| File | What it is |
+|---|---|
+| `logs/<device>/<day>.log`, `.log.gz` | the received messages; plain text, one line each |
+| `index.db` (+ `-wal`, `-shm`) | the SQLite index; `woodpile reindex` rebuilds it from the logs |
+| `woodpile.toml` | the config (Linux: `/etc/woodpile/woodpile.toml` instead) |
+| `woodpile.lock` | locked while a Woodpile process uses the folder, so two servers (or a server and `reindex`) never share it. The lock is the OS's and goes away with the process, even after a crash; the file itself stays and holds the last PID |
+| `woodpile.state.json` | written by the running server (PID, version, UI address and any UI error) for `woodpile status`; deleted at a clean stop |
+| `ui-password.hash`, `ui-cert.pem`, `ui-key.pem` | LAN mode's password hash and self-signed certificate (mode 0600) |
+| `exports/` | export zips, deleted after 24 hours |
 
 ## Checking that it works
 
 1. Open http://127.0.0.1:8514/ on the machine. The welcome page shows the addresses and ports Woodpile is
    listening on, and a test command.
-2. Send a test message with `woodpile send` (see `woodpile send --help`), or point a device at the machine's
-   address, port 514.
-3. If the welcome page says port 514 is in use, another syslog server is already running; stop it, then press
-   **Retry**.
+2. Send a test message with `woodpile send --message "hello"` (see `woodpile send --help`), or point a device at the
+   machine's address, port 514.
+3. `woodpile status` shows the service's state, both listeners and the UI address.
+
+## Troubleshooting
+
+**Port 514 is in use.** Another syslog server (often the OS's own: rsyslog, syslog-ng) is listening. The UI still
+starts and shows a red banner naming the port, the error and, where the OS says, the program holding it; `woodpile
+status` shows the same. Find it yourself with `sudo ss -lunp 'sport = :514'` and `sudo ss -ltnp 'sport = :514'`
+(Linux), `sudo lsof -nP -i :514` (macOS) or `Get-NetUDPEndpoint -LocalPort 514; Get-NetTCPConnection -LocalPort 514`
+(PowerShell). Stop that program, or move Woodpile to another port in Settings, then press **Retry** in the banner.
+No restart is needed.
+
+**Port 8514 (the UI) is in use.** The service keeps running and retries; `woodpile status` says the UI isn't
+answering and why. Change `ui.port` in the config and restart the service.
+
+**Devices can't reach it.** Check the host firewall: the MSI and `woodpile install` on Windows open UDP and TCP 514
+only; the Linux packages change no firewall (`sudo ufw allow 514`, or the firewalld command above); on macOS allow
+`/usr/local/bin/woodpile` in the application firewall if it's on. The UI port is never opened: it's localhost-only
+unless you turn on LAN mode (on Windows the UI then shows the admin command that opens it).
+
+**"another Woodpile process is using this data folder".** A server already runs on that folder (`woodpile status`
+says which); stop it first. `woodpile reindex` refuses for the same reason while the service runs.
+
+**Gatekeeper or SmartScreen blocks the installer.** The installers aren't signed yet: see the macOS and Windows
+sections above for the one-time prompts.
+
+**Forgot the UI password.** `sudo woodpile reset-password` (an administrator prompt on Windows) removes it and turns
+LAN mode off; the UI is back on http://localhost:8514/.
+
+**Where's Woodpile's own log?** Windows: Event Viewer → Windows Logs → Application, source `Woodpile`. macOS:
+`/Library/Logs/Woodpile/woodpile.log`. Linux: `journalctl -u woodpile`.
+
+## How the installers are tested
+
+`.github/workflows/install-smoke.yml` installs every package for real on fresh GitHub-hosted machines
+(scripts in `scripts/smoke/`): the deb on Ubuntu, the rpm in a Fedora container running systemd, the MSI on Windows
+Server and the pkg on macOS, then `woodpile install` on each. Every run checks that the service runs as its
+unprivileged account and holds UDP and TCP 514 (on macOS as `_woodpile`, on Linux with only `CAP_NET_BIND_SERVICE`),
+that the UI answers on 8514, that 10,000 messages sent with `woodpile send` are all on disk exactly once, that
+`woodpile status` works, and that a restart, an upgrade (Windows, 0.0.1 → 0.0.2) and an uninstall keep the data
+while the delete-logs paths (`apt purge`, `DELETE_LOGS=1`, `uninstall.sh --delete-logs`, `woodpile uninstall
+--delete-logs`) remove it. On Windows it also checks the data-folder ACL, the firewall rules and the event log.
