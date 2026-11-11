@@ -168,8 +168,10 @@ export interface ContextResponse {
   at_end: boolean;
 }
 
-/** Devices by list, group or ungrouped (at least one must select a device); filters as for search. */
+/** Devices by list, group, ungrouped or all (at least one must select a device); filters as for search. */
 export interface ExportRequest {
+  /** Every non-hidden device. */
+  all_devices?: boolean;
   devices?: string[];
   group?: string;
   ungrouped?: boolean;
@@ -437,6 +439,14 @@ export interface DevicePage {
   total: number;
 }
 
+/** A group and its number of non-hidden devices (ungrouped devices aren't listed). */
+export interface GroupInfo {
+  name: string;
+  devices: number;
+}
+
+export const getGroups = () => request<GroupInfo[]>('GET', '/api/groups');
+
 export const getDevices = (p: DeviceQuery = {}, signal?: AbortSignal) =>
   request<DevicePage>(
     'GET',
@@ -470,6 +480,7 @@ export const getContext = (ref: string, before = 50, after = 50) =>
 /** Optional filters are sent only when they narrow the export (all severities = no filter). */
 function exportBody(r: ExportRequest): ExportRequest {
   const b: ExportRequest = { from: r.from, to: r.to };
+  if (r.all_devices) b.all_devices = true;
   if (r.devices?.length) b.devices = r.devices;
   if (r.group) b.group = r.group;
   if (r.ungrouped) b.ungrouped = true;
@@ -501,8 +512,8 @@ export interface LiveHandlers {
 /** First reconnect delay; doubles after each failure up to LIVE_BACKOFF_MAX (with jitter). */
 const LIVE_BACKOFF_MIN = 1000;
 const LIVE_BACKOFF_MAX = 30_000;
-/** No bytes at all (not even a heartbeat) for this long means the stream is dead. */
-const LIVE_IDLE_MS = 60_000;
+/** docs/api.md: a heartbeat every 15 s, so 45 s with no bytes at all means the stream is dead. */
+const LIVE_IDLE_MS = 45_000;
 
 /**
  * Opens the live tail over fetch() (EventSource can't send the session header), parses the

@@ -2,7 +2,7 @@
   import { tick } from 'svelte';
   import { getDevices, patchDevice, type Device, type DevicePatch, type DeviceSort } from '../lib/api';
   import { ago, bytes, date, dateTime, num, rate } from '../lib/format';
-  import { DEVICE_POLL_MS, groupsSeen, live, NOW_WITHIN_S, remember, replaceDevice } from '../lib/status.svelte';
+  import { DEVICE_POLL_MS, groupsSeen, live, NOW_WITHIN_S, refreshGroups, remember, replaceDevice } from '../lib/status.svelte';
   import { ui } from '../lib/ui.svelte';
   import Icon from '../components/Icon.svelte';
   import StatusDot from '../components/StatusDot.svelte';
@@ -88,6 +88,7 @@
     rowError = { ...rowError, [d.id]: '' };
     try {
       replaceRow(await patchDevice(d.id, patch));
+      if (patch.group !== undefined || patch.hidden !== undefined) refreshGroups();
     } catch (e) {
       rowError = { ...rowError, [d.id]: (e as Error).message };
     } finally {

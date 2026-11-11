@@ -6,7 +6,7 @@
 // for exactly what they show. Names for log lines come from a cache filled by every
 // device response, and unknown ids are looked up a few at a time.
 import { SvelteMap } from 'svelte/reactivity';
-import { ApiError, getDevices, getStatus, type Device, type Status } from './api';
+import { ApiError, getDevices, getGroups, getStatus, type Device, type GroupInfo, type Status } from './api';
 import { auth } from './session.svelte';
 
 /** Devices kept in the snapshot (the busiest, hidden ones left out). */
@@ -19,8 +19,10 @@ export const live = $state<{
   devices: Device[] | null;
   /** All visible (not hidden) devices on the server. */
   deviceTotal: number;
+  /** GET /api/groups: every group with its non-hidden device count. */
+  groups: GroupInfo[];
   now: number;
-}>({ status: null, statusError: '', devices: null, deviceTotal: 0, now: Date.now() });
+}>({ status: null, statusError: '', devices: null, deviceTotal: 0, groups: [], now: Date.now() });
 
 /** id → device, from every device response seen. Reactive, so names update in place. */
 const known = new SvelteMap<string, Device>();
@@ -46,10 +48,11 @@ export async function refreshStatus(): Promise<void> {
 export async function refreshDevices(): Promise<void> {
   if (auth.needLogin || auth.movedTo) return;
   try {
-    const page = await getDevices({ sort: 'rate', limit: SNAPSHOT, hidden: 'exclude' });
+    const [page, groups] = await Promise.all([getDevices({ sort: 'rate', limit: SNAPSHOT, hidden: 'exclude' }), getGroups()]);
     remember(page.devices);
     live.devices = page.devices;
     live.deviceTotal = page.total;
+    live.groups = groups;
   } catch {
     /* keep the last snapshot; pages show their own errors */
   }
@@ -102,26 +105,31 @@ export function deviceName(id: string): string {
   return id;
 }
 
-/** Group names seen so far (the API has no group list; see the report). */
+/** Group names, from GET /api/groups. */
 export function groupsSeen(): string[] {
-  const g = new Set<string>();
-  for (const d of known.values()) if (d.group && !d.hidden) g.add(d.group);
-  return [...g].sort();
+  return live.groups.map((g) => g.name);
+}
+
+/** Non-hidden devices in a group, or null if the group isn't known. */
+export function groupSize(name: string): number | null {
+  return live.groups.find((g) => g.name === name)?.devices ?? null;
+}
+
+/** Visible devices with no group: the total minus everything in groups. */
+export function ungroupedCount(): number {
+  return Math.max(0, live.deviceTotal - live.groups.reduce((n, g) => n + g.devices, 0));
 }
 
 export function anyUngrouped(): boolean {
-  for (const d of known.values()) if (!d.group && !d.hidden) return true;
-  return false;
+  return ungroupedCount() > 0;
 }
 
-/** Every visible device id, paging through the server (exports of "all devices"). */
-export async function allVisibleIds(): Promise<string[]> {
-  const ids: string[] = [];
-  for (let offset = 0; ; offset += 1000) {
-    const page = await getDevices({ sort: 'name', limit: 1000, offset, hidden: 'exclude' });
-    remember(page.devices);
-    ids.push(...page.devices.map((d) => d.id));
-    if (!page.devices.length || ids.length >= page.total) return ids;
+/** Refresh the groups after a device's group changes. */
+export async function refreshGroups(): Promise<void> {
+  try {
+    live.groups = await getGroups();
+  } catch {
+    /* keep the last list */
   }
 }
 

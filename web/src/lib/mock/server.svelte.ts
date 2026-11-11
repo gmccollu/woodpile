@@ -93,6 +93,8 @@ const probe = {
   lastWriteHeader: '' as string | null,
   lastLiveHeader: '' as string | null,
   sessionBodies: [] as string[],
+  /** The body of the last POST /api/exports(/estimate). */
+  lastExportBody: '',
   get secret() {
     return authState.secret;
   },
@@ -1080,6 +1082,11 @@ async function route(method: string, url: URL, body: unknown, header: string | n
   }
   if (method === 'GET' && p === '/api/stats') return json(statsJSON(now));
   if (method === 'GET' && p === '/api/devices') return devicesRoute(url.searchParams, now);
+  if (method === 'GET' && p === '/api/groups') {
+    const counts = new Map<string, number>();
+    for (const d of devs.values()) if (d.group && !d.hidden) counts.set(d.group, (counts.get(d.group) ?? 0) + 1);
+    return json([...counts].sort((a, b) => a[0].localeCompare(b[0])).map(([name, devices]) => ({ name, devices })));
+  }
   const dm = p.match(/^\/api\/devices\/([^/]+)$/);
   if (dm && method === 'PATCH') {
     const d = devs.get(decodeURIComponent(dm[1]));
@@ -1134,12 +1141,14 @@ async function route(method: string, url: URL, body: unknown, header: string | n
   }
   if (method === 'POST' && (p === '/api/exports' || p === '/api/exports/estimate')) {
     const b = (body ?? {}) as {
-      devices?: string[]; group?: string; ungrouped?: boolean; from?: string; to?: string;
+      all_devices?: boolean; devices?: string[]; group?: string; ungrouped?: boolean; from?: string; to?: string;
       severities?: unknown[]; q?: string; regex?: boolean; case?: boolean;
     };
     // devices, group or ungrouped: resolved as the build would (hidden devices only when named).
+    probe.lastExportBody = JSON.stringify(b);
     const f: MockFilters = { devices: b.devices, group: b.group || undefined, ungrouped: !!b.ungrouped, sev: null };
-    const ids = FLEET.map((d) => d.ip).filter((ip) => deviceMatches(ip, f, true));
+    const anySelector = b.all_devices || !!b.devices?.length || !!b.group || !!b.ungrouped;
+    const ids = anySelector ? FLEET.map((d) => d.ip).filter((ip) => deviceMatches(ip, f, true)) : [];
     if (!ids.length) return err(400, 'Pick at least one device (by list, group or ungrouped).');
     if (!b.from || !b.to || !(Date.parse(b.from) < Date.parse(b.to))) return err(400, '"from" must be before "to".');
     for (const x of b.severities ?? []) if (!(x === 'unknown' || (Number.isInteger(x) && (x as number) >= 0 && (x as number) <= 7))) return err(400, `invalid severity ${JSON.stringify(x)}`);

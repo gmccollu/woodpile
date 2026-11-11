@@ -18,7 +18,7 @@
   import { defaultRange, rangeFromQuery, resolveRange, type Range } from '../lib/range';
   import { router } from '../lib/router.svelte';
   import { scopeFromQuery, sevFromQuery, type Scope } from '../lib/scope';
-  import { allVisibleIds, deviceName, live } from '../lib/status.svelte';
+  import { deviceName, groupSize, live, ungroupedCount } from '../lib/status.svelte';
   import { SEVERITIES } from '../lib/severity';
   import DevicePicker from '../components/DevicePicker.svelte';
   import Icon from '../components/Icon.svelte';
@@ -49,18 +49,20 @@
     fromSearch = true;
   });
 
-  // How many devices the scope covers, where that's known without asking (groups resolve on the server).
-  const count = $derived(scope.mode === 'devices' ? scope.devices.length : scope.mode === 'all' ? live.deviceTotal : null);
+  // How many devices the scope covers (from /api/devices and /api/groups totals).
+  const count = $derived(
+    scope.mode === 'devices'
+      ? scope.devices.length
+      : scope.mode === 'all'
+        ? live.deviceTotal
+        : scope.mode === 'group'
+          ? groupSize(scope.group)
+          : ungroupedCount(),
+  );
   const formError = $derived(
     count === 0 ? 'Pick at least one device.' : !sev.length ? 'Pick at least one severity, or All.' : '',
   );
 
-  // "All devices" has no API form, so it's sent as the list (paged from the server, cached briefly).
-  let allIds: { at: number; ids: string[] } | null = null;
-  async function everyDevice(): Promise<string[]> {
-    if (!allIds || Date.now() - allIds.at > 30_000) allIds = { at: Date.now(), ids: await allVisibleIds() };
-    return allIds.ids;
-  }
 
   // Groups stay groups (the server resolves them when it builds); "all devices" is sent as the list.
   async function request(): Promise<ExportRequest> {
@@ -70,7 +72,9 @@
         ? { group: scope.group }
         : scope.mode === 'ungrouped'
           ? { ungrouped: true }
-          : { devices: scope.mode === 'devices' ? scope.devices : await everyDevice() };
+          : scope.mode === 'all'
+            ? { all_devices: true }
+            : { devices: scope.devices };
     return { ...who, from, to, severities: sev, q: q.trim(), regex, case: cs };
   }
 

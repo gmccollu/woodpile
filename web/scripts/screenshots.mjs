@@ -553,6 +553,24 @@ const SHOTS = [
     check: `!document.querySelector('li[data-id="' + window.__exportId + '"]')`,
   },
   {
+    name: 'export-all-devices-flag',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0&mock_devices=10000#/export',
+    wait: 2500,
+    check: `(() => { const b = JSON.parse(window.__woodpileMock.lastExportBody || '{}');
+      return b.all_devices === true && !('devices' in b) && /Up to [\\d,]+ lines/.test(document.body.innerText)
+        && /[\\d,]{5,} devices/.test(document.body.innerText); })()`,
+  },
+  {
+    name: 'groups-from-api',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0&mock_devices=10000#/dashboard',
+    wait: 2500,
+    check: `['Stores', 'Warehouses', 'Lab', 'HQ', 'Ungrouped'].every((g) => [...document.querySelectorAll('[role=tab]')].some((t) => t.textContent.trim() === g))`,
+  },
+  {
     name: 'export-failure-shows-error',
     noshot: true,
     mode: 'light',
