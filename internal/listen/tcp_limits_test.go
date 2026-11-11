@@ -267,3 +267,60 @@ func TestEvictLongestIdle(t *testing.T) {
 		}
 	}
 }
+
+// The start of the next message arriving in the same read as the end of the
+// previous one starts its frame clock at once, not at the next read.
+func TestFrameClockStartsOnBufferedNext(t *testing.T) {
+	cfg := loopback(0, 0)
+	cfg.TCPFrameTimeout = config.Duration(300 * time.Millisecond)
+	s, c, _ := start(t, cfg, nil) // idle timeout stays 10 min
+	conn, err := net.Dial("tcp", tcpAddr(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	start := time.Now()
+	conn.Write([]byte("<13>whole\n<13>then a trickle"))
+	if !closedByServer(conn, 5*time.Second) {
+		t.Fatal("the buffered partial message wasn't cut")
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Errorf("cut after %v, want about the 300 ms frame timeout", d)
+	}
+	got := c.wait(t, 2)
+	if string(got[0].Raw) != "<13>whole" || got[0].Truncated || string(got[1].Raw) != "<13>then a trickle" || !got[1].Truncated {
+		t.Errorf("got %q (%v), %q (%v)", got[0].Raw, got[0].Truncated, got[1].Raw, got[1].Truncated)
+	}
+	if st := s.Status(); st.TCPFrameTimeouts != 1 {
+		t.Errorf("frame timeouts %d", st.TCPFrameTimeouts)
+	}
+}
+
+// Blank lines between messages don't start the frame clock: a sender that ends
+// each octet-counted frame with an LF and then pauses is kept.
+func TestJunkBetweenFramesKept(t *testing.T) {
+	cfg := loopback(0, 0)
+	cfg.TCPFrameTimeout = config.Duration(200 * time.Millisecond)
+	s, c, _ := start(t, cfg, nil)
+	conn, err := net.Dial("tcp", tcpAddr(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	conn.Write([]byte("9 <13>first"))
+	time.Sleep(20 * time.Millisecond)
+	conn.Write([]byte("\n")) // the LF in its own segment
+	time.Sleep(600 * time.Millisecond)
+	conn.Write([]byte("10 <13>second\n\r\n"))
+	time.Sleep(600 * time.Millisecond)
+	conn.Write([]byte("9 <13>third"))
+	got := c.wait(t, 3)
+	for i, w := range []string{"<13>first", "<13>second", "<13>third"} {
+		if string(got[i].Raw) != w || got[i].Truncated {
+			t.Errorf("[%d] %q truncated=%v", i, got[i].Raw, got[i].Truncated)
+		}
+	}
+	if st := s.Status(); st.TCPFrameTimeouts != 0 || st.TCPConns != 1 {
+		t.Errorf("status %+v", st)
+	}
+}

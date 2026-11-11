@@ -75,6 +75,18 @@ func (s *StreamReader) Next() (msg []byte, truncated bool, err error) {
 	return s.readLine()
 }
 
+// Buffered returns how many bytes of messages not yet returned the reader already
+// holds: what was read from the stream after the last message Next returned,
+// not counting the LF, CR and NUL bytes Next skips before a message. A caller
+// can tell from it whether the next message has already started arriving.
+func (s *StreamReader) Buffered() int {
+	i := s.start
+	for i < s.end && isFrameJunk(s.buf[i]) {
+		i++
+	}
+	return s.end - i
+}
+
 func isFrameJunk(c byte) bool { return c == '\n' || c == '\r' || c == 0 }
 
 // fill reads more data into buf. It reports false when no byte was added

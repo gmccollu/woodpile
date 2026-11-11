@@ -221,7 +221,7 @@ func (t *tcpListener) serve(tc *tconn) {
 			truncated = true
 		}
 		t.srv.deliver(msg, tc.from, truncated)
-		fr.frameDone()
+		fr.frameDone(r.Buffered() > 0)
 	}
 }
 
@@ -244,10 +244,10 @@ func (t *tcpListener) close() {
 //
 // It hands the StreamReader errors only with no data (a read returning both is
 // split), so that "the reader failed during this Next" means "this message is
-// the unterminated last one". The frame clock starts at the first read with data
-// after a message completes. Bytes of the next message that arrived in the same
-// read as the end of the previous one start it at the next read instead, so a
-// message's time is bounded by the idle timeout plus the frame timeout.
+// the unterminated last one". The frame clock starts at the first read that
+// brings a byte other than LF, CR or NUL (the junk the StreamReader skips between
+// messages), or as soon as a message completes if the next one has already
+// started arriving (StreamReader.Buffered).
 type frameReader struct {
 	c            net.Conn
 	idle         time.Duration
@@ -278,7 +278,7 @@ func (r *frameReader) Read(p []byte) (int, error) {
 		return 0, err
 	}
 	n, err := r.c.Read(p)
-	if n > 0 && r.frameStart.IsZero() {
+	if n > 0 && r.frameStart.IsZero() && hasMessageByte(p[:n]) {
 		r.frameStart = time.Now()
 	}
 	if err != nil {
@@ -295,9 +295,24 @@ func (r *frameReader) Read(p []byte) (int, error) {
 	return n, nil
 }
 
-// frameDone records a complete message: it renews the idle timeout and stops the
-// frame clock.
-func (r *frameReader) frameDone() {
+// frameDone records a complete message: it renews the idle timeout, and restarts
+// the frame clock if the next message is already buffered (else stops it).
+func (r *frameReader) frameDone(nextStarted bool) {
+	now := time.Now()
 	r.frameStart = time.Time{}
-	r.last.Store(time.Now().UnixNano())
+	if nextStarted {
+		r.frameStart = now
+	}
+	r.last.Store(now.UnixNano())
+}
+
+// hasMessageByte reports whether b holds a byte other than the LF, CR and NUL
+// junk the StreamReader skips between messages.
+func hasMessageByte(b []byte) bool {
+	for _, c := range b {
+		if c != '\n' && c != '\r' && c != 0 {
+			return true
+		}
+	}
+	return false
 }
