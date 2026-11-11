@@ -179,3 +179,5 @@ Stop-Process -Id $r.Id -Force; $r.WaitForExit(10000) | Out-Null
 
 Copy-Item "$work\*.out" $Logs -ErrorAction SilentlyContinue
 Write-Host "`nportable smoke test (Windows): $script:passes checks passed"
+# The refused --service start left $LASTEXITCODE at 1, which the runner would report.
+exit 0
