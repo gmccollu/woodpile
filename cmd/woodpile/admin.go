@@ -39,8 +39,7 @@ service, install refuses, so there's never a second one.`, stderr)
 	if code, done := parse(fs, args, stdout); done {
 		return code
 	}
-	fmt.Fprintln(stdout, "Installing the Woodpile service:")
-	res, err := service.Install(service.InstallOptions{ConfigPath: *cfg, Out: stdout})
+	res, err := service.Install(service.InstallOptions{ConfigPath: *cfg, Out: &headed{w: stdout, head: "Installing the Woodpile service:"}})
 	if err != nil {
 		return fail(stderr, "install", err)
 	}
@@ -51,6 +50,22 @@ service, install refuses, so there's never a second one.`, stderr)
 	fmt.Fprintf(stdout, "Config: %s\nData:   %s\nUI:     %s (run `woodpile status` to check the listeners)\n",
 		res.Config, res.DataDir, uiURL(readConfigOrDefault(res.Config)))
 	return 0
+}
+
+// headed prints head before the first progress line, so a refusal (which
+// happens before any) prints only the error.
+type headed struct {
+	w    io.Writer
+	head string
+	done bool
+}
+
+func (h *headed) Write(p []byte) (int, error) {
+	if !h.done {
+		h.done = true
+		fmt.Fprintln(h.w, h.head)
+	}
+	return h.w.Write(p)
 }
 
 func installAccount() string {
@@ -82,8 +97,7 @@ instead (the error says how).`, stderr)
 	if code, done := parse(fs, args, stdout); done {
 		return code
 	}
-	fmt.Fprintln(stdout, "Removing the Woodpile service:")
-	res, err := service.Uninstall(service.UninstallOptions{DeleteLogs: *deleteLogs, Out: stdout})
+	res, err := service.Uninstall(service.UninstallOptions{DeleteLogs: *deleteLogs, Out: &headed{w: stdout, head: "Removing the Woodpile service:"}})
 	if err != nil {
 		return fail(stderr, "uninstall", err)
 	}

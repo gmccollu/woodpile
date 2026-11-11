@@ -83,7 +83,7 @@ function Check-Running {
 
     $sddl = (Get-Acl $Data).Sddl
     Write-Host "ACL: $sddl"
-    if ($sddl -notmatch "D:PAI") { Die "the data ACL isn't protected (inherits from ProgramData)" }
+    if ($sddl -notmatch "D:P(AI)?\(") { Die "the data ACL isn't protected (inherits from ProgramData)" }
     if ($sddl -notmatch "\(A;OICI;0x1301bf;;;$ServiceSid\)") { Die "the data ACL doesn't give the service account modify" }
     if ($sddl -match ";;;BU\)" -or $sddl -match ";;;AU\)" -or $sddl -match ";;;WD\)") { Die "the data ACL lets ordinary users in" }
     Ok "C:\ProgramData\Woodpile: protected ACL, modify for the service SID, nothing for Users"

@@ -208,15 +208,23 @@ deb | rpm)
 	fi
 	;;
 pkg)
+	# The runners ship with the application firewall off; turn it on to see what it
+	# does with an unsigned daemon (loopback traffic isn't filtered either way).
+	fwtool=/usr/libexec/ApplicationFirewall/socketfilterfw
+	$SUDO "$fwtool" --setglobalstate on || true
 	say "installer -pkg $artifact"
 	$SUDO installer -pkg "$artifact" -target /
 	check_running
 	r1=$(run_id)
 	traffic "$r1"
 	check_status_cmd
-	fw=$(/usr/libexec/ApplicationFirewall/socketfilterfw --getglobalstate 2>&1 || true)
-	echo "application firewall: $fw" | tee "$LOGS/firewall.txt"
-	ok "application firewall state recorded ($fw); a headless install can't show a prompt, and traffic arrived"
+	{
+		echo "global: $("$fwtool" --getglobalstate 2>&1)"
+		echo "woodpile: $($SUDO "$fwtool" --getappblocked /usr/local/bin/woodpile 2>&1)"
+		echo "apps:"
+		$SUDO "$fwtool" --listapps 2>&1
+	} | tee "$LOGS/firewall.txt"
+	ok "application firewall on during the install: state above (no GUI session, so no prompt could show); traffic arrived"
 	refuses "package already installed" $SUDO "$(command -v woodpile)" install
 	refuses "installed by the package" $SUDO "$(command -v woodpile)" uninstall
 	restart_service
