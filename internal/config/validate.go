@@ -60,6 +60,7 @@ func (c Config) validate(goos string, prev *Config) Errors {
 	if l.MaxMessageBytes != 0 && (l.MaxMessageBytes < MinMaxMessageBytes || l.MaxMessageBytes > MaxMaxMessageBytes) {
 		e["listeners.max_message_bytes"] = fmt.Sprintf("must be between %d and %d", MinMaxMessageBytes, MaxMaxMessageBytes)
 	}
+	checkTCPLimits(e, l)
 
 	s := c.Storage
 	switch {

@@ -65,6 +65,9 @@ type Listeners struct {
 	// File-only tuning (not part of /api/settings). Zero means the default.
 	UDPRcvbufBytes  int `toml:"udp_rcvbuf_bytes" json:"-" comment:"UDP socket receive buffer to request, in bytes. The OS may grant less; the About page shows what it granted."`
 	MaxMessageBytes int `toml:"max_message_bytes" json:"-" comment:"Longer messages are truncated (and counted), never dropped."`
+	// TCP abuse limits (tcplimits.go).
+	TCPMaxConnsPerSource int      `toml:"tcp_max_conns_per_source" json:"-" comment:"Open TCP connections allowed per sender (per IPv4 address, per IPv6 /64)."`
+	TCPFrameTimeout      Duration `toml:"tcp_frame_timeout" json:"-" comment:"Once a TCP message starts, all of it must arrive within this (e.g. 60s); then the connection is closed and the part kept, marked truncated."`
 }
 
 // Listener is one syslog listener.
@@ -111,6 +114,9 @@ func Default() Config {
 			Allowlist:       []string{},
 			UDPRcvbufBytes:  DefaultUDPRcvbufBytes,
 			MaxMessageBytes: DefaultMaxMessageBytes,
+
+			TCPMaxConnsPerSource: DefaultTCPMaxConnsPerSource,
+			TCPFrameTimeout:      DefaultTCPFrameTimeout,
 		},
 		Storage: Storage{
 			DataDir:        DefaultDataDir(),
@@ -145,6 +151,7 @@ func (c *Config) Normalize() {
 	if c.Listeners.MaxMessageBytes == 0 {
 		c.Listeners.MaxMessageBytes = DefaultMaxMessageBytes
 	}
+	normalizeTCPLimits(&c.Listeners)
 }
 
 // Prefixes parses the allowlist: an IP becomes a single-address prefix and IPv4-mapped
