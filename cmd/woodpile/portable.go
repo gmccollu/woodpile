@@ -443,11 +443,7 @@ func bannerText(b bannerInfo) string {
 		fmt.Fprintf(&s, "                (port %d is in use, maybe by an installed Woodpile, so this copy uses %s)\n",
 			b.UIFellBackFrom, portOf(b.URL))
 	}
-	for _, l := range b.Listeners {
-		if !l.OK {
-			s.WriteString(listenerHelp(l, b.GOOS))
-		}
-	}
+	s.WriteString(listenersHelp(b.Listeners, b.GOOS))
 	return s.String()
 }
 
@@ -503,32 +499,71 @@ func listenerAddrs(ls []api.Listener) []string {
 
 func isWildcard(a string) bool { return a == "0.0.0.0" || a == "::" || a == "" }
 
-// listenerHelp explains a listener that didn't start, and how to fix it.
-func listenerHelp(l api.Listener, goos string) string {
-	proto := strings.ToUpper(l.Proto)
-	e := strings.ToLower(l.Error)
+// listenersHelp explains the listeners that didn't start, and how to fix it:
+// once for listeners that failed the same way on the same port.
+func listenersHelp(ls []api.Listener, goos string) string {
+	type group struct {
+		protos []string
+		l      api.Listener
+	}
+	var groups []*group
+	byKey := map[string]*group{}
+	for _, l := range ls {
+		if l.OK {
+			continue
+		}
+		key := fmt.Sprintf("%s|%d|%s", failureClass(l.Error), l.Port, l.Holder)
+		g := byKey[key]
+		if g == nil {
+			g = &group{l: l}
+			byKey[key] = g
+			groups = append(groups, g)
+		}
+		g.protos = append(g.protos, strings.ToUpper(l.Proto))
+	}
 	var s strings.Builder
+	for _, g := range groups {
+		s.WriteString(listenerHelp(strings.Join(g.protos, " and "), g.l, goos))
+	}
+	return s.String()
+}
+
+func failureClass(e string) string {
+	e = strings.ToLower(e)
 	switch {
 	case strings.Contains(e, "permission denied") || strings.Contains(e, "access is denied") || strings.Contains(e, "forbidden by its access permissions"):
-		if goos == "linux" && l.Port < 1024 {
-			fmt.Fprintf(&s, "\n  %s %d needs extra rights on Linux. Either run it with sudo:\n      sudo ./woodpile\n", proto, l.Port)
-			s.WriteString("  or allow this program to use port 514 once, then run it normally:\n      sudo setcap cap_net_bind_service=+ep ./woodpile\n")
-		} else {
-			fmt.Fprintf(&s, "\n  %s %d: the system refused the port (%s).\n", proto, l.Port, l.Error)
-		}
+		return "denied"
 	case strings.Contains(e, "in use") || strings.Contains(e, "only one usage"):
+		return "inuse"
+	}
+	return "other"
+}
+
+// listenerHelp explains one failure; what is "UDP", "TCP" or "UDP and TCP".
+func listenerHelp(what string, l api.Listener, goos string) string {
+	var s strings.Builder
+	switch failureClass(l.Error) {
+	case "denied":
+		if goos == "linux" && l.Port < 1024 {
+			fmt.Fprintf(&s, "\n  %s %d need extra rights on Linux. Allow this program to use the port once, then run it\n", what, l.Port)
+			s.WriteString("  as yourself:\n      sudo setcap cap_net_bind_service=+ep ./woodpile\n")
+			s.WriteString("  or run it as root for this time only:\n      sudo ./woodpile\n")
+		} else {
+			fmt.Fprintf(&s, "\n  %s %d: the system refused the port (%s).\n", what, l.Port, l.Error)
+		}
+	case "inuse":
 		holder := "another program"
 		if l.Holder != "" {
 			holder = l.Holder
 		}
-		fmt.Fprintf(&s, "\n  %s %d is in use by %s.\n", proto, l.Port, holder)
+		fmt.Fprintf(&s, "\n  %s %d: in use by %s.\n", what, l.Port, holder)
 		if strings.Contains(strings.ToLower(l.Holder), "woodpile") {
 			s.WriteString("  That's probably an installed Woodpile service: use it (http://localhost:8514/), or stop it first.\n")
 		} else {
 			s.WriteString("  It's usually the system's own syslog service. Stop it, then press Retry in the web UI.\n")
 		}
 	default:
-		fmt.Fprintf(&s, "\n  %s %d didn't start: %s. Fix it, then press Retry in the web UI.\n", proto, l.Port, l.Error)
+		fmt.Fprintf(&s, "\n  %s %d didn't start: %s. Fix it, then press Retry in the web UI.\n", what, l.Port, l.Error)
 	}
 	return s.String()
 }

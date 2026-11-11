@@ -50,7 +50,7 @@ stop() { # stop <pid> <console file>: Ctrl-C, and a clean, quick exit
 
 if [ "$os" = Linux ]; then
 	echo "==> no rights for port 514 yet: the banner explains the fix"
-	(cd "$dl" && ./woodpile portable --no-browser --dir "$work/norights" </dev/null >"$work/norights.out" 2>&1) &
+	(cd "$dl" && exec ./woodpile portable --no-browser --dir "$work/norights" </dev/null >"$work/norights.out" 2>&1) &
 	pid=$!
 	wait_for "$work/norights.out" "Press Ctrl-C" 30
 	cat "$work/norights.out"
@@ -65,7 +65,7 @@ if [ "$os" = Linux ]; then
 fi
 
 echo "==> woodpile, no arguments, started without a terminal (a double-click)"
-(cd "$dl" && ./woodpile </dev/null >"$work/main.out" 2>&1) &
+(cd "$dl" && exec ./woodpile </dev/null >"$work/main.out" 2>&1) &
 pid=$!
 wait_for "$work/main.out" "Press Ctrl-C" 30
 cat "$work/main.out"

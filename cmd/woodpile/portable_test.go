@@ -120,6 +120,10 @@ func TestBannerText(t *testing.T) {
 		{Proto: "tcp", Addr: "0.0.0.0", Port: 514, Error: "listen tcp 0.0.0.0:514: bind: permission denied"},
 	}
 	b = bannerText(bannerInfo{URL: "http://localhost:8515/", UIFellBackFrom: 8514, Listeners: denied, GOOS: "linux"})
+	if strings.Count(b, "setcap") != 1 || !strings.Contains(b, "UDP and TCP 514 need extra rights") ||
+		strings.Index(b, "setcap") > strings.Index(b, "sudo ./woodpile") {
+		t.Errorf("one combined hint, setcap first:\n%s", b)
+	}
 	for _, want := range []string{"NOT listening on UDP 514", "sudo ./woodpile", "sudo setcap cap_net_bind_service=+ep ./woodpile",
 		"port 8514 is in use, maybe by an installed Woodpile, so this copy uses 8515"} {
 		if !strings.Contains(b, want) {
@@ -131,7 +135,7 @@ func TestBannerText(t *testing.T) {
 	inUse := []api.Listener{{Proto: "udp", Addr: "0.0.0.0", Port: 514, Error: "bind: address already in use", Holder: "rsyslogd (pid 812)"},
 		{Proto: "tcp", Addr: "0.0.0.0", Port: 514, OK: true}}
 	b = bannerText(bannerInfo{Listeners: inUse, GOOS: "linux"})
-	if !strings.Contains(b, "UDP 514 is in use by rsyslogd (pid 812)") || !strings.Contains(b, "system's own syslog service") ||
+	if !strings.Contains(b, "UDP 514: in use by rsyslogd (pid 812)") || !strings.Contains(b, "system's own syslog service") ||
 		!strings.Contains(b, "Listening on TCP 514") || strings.Contains(b, "setcap") {
 		t.Errorf("in-use banner:\n%s", b)
 	}
