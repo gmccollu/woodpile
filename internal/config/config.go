@@ -61,6 +61,10 @@ type Listeners struct {
 	TCP Listener `toml:"tcp" json:"tcp" comment:"Syslog over TCP (octet-counted or newline-framed, detected per message)."`
 	// Allowlist holds IPs or CIDRs; empty accepts every sender.
 	Allowlist []string `toml:"allowlist" json:"allowlist" comment:"Accept messages only from these IPs or CIDRs, e.g. [\"192.0.2.0/24\", \"2001:db8::1\"]. Empty accepts everyone."`
+	// New-sender limits (devicelimits.go).
+	MaxDevices          int `toml:"max_devices" json:"max_devices" comment:"At most this many senders active (heard in the last 10 minutes) at once; more are refused and counted as dropped."`
+	NewDeviceBurst      int `toml:"new_device_burst" json:"new_device_burst" comment:"New senders (no logs yet) allowed in a burst,"`
+	NewDevicesPerMinute int `toml:"new_devices_per_minute" json:"new_devices_per_minute" comment:"then this many a minute."`
 
 	// File-only tuning (not part of /api/settings). Zero means the default.
 	UDPRcvbufBytes  int `toml:"udp_rcvbuf_bytes" json:"-" comment:"UDP socket receive buffer to request, in bytes. The OS may grant less; the About page shows what it granted."`
@@ -117,6 +121,10 @@ func Default() Config {
 
 			TCPMaxConnsPerSource: DefaultTCPMaxConnsPerSource,
 			TCPFrameTimeout:      DefaultTCPFrameTimeout,
+
+			MaxDevices:          DefaultMaxDevices,
+			NewDeviceBurst:      DefaultNewDeviceBurst,
+			NewDevicesPerMinute: DefaultNewDevicesPerMinute,
 		},
 		Storage: Storage{
 			DataDir:        DefaultDataDir(),
@@ -152,6 +160,7 @@ func (c *Config) Normalize() {
 		c.Listeners.MaxMessageBytes = DefaultMaxMessageBytes
 	}
 	normalizeTCPLimits(&c.Listeners)
+	normalizeDeviceLimits(&c.Listeners)
 }
 
 // Prefixes parses the allowlist: an IP becomes a single-address prefix and IPv4-mapped
