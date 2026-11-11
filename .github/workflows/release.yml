@@ -155,7 +155,7 @@ jobs:
             cp "$(pick Binary windows "$a" aclfix)" "bins/windows-$a/woodpile-aclfix.exe"
           done
           mkdir -p bins/darwin-universal bins/linux-amd64
-          cp "$(pick 'Universal Binary' darwin all woodpile-universal)" bins/darwin-universal/woodpile
+          cp "$(pick Binary darwin all woodpile-universal)" bins/darwin-universal/woodpile
           cp "$(pick Binary linux amd64 woodpile)" bins/linux-amd64/woodpile
           (cd bins && find . -type f | sort | xargs sha256sum) | tee "$RUNNER_TEMP/sha256.txt"
           {
