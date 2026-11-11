@@ -1,0 +1,404 @@
+package main
+
+import (
+	"context"
+	"crypto/tls"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strconv"
+	"strings"
+	"time"
+
+	"woodpile/internal/api"
+	"woodpile/internal/config"
+	"woodpile/internal/index"
+	"woodpile/internal/server"
+	"woodpile/internal/service"
+)
+
+// ---- install / uninstall ----
+
+func cmdInstall(args []string, stdout, stderr io.Writer) int {
+	fs := newFlagSet("install", "", `
+Install Woodpile as a system service (`+service.Name(runtime.GOOS)+`) and start it. Needs
+administrator rights (sudo, or an administrator prompt on Windows).
+
+This is for machines without Woodpile's installer package. If the package
+already installed the service, install refuses, so there's never a second one.`, stderr)
+	cfg := configFlag(fs)
+	if code, done := parse(fs, args, stdout); done {
+		return code
+	}
+	in, err := service.Install(*cfg)
+	if err != nil {
+		return fail(stderr, "install", err)
+	}
+	fmt.Fprintf(stdout, "Installed and started the Woodpile service (%s, %s).\n", in.Where, service.Platform())
+	fmt.Fprintf(stdout, "Config: %s\nUI: %s (run `woodpile status` to check the listeners)\n", *cfg, uiURL(readConfigOrDefault(*cfg)))
+	return 0
+}
+
+func cmdUninstall(args []string, stdout, stderr io.Writer) int {
+	fs := newFlagSet("uninstall", "", `
+Stop and remove the system service installed by "woodpile install". The config
+and the received logs are kept. Needs administrator rights.
+
+A service installed by Woodpile's package is left alone: remove the package
+instead (the error says how).`, stderr)
+	if code, done := parse(fs, args, stdout); done {
+		return code
+	}
+	if err := service.Uninstall(); err != nil {
+		return fail(stderr, "uninstall", err)
+	}
+	fmt.Fprintln(stdout, "Removed the Woodpile service. The config and logs are kept.")
+	return 0
+}
+
+// ---- status ----
+
+func cmdStatus(args []string, stdout, stderr io.Writer) int {
+	fs := newFlagSet("status", "", `
+Show the service's state, the syslog listeners and the UI address. It asks the
+running server over its local API; if nothing answers, it says so.
+
+Exit status: 0 when the server answers, 1 when it isn't running or can't be
+reached.`, stderr)
+	cfgPath := configFlag(fs)
+	if code, done := parse(fs, args, stdout); done {
+		return code
+	}
+	cfg, cfgErr := readConfig(*cfgPath)
+	if cfgErr != nil {
+		cfg = config.Default()
+	}
+
+	w := &tabw{w: stdout}
+	st, stErr := service.Status()
+	svc := string(st)
+	if stErr != nil {
+		svc += " (" + stErr.Error() + ")"
+	}
+	w.row("Service", fmt.Sprintf("%s (%s, %s)", svc, service.Name(runtime.GOOS), service.Platform()))
+	if cfgErr != nil {
+		w.row("Config", fmt.Sprintf("%s: %v; assuming the defaults", *cfgPath, cfgErr))
+	} else {
+		w.row("Config", *cfgPath)
+	}
+
+	status, apiErr := fetchStatus(cfg)
+	switch {
+	case apiErr == nil:
+		w.row("Server", fmt.Sprintf("running, version %s (%s), up since %s", status.Version, status.Build,
+			status.StartedAt.Local().Format("2006-01-02 15:04:05")))
+		if len(status.Listeners) == 0 {
+			w.row("Listeners", "none enabled")
+		}
+		for i, l := range status.Listeners {
+			label := ""
+			if i == 0 {
+				label = "Listeners"
+			}
+			w.row(label, describeListener(l))
+		}
+		w.row("UI", uiURL(cfg))
+		w.row("Data", status.DataDir)
+		for i, b := range status.Banners {
+			label := ""
+			if i == 0 {
+				label = "Attention"
+			}
+			w.row(label, fmt.Sprintf("[%s] %s", b.Level, b.Text))
+		}
+		return 0
+	case errors.Is(apiErr, errNeedsLogin):
+		w.row("Server", "running in LAN mode")
+		w.row("Listeners", "log in to the UI to see them")
+		w.row("UI", uiURL(cfg))
+		return 0
+	}
+
+	// Nothing (or something else) answers on the UI port. The data dir's lock
+	// says whether a server is running anyway.
+	inUse, lockErr := server.DataDirInUse(cfg.Storage.DataDir)
+	switch {
+	case inUse:
+		msg := "running, but its UI doesn't answer on " + uiURL(cfg)
+		if rs, err := server.ReadState(cfg.Storage.DataDir); err == nil {
+			msg = fmt.Sprintf("running (pid %d), but its UI doesn't answer on %s", rs.PID, uiURL(cfg))
+			if rs.UI.Error != "" {
+				msg += ": " + rs.UI.Error
+			}
+		}
+		w.row("Server", msg)
+		w.row("", "("+apiErr.Error()+")")
+	case lockErr != nil:
+		w.row("Server", fmt.Sprintf("not answering on %s (%v)", uiURL(cfg), apiErr))
+		w.row("", fmt.Sprintf("couldn't check the data folder either: %v (try as administrator)", lockErr))
+	default:
+		w.row("Server", "not running (nothing answers on "+uiURL(cfg)+")")
+	}
+	return 1
+}
+
+func describeListener(l api.Listener) string {
+	s := fmt.Sprintf("%s %s: ", strings.ToUpper(l.Proto), net.JoinHostPort(l.Addr, strconv.Itoa(l.Port)))
+	if l.OK {
+		return s + "listening"
+	}
+	s += "NOT listening: " + l.Error
+	if l.Holder != "" {
+		s += " (held by " + l.Holder + ")"
+	}
+	return s
+}
+
+var errNeedsLogin = errors.New("LAN mode: the API needs a login")
+
+// fetchStatus reads /api/status from the local server.
+func fetchStatus(cfg config.Config) (api.Status, error) {
+	var st api.Status
+	scheme := "http"
+	client := &http.Client{Timeout: 3 * time.Second}
+	if cfg.UI.LANMode {
+		// Our own server on loopback with its self-signed certificate: there is
+		// nothing to verify against, and nothing leaves the machine.
+		scheme = "https"
+		client.Transport = &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}} //nolint:gosec
+	}
+	url := fmt.Sprintf("%s://127.0.0.1:%d/api/status", scheme, cfg.UI.Port)
+	resp, err := client.Get(url)
+	if err != nil {
+		return st, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusUnauthorized {
+		return st, errNeedsLogin
+	}
+	if resp.StatusCode != http.StatusOK {
+		return st, fmt.Errorf("%s answered %s", url, resp.Status)
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&st); err != nil || st.Version == "" {
+		return st, fmt.Errorf("%s isn't Woodpile's API", url)
+	}
+	return st, nil
+}
+
+// uiURL is where the UI is, from the config.
+func uiURL(cfg config.Config) string {
+	if cfg.UI.LANMode {
+		return fmt.Sprintf("https://localhost:%d/ (LAN mode)", cfg.UI.Port)
+	}
+	return fmt.Sprintf("http://localhost:%d/", cfg.UI.Port)
+}
+
+// tabw prints aligned "Label:  value" rows.
+type tabw struct{ w io.Writer }
+
+func (t *tabw) row(label, value string) {
+	if label != "" {
+		label += ":"
+	}
+	fmt.Fprintf(t.w, "%-11s %s\n", label, value)
+}
+
+// readConfig reads an existing config without creating one.
+func readConfig(path string) (config.Config, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return config.Config{}, err
+	}
+	if _, err := os.Stat(abs); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return config.Config{}, fmt.Errorf("no config file at %s", abs)
+		}
+		return config.Config{}, adminErr(err)
+	}
+	c, _, err := server.LoadConfig(abs)
+	if err != nil {
+		return c, adminErr(err)
+	}
+	return c, nil
+}
+
+func readConfigOrDefault(path string) config.Config {
+	c, err := readConfig(path)
+	if err != nil {
+		return config.Default()
+	}
+	return c
+}
+
+// adminErr adds the "run as administrator" hint to a permission error.
+func adminErr(err error) error {
+	if err == nil || !errors.Is(err, os.ErrPermission) {
+		return err
+	}
+	if runtime.GOOS == "windows" {
+		return fmt.Errorf("%w\nThis needs administrator rights: run it from an administrator prompt", err)
+	}
+	return fmt.Errorf("%w\nThis needs root: run it with sudo", err)
+}
+
+// ---- reindex ----
+
+func cmdReindex(args []string, stdout, stderr io.Writer) int {
+	fs := newFlagSet("reindex", "", `
+Rebuild the index (index.db) from the log files, which are always the source of
+truth. Device names, groups and hidden flags are kept.
+
+The server must be stopped: reindex refuses while Woodpile is running on the
+data folder.`, stderr)
+	cfgPath := configFlag(fs)
+	if code, done := parse(fs, args, stdout); done {
+		return code
+	}
+	cfg, err := readConfig(*cfgPath)
+	if err != nil {
+		return fail(stderr, "reindex", err)
+	}
+	if errs := cfg.Validate(nil); len(errs) > 0 {
+		return fail(stderr, "reindex", fmt.Errorf("%s: %w", *cfgPath, errs))
+	}
+	dataDir := cfg.Storage.DataDir
+	// Hold the data dir's lock for the whole rebuild, so the server can't start
+	// in the middle of it.
+	lock, err := server.LockDataDir(dataDir)
+	if errors.Is(err, server.ErrLocked) {
+		return fail(stderr, "reindex", fmt.Errorf("Woodpile is running on %s; stop it first (%s, or Ctrl-C a foreground `woodpile run`), then run reindex again",
+			dataDir, stopHint()))
+	}
+	if err != nil {
+		return fail(stderr, "reindex", adminErr(err))
+	}
+	defer lock.Unlock()
+
+	idx, err := index.Open(filepath.Join(dataDir, index.FileName))
+	if err != nil {
+		return fail(stderr, "reindex", adminErr(err))
+	}
+	defer idx.Close()
+	t0 := time.Now()
+	ctx := context.Background()
+	res, err := idx.Reindex(ctx, dataDir)
+	if err != nil {
+		return fail(stderr, "reindex", err)
+	}
+	took := time.Since(t0).Round(time.Millisecond)
+	text := fmt.Sprintf("Index rebuilt from the log files by `woodpile reindex`: %d files (%d read), %d devices, %d stale rows removed, "+
+		"%d bad lines, %d bytes in torn last lines, in %v.", len(res.Files), res.Scanned, res.Devices, res.Removed, res.BadLines, res.TornBytes, took)
+	if err := idx.AddEvent(ctx, index.Event{Level: index.LevelInfo, Kind: index.KindRecover, Text: text}); err != nil {
+		fmt.Fprintf(stderr, "woodpile reindex: couldn't record the event: %v\n", err)
+	}
+	fmt.Fprintf(stdout, "Reindexed %s in %v\n  files:   %d (%d read)\n  devices: %d\n  removed: %d stale rows\n",
+		dataDir, took, len(res.Files), res.Scanned, res.Devices, res.Removed)
+	if res.BadLines > 0 || res.TornBytes > 0 {
+		fmt.Fprintf(stdout, "  skipped: %d lines that didn't parse, %d bytes of torn last lines\n", res.BadLines, res.TornBytes)
+	}
+	for _, s := range res.Skipped {
+		fmt.Fprintf(stdout, "  not indexed: %s\n", s)
+	}
+	return 0
+}
+
+func stopHint() string {
+	switch runtime.GOOS {
+	case "windows":
+		return "`sc stop Woodpile` from an administrator prompt"
+	case "darwin":
+		return "`sudo launchctl bootout system/" + service.DarwinName + "`"
+	}
+	return "`sudo systemctl stop woodpile`"
+}
+
+// ---- reset-password ----
+
+func cmdResetPassword(args []string, stdout, stderr io.Writer) int {
+	fs := newFlagSet("reset-password", "", `
+Forgot the UI password? On the Woodpile machine, run this as an administrator.
+It deletes the password hash, turns LAN mode off in the config and restarts the
+service, so the UI is back on http://localhost:<port>/ (this machine only, no
+login). Set a new password in Settings to turn LAN mode on again. There is no
+way to do this over the network, by design.`, stderr)
+	cfgPath := configFlag(fs)
+	if code, done := parse(fs, args, stdout); done {
+		return code
+	}
+	cfg, err := readConfig(*cfgPath)
+	if err != nil {
+		return fail(stderr, "reset-password", err)
+	}
+	abs, _ := filepath.Abs(*cfgPath)
+	dataDir := cfg.Storage.DataDir
+	hashPath := filepath.Join(dataDir, api.PasswordFile)
+
+	// Check both folders are writable before changing anything.
+	for _, dir := range []string{dataDir, filepath.Dir(abs)} {
+		if err := checkWritable(dir); err != nil {
+			return fail(stderr, "reset-password", adminErr(err))
+		}
+	}
+	removed := true
+	if err := os.Remove(hashPath); errors.Is(err, os.ErrNotExist) {
+		removed = false
+	} else if err != nil {
+		return fail(stderr, "reset-password", adminErr(err))
+	}
+	wasLAN := cfg.UI.LANMode
+	if wasLAN {
+		cfg.UI.LANMode = false
+		if err := config.Save(abs, cfg); err != nil {
+			return fail(stderr, "reset-password", adminErr(err))
+		}
+	}
+	switch {
+	case removed && wasLAN:
+		fmt.Fprintln(stdout, "Removed the UI password and turned LAN mode off.")
+	case removed:
+		fmt.Fprintln(stdout, "Removed the UI password (LAN mode was already off).")
+	case wasLAN:
+		fmt.Fprintln(stdout, "No UI password was set; turned LAN mode off.")
+	default:
+		fmt.Fprintln(stdout, "No UI password was set and LAN mode was already off; nothing to change.")
+	}
+	url := fmt.Sprintf("http://localhost:%d/", cfg.UI.Port)
+
+	if !removed && !wasLAN {
+		fmt.Fprintf(stdout, "The UI is at %s\n", url)
+		return 0
+	}
+	inUse, _ := server.DataDirInUse(dataDir)
+	if !inUse {
+		fmt.Fprintf(stdout, "The UI will be at %s when Woodpile starts.\n", url)
+		return 0
+	}
+	// The running server still has the old password and mode in memory.
+	if st, _ := service.Status(); st == service.StateRunning {
+		if err := service.Restart(); err != nil {
+			fmt.Fprintf(stderr, "woodpile reset-password: couldn't restart the service: %v\nRestart it yourself to apply the change.\n", err)
+			return 1
+		}
+		fmt.Fprintf(stdout, "Restarted the service. The UI is back on %s\n", url)
+		return 0
+	}
+	fmt.Fprintf(stdout, "Woodpile is running in the foreground: stop it (Ctrl-C) and start it again, and the UI will be on %s\n", url)
+	return 0
+}
+
+// checkWritable reports whether a file can be created in dir.
+func checkWritable(dir string) error {
+	f, err := os.CreateTemp(dir, ".woodpile-write-check-*")
+	if err != nil {
+		return fmt.Errorf("can't write in %s: %w", dir, err)
+	}
+	name := f.Name()
+	f.Close()
+	return os.Remove(name)
+}

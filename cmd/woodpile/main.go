@@ -3,38 +3,103 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
+	"strings"
 )
 
 // Set at build time with -ldflags "-X main.version=... -X main.commit=...".
 var (
 	version = "0.0.0-dev"
 	commit  = "none"
+	// releasesURL is shown on the About page; empty until the project has a public home.
+	releasesURL = ""
 )
 
-const usage = `usage: woodpile <command>
+const usage = `usage: woodpile <command> [flags]
 
 commands:
-  run        run the server in the foreground
-  install    install and start the system service
-  uninstall  stop and remove the system service (keeps logs)
-  status     show service and listener status
-  reindex    rebuild the index from the log files
-  send       send test messages to a syslog server
-  bench      measure sustained throughput
-  version    print the version
+  run             run the server in the foreground
+  install         install and start the system service
+  uninstall       stop and remove the system service (keeps logs)
+  status          show service and listener status
+  reindex         rebuild the index from the log files
+  reset-password  remove the UI password and turn LAN mode off
+  send            send test messages to a syslog server
+  bench           measure sustained throughput
+  version         print the version
+
+Run "woodpile <command> --help" for a command's flags.
 `
 
+// command is one subcommand. run returns the process exit code.
+type command struct {
+	name string
+	run  func(args []string, stdout, stderr io.Writer) int
+}
+
+var commands []command
+
+func init() {
+	commands = []command{
+		{"run", cmdRun},
+		{"install", cmdInstall},
+		{"uninstall", cmdUninstall},
+		{"status", cmdStatus},
+		{"reindex", cmdReindex},
+		{"reset-password", cmdResetPassword},
+		{"send", cmdSend},
+		{"bench", cmdBench},
+		{"version", cmdVersion},
+	}
+}
+
 func main() {
-	if len(os.Args) < 2 {
-		fmt.Fprint(os.Stderr, usage)
-		os.Exit(2)
+	os.Exit(realMain(os.Args[1:], os.Stdout, os.Stderr))
+}
+
+func realMain(args []string, stdout, stderr io.Writer) int {
+	if len(args) < 1 {
+		fmt.Fprint(stderr, usage)
+		return 2
 	}
-	switch os.Args[1] {
-	case "version":
-		fmt.Printf("woodpile %s (%s)\n", version, commit)
-	default:
-		fmt.Fprintf(os.Stderr, "woodpile: %q is not implemented yet\n\n%s", os.Args[1], usage)
-		os.Exit(2)
+	name := args[0]
+	switch name {
+	case "-h", "-help", "--help", "help":
+		if len(args) > 1 && name == "help" {
+			// "woodpile help send" is "woodpile send --help".
+			return realMain([]string{args[1], "--help"}, stdout, stderr)
+		}
+		fmt.Fprint(stdout, usage)
+		return 0
+	case "-v", "-version", "--version":
+		name = "version"
 	}
+	for _, c := range commands {
+		if c.name == name {
+			return c.run(args[1:], stdout, stderr)
+		}
+	}
+	fmt.Fprintf(stderr, "woodpile: unknown command %q\n\n%s", name, usage)
+	return 2
+}
+
+// fail prints a "woodpile <cmd>: <err>" line and returns exit code 1.
+func fail(stderr io.Writer, cmd string, err error) int {
+	msg := err.Error()
+	// Package prefixes ("config: ", "loadgen: ") don't help a user.
+	for _, p := range []string{"config: ", "loadgen: ", "listen: ", "store: ", "index: "} {
+		msg = strings.TrimPrefix(msg, p)
+	}
+	fmt.Fprintf(stderr, "woodpile %s: %s\n", cmd, msg)
+	return 1
+}
+
+func cmdVersion(args []string, stdout, stderr io.Writer) int {
+	fs := newFlagSet("version", "", "Print the version.", stderr)
+	if code, done := parse(fs, args, stdout); done {
+		return code
+	}
+	fmt.Fprintf(stdout, "woodpile %s (%s) %s\n", version, commit, platform())
+	return 0
 }
