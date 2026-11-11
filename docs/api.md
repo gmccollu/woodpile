@@ -69,6 +69,7 @@ Hidden devices are included, with `"hidden": true`.
 - `event: message` `data: {"received": "...", "device_id": "10.1.0.1", "severity": 6, "raw": "<134>..."}`
 - `event: sampled` `data: {"rate": 1284.2, "shown": 50}`: sent once a second while the server is sampling.
 - `group` and `ungrouped=true` are alternatives; `ungrouped=true` matches devices with no group.
+- Hidden devices are left out of the live tail unless they're named in `devices`, the same rule as search.
 - `severity` is an integer 0–7, or `null` when the message had no parseable PRI.
 - `min_severity` is the numeric syslog severity ceiling (0 emerg … 7 debug); messages with an unknown severity
   are always included.
