@@ -131,6 +131,19 @@ otherwise) except `/api/session`, `/api/login`, `/api/logout` and `GET /healthz`
  "csrf_token": "opaque"}                    // "" when not logged in, and always "" in localhost mode
 ```
 In localhost mode: `{"mode": "localhost", "auth_required": false, "authenticated": true, "password_set": false, "csrf_token": ""}`.
+`password_set` reports the real state in both modes (the LAN checkbox depends on it).
+
+**Forgotten password:** on the Woodpile machine, an administrator runs `woodpile reset-password`. It deletes the
+password hash, turns LAN mode off in the config, and restarts the UI on `http://localhost:<port>/`. There's no
+recovery over the network by design.
+
+**After a `ui.lan_mode` or `ui.port` change** the server restarts after sending the response. The new address is
+`https://<host the browser used>:<port>/` with LAN mode on, or `http://localhost:<port>/` with it off. There's no
+"restarted" signal (the new address is a different origin, so the UI can't poll it under the CSP); the UI shows the
+link straight away.
+
+**`ui.cert_file` / `ui.key_file`:** both empty (self-signed) or both set, absolute paths to readable files. A
+mismatched or unreadable pair is a 400 on `ui.cert_file` and/or `ui.key_file`.
 The UI calls this first: in LAN mode with `authenticated: false` it shows the login form.
 
 `POST /api/login` body `{"password": "..."}` → `200` with the session object above, and a session cookie
