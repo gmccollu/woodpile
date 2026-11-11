@@ -82,6 +82,7 @@ type rejects struct {
 
 type rejEntry struct {
 	ip         netip.Addr
+	reason     string // of the latest refusal
 	h          hours
 	last       time.Time
 	prev, next *rejEntry
@@ -91,7 +92,7 @@ func newRejects(max int) *rejects {
 	return &rejects{max: max, ips: map[netip.Addr]*rejEntry{}}
 }
 
-func (r *rejects) add(ip netip.Addr, now time.Time, n int64) {
+func (r *rejects) add(ip netip.Addr, now time.Time, n int64, reason string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.total += n
@@ -110,6 +111,7 @@ func (r *rejects) add(ip netip.Addr, now time.Time, n int64) {
 	}
 	r.pushFront(e)
 	e.h.add(now, n)
+	e.reason = reason
 	if now.After(e.last) {
 		e.last = now
 	}
@@ -160,7 +162,7 @@ func (r *rejects) list(now time.Time, limit int) []RejectedSender {
 			break
 		}
 		if c > 0 {
-			out = append(out, RejectedSender{IP: e.ip.String(), Count24h: c, LastSeen: e.last.UTC()})
+			out = append(out, RejectedSender{IP: e.ip.String(), Count24h: c, LastSeen: e.last.UTC(), Reason: e.reason})
 		}
 		e = next
 	}

@@ -29,6 +29,7 @@ import (
 const (
 	DefaultMaxConns    = 1000
 	DefaultIdleTimeout = 10 * time.Minute
+	DefaultEvictIdle   = 30 * time.Second
 )
 
 // Sink receives every accepted message. It's called concurrently from the UDP
@@ -68,8 +69,15 @@ type Options struct {
 	OnEvent func(Event)
 	Logger  *slog.Logger // default slog.Default()
 
-	MaxConns    int           // TCP connections at once (default 1000); more are refused
-	IdleTimeout time.Duration // close a TCP connection after this long without data (default 10 min)
+	// MaxConns caps open TCP connections (default 1000). When they're all open, a
+	// newcomer evicts the connection idle longest if that one has been idle more
+	// than EvictIdle (default 30 s); otherwise the newcomer is refused.
+	MaxConns  int
+	EvictIdle time.Duration
+	// IdleTimeout closes a TCP connection that hasn't completed a message for this
+	// long (default 10 min). Only complete messages renew it, not single bytes; a
+	// message in progress is bound by listeners.tcp_frame_timeout instead.
+	IdleTimeout time.Duration
 
 	// Holder names the process holding proto ("udp" or "tcp") port, best effort, or
 	// "". Default: the OS lookup (lsof on macOS, /proc on Linux, the IP Helper
@@ -101,10 +109,13 @@ type Status struct {
 
 	Received  int64 // messages handed to the sink since Start
 	Truncated int64 // of those, cut at the max message size
-	Rejected  int64 // refused by the allowlist since Start (a refused TCP connection counts once)
+	Rejected  int64 // refused by the allowlist or the per-source limit since Start (a refused TCP connection counts once)
 
-	TCPConns        int   // open TCP connections
-	TCPConnsRefused int64 // connections closed at once because MaxConns were open
+	TCPConns                 int   // open TCP connections
+	TCPConnsRefused          int64 // closed at once because MaxConns were open and none was idle enough to evict
+	TCPConnsEvicted          int64 // closed to make room for a newcomer (idle longest)
+	TCPConnsPerSourceRefused int64 // refused because their source had tcp_max_conns_per_source open
+	TCPFrameTimeouts         int64 // closed because a message didn't complete within tcp_frame_timeout
 }
 
 // Server owns the listeners. Its methods are safe for concurrent use.
@@ -120,11 +131,14 @@ type Server struct {
 	tcpErr *ListenerStatus
 	closed bool
 
-	allow   atomic.Pointer[allowlist]
-	maxSize atomic.Int64
+	allow        atomic.Pointer[allowlist]
+	maxSize      atomic.Int64
+	perSource    atomic.Int64 // TCP connections allowed per source
+	frameTimeout atomic.Int64 // time.Duration a TCP frame may take
 
-	received, truncated, connsRefused atomic.Int64
-	conns                             atomic.Int64
+	received, truncated, connsRefused    atomic.Int64
+	evicted, perSourceRefused, frameCuts atomic.Int64
+	conns                                atomic.Int64
 
 	rejects *rejects
 	kdrops  *kernelDrops
@@ -150,6 +164,9 @@ func Start(cfg config.Listeners, opts Options) (*Server, error) {
 	if opts.MaxConns <= 0 {
 		opts.MaxConns = DefaultMaxConns
 	}
+	if opts.EvictIdle <= 0 {
+		opts.EvictIdle = DefaultEvictIdle
+	}
 	if opts.IdleTimeout <= 0 {
 		opts.IdleTimeout = DefaultIdleTimeout
 	}
@@ -169,6 +186,7 @@ func Start(cfg config.Listeners, opts Options) (*Server, error) {
 	}
 	s.allow.Store(al)
 	s.maxSize.Store(int64(maxSizeOf(cfg)))
+	s.setTCPLimits(cfg)
 
 	var ev events
 	s.mu.Lock()
@@ -229,6 +247,7 @@ func (s *Server) Reconfigure(cfg config.Listeners) error {
 	s.cfg = cloneListeners(cfg)
 	s.allow.Store(al)
 	s.maxSize.Store(int64(maxSizeOf(cfg)))
+	s.setTCPLimits(cfg)
 
 	if old.UDP != cfg.UDP {
 		s.stopUDP(&ev)
@@ -269,13 +288,16 @@ func (s *Server) Status() Status {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	st := Status{
-		UDPRcvbufRequestedBytes: rcvbufOf(s.cfg),
-		Received:                s.received.Load(),
-		Truncated:               s.truncated.Load(),
-		Rejected:                s.rejects.totalCount(),
-		TCPConns:                int(s.conns.Load()),
-		TCPConnsRefused:         s.connsRefused.Load(),
-		KernelDropsVisible:      kernelDropsSupported,
+		UDPRcvbufRequestedBytes:  rcvbufOf(s.cfg),
+		Received:                 s.received.Load(),
+		Truncated:                s.truncated.Load(),
+		Rejected:                 s.rejects.totalCount(),
+		TCPConns:                 int(s.conns.Load()),
+		TCPConnsRefused:          s.connsRefused.Load(),
+		TCPConnsEvicted:          s.evicted.Load(),
+		TCPConnsPerSourceRefused: s.perSourceRefused.Load(),
+		TCPFrameTimeouts:         s.frameCuts.Load(),
+		KernelDropsVisible:       kernelDropsSupported,
 	}
 	if s.cfg.UDP.Enabled {
 		switch {
@@ -325,12 +347,20 @@ type RejectedSender struct {
 	IP       string    `json:"ip"`
 	Count24h int64     `json:"count_24h"`
 	LastSeen time.Time `json:"last_seen"`
+	Reason   string    `json:"reason"` // the latest refusal's reason: RejectAllowlist or RejectPerSource
 }
+
+// Rejection reasons.
+const (
+	RejectAllowlist = "allowlist"  // the sender isn't on the allowlist
+	RejectPerSource = "per_source" // the sender (IPv4 address or IPv6 /64) has tcp_max_conns_per_source open
+)
 
 // MaxRejectedList is the most entries Rejected returns (docs/api.md).
 const MaxRejectedList = 200
 
-// Rejected returns the senders refused by the allowlist in the last 24 hours,
+// Rejected returns the senders refused in the last 24 hours (by the allowlist, or
+// TCP connections over the per-source limit),
 // sorted by count descending (then most recent first), at most MaxRejectedList.
 // Counts are kept in hourly buckets, so "24 hours" is the current hour plus the 23
 // before it. At most 10,000 IPs are tracked; the least recently seen is evicted.
@@ -361,7 +391,7 @@ func (s *Server) deliver(raw []byte, from netip.Addr, truncated bool) {
 	now := s.opts.Clock().UTC()
 	from = from.Unmap()
 	if !s.allow.Load().allowed(from) {
-		s.rejects.add(from, now, 1)
+		s.rejects.add(from, now, 1, RejectAllowlist)
 		return
 	}
 	if max := int(s.maxSize.Load()); len(raw) > max {
@@ -535,6 +565,19 @@ func rcvbufOf(l config.Listeners) int {
 		return l.UDPRcvbufBytes
 	}
 	return config.DefaultUDPRcvbufBytes
+}
+
+func (s *Server) setTCPLimits(l config.Listeners) {
+	n := l.TCPMaxConnsPerSource
+	if n <= 0 {
+		n = config.DefaultTCPMaxConnsPerSource
+	}
+	d := time.Duration(l.TCPFrameTimeout)
+	if d <= 0 {
+		d = time.Duration(config.DefaultTCPFrameTimeout)
+	}
+	s.perSource.Store(int64(n))
+	s.frameTimeout.Store(int64(d))
 }
 
 func maxSizeOf(l config.Listeners) int {

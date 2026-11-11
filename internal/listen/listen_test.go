@@ -324,11 +324,11 @@ func TestRejectsTable(t *testing.T) {
 	r := newRejects(3)
 	t0 := time.Date(2026, 11, 10, 10, 30, 0, 0, time.UTC)
 	ip := func(i int) netip.Addr { return netip.AddrFrom4([4]byte{198, 51, 100, byte(i)}) }
-	r.add(ip(1), t0, 5)
-	r.add(ip(2), t0.Add(time.Minute), 1)
-	r.add(ip(3), t0.Add(2*time.Minute), 2)
-	r.add(ip(1), t0.Add(3*time.Minute), 1) // 1 is now the most recent
-	r.add(ip(4), t0.Add(4*time.Minute), 3) // evicts 2, the least recently seen
+	r.add(ip(1), t0, 5, RejectAllowlist)
+	r.add(ip(2), t0.Add(time.Minute), 1, RejectAllowlist)
+	r.add(ip(3), t0.Add(2*time.Minute), 2, RejectAllowlist)
+	r.add(ip(1), t0.Add(3*time.Minute), 1, RejectAllowlist) // 1 is now the most recent
+	r.add(ip(4), t0.Add(4*time.Minute), 3, RejectAllowlist) // evicts 2, the least recently seen
 	if r.size() != 3 {
 		t.Fatalf("size %d", r.size())
 	}
@@ -358,8 +358,8 @@ func TestRejectsTable(t *testing.T) {
 		t.Errorf("total24h after 25 h: %d", n)
 	}
 	// Ties sort by last seen, newest first.
-	r.add(ip(7), later, 1)
-	r.add(ip(8), later.Add(time.Second), 1)
+	r.add(ip(7), later, 1, RejectAllowlist)
+	r.add(ip(8), later.Add(time.Second), 1, RejectAllowlist)
 	if l := r.list(later.Add(time.Minute), 0); l[0].IP != "198.51.100.8" {
 		t.Errorf("tie order %+v", l)
 	}
@@ -369,7 +369,7 @@ func TestRejectsFull(t *testing.T) {
 	r := newRejects(maxRejectedIPs)
 	now := fixedNow
 	for i := 0; i < maxRejectedIPs+500; i++ {
-		r.add(netip.AddrFrom4([4]byte{10, byte(i >> 16), byte(i >> 8), byte(i)}), now, 1)
+		r.add(netip.AddrFrom4([4]byte{10, byte(i >> 16), byte(i >> 8), byte(i)}), now, 1, RejectAllowlist)
 	}
 	if r.size() != maxRejectedIPs {
 		t.Errorf("size %d", r.size())
