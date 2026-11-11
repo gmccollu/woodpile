@@ -1,0 +1,243 @@
+@import 'tailwindcss';
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/*
+ * Colour tokens. Every text/background pair here is checked for WCAG AA by
+ * scripts/contrast.mjs (npm run contrast); update both together.
+ */
+:root {
+  color-scheme: light;
+  --bg: #e9eaf0;
+  --bg-warm: #f3e3cf;
+  --bg-cool: #d9dcf2;
+  --bg-green: #dfe8e4;
+  --fg: #23272e;
+  --muted: #545a65;
+  --glass: rgba(255, 255, 255, 0.55);
+  --glass-strong: rgba(255, 255, 255, 0.82);
+  --shell: rgba(255, 255, 255, 0.35);
+  --panel: rgba(255, 255, 255, 0.3);
+  --border: rgba(255, 255, 255, 0.72);
+  --divider: rgba(35, 39, 46, 0.1);
+  --chip: #ffffff;
+  --input: rgba(255, 255, 255, 0.8);
+  --input-border: rgba(35, 39, 46, 0.5);
+  --accent: #e8a33a;
+  --accent-fg: #8a4f00;
+  --link: #3846c4;
+  --spark: #5b6cf0;
+  --ok: #2f9e68;
+  --warn: #c27508;
+  --bad: #d9484e;
+  --ok-fg: #1d6f47;
+  --warn-fg: #85520a;
+  --bad-fg: #a8262c;
+  --error-bg: #fde7e8;
+  --error-border: #f2b6b9;
+  --warn-bg: #fdf1dc;
+  --warn-border: #efcf96;
+  --info-bg: #e6e9fd;
+  --info-border: #bfc6f5;
+  --shadow: 0 20px 60px rgba(60, 70, 100, 0.12);
+  --shadow-chip: 0 4px 12px rgba(0, 0, 0, 0.06);
+  --btn: #23272e;
+  --btn-fg: #ffffff;
+
+  /* Log views: always solid, never glass. */
+  --log-bg: #1d2027;
+  --log-border: #1d2027;
+  --log-fg: #e3e6eb;
+  --log-dim: #9aa1ae;
+  --log-host: #9dbcff;
+  --log-bar: #262a33;
+  --sev-emerg: #ff9ca0;
+  --sev-err: #ff8a8e;
+  --sev-warn: #f3c06b;
+  --sev-notice: #86d8ea;
+  --sev-info: #8fd6a8;
+  --sev-debug: #b3b9c4;
+  --sev-unknown: #c9b5f5;
+}
+
+.dark {
+  color-scheme: dark;
+  --bg: #111318;
+  --bg-warm: #2a2119;
+  --bg-cool: #1b2034;
+  --bg-green: #15231e;
+  --fg: #eceef2;
+  --muted: #a9afba;
+  --glass: rgba(40, 44, 56, 0.55);
+  --glass-strong: rgba(48, 53, 66, 0.85);
+  --shell: rgba(28, 31, 40, 0.45);
+  --panel: rgba(30, 33, 42, 0.4);
+  --border: rgba(255, 255, 255, 0.09);
+  --divider: rgba(255, 255, 255, 0.09);
+  --chip: #3a3f4d;
+  --input: rgba(20, 22, 28, 0.7);
+  --input-border: rgba(255, 255, 255, 0.36);
+  --accent: #f0b252;
+  --accent-fg: #f3c27a;
+  --link: #a7b2ff;
+  --spark: #8e9bff;
+  --ok: #4cc98a;
+  --warn: #f0b252;
+  --bad: #f06a6f;
+  --ok-fg: #6fd9a2;
+  --warn-fg: #f3c27a;
+  --bad-fg: #ff9599;
+  --error-bg: #3a1d21;
+  --error-border: #6e2f35;
+  --warn-bg: #362a17;
+  --warn-border: #6b5122;
+  --info-bg: #1f2440;
+  --info-border: #3a4377;
+  --shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+  --shadow-chip: 0 4px 12px rgba(0, 0, 0, 0.3);
+  --btn: #eceef2;
+  --btn-fg: #15171c;
+
+  --log-bg: #0c0e12;
+  --log-border: #2a2e38;
+  --log-fg: #e3e6eb;
+  --log-dim: #959cab;
+  --log-bar: #171a20;
+}
+
+@theme inline {
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
+  --color-fg: var(--fg);
+  --color-muted: var(--muted);
+  --color-glass: var(--glass);
+  --color-glass-strong: var(--glass-strong);
+  --color-line: var(--border);
+  --color-divider: var(--divider);
+  --color-chip: var(--chip);
+  --color-input: var(--input);
+  --color-input-line: var(--input-border);
+  --color-accent: var(--accent);
+  --color-accent-fg: var(--accent-fg);
+  --color-link: var(--link);
+  --color-ok: var(--ok);
+  --color-warn: var(--warn);
+  --color-bad: var(--bad);
+  --color-ok-fg: var(--ok-fg);
+  --color-warn-fg: var(--warn-fg);
+  --color-bad-fg: var(--bad-fg);
+  --color-btn: var(--btn);
+  --color-btn-fg: var(--btn-fg);
+  --color-log: var(--log-bg);
+  --color-log-fg: var(--log-fg);
+  --color-log-dim: var(--log-dim);
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+}
+
+body {
+  font-family: var(--font-sans);
+  color: var(--fg);
+  background:
+    radial-gradient(circle at 15% 20%, var(--bg-warm) 0, transparent 35%),
+    radial-gradient(circle at 85% 15%, var(--bg-cool) 0, transparent 40%),
+    radial-gradient(circle at 70% 85%, var(--bg-green) 0, transparent 40%),
+    var(--bg);
+  background-attachment: fixed;
+  -webkit-font-smoothing: antialiased;
+}
+
+@layer components {
+  .glass {
+    background: var(--glass);
+    border: 1px solid var(--border);
+    -webkit-backdrop-filter: blur(20px);
+    backdrop-filter: blur(20px);
+  }
+  .card {
+    background: var(--glass);
+    border: 1px solid var(--border);
+    border-radius: 22px;
+    padding: 18px;
+  }
+  .card-title {
+    margin: 0 0 10px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--muted);
+  }
+  .pill-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    border-radius: 999px;
+    padding: 7px 14px;
+    font-size: 13px;
+    font-weight: 600;
+    background: var(--btn);
+    color: var(--btn-fg);
+    cursor: pointer;
+    border: 0;
+  }
+  .pill-btn:disabled {
+    opacity: 0.55;
+    cursor: default;
+  }
+  .ghost-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    border-radius: 999px;
+    padding: 6px 12px;
+    font-size: 13px;
+    font-weight: 500;
+    background: var(--glass-strong);
+    color: var(--fg);
+    border: 1px solid var(--border);
+    cursor: pointer;
+  }
+  .field {
+    width: 100%;
+    border-radius: 12px;
+    padding: 8px 12px;
+    font-size: 14px;
+    background: var(--input);
+    color: var(--fg);
+    border: 1px solid var(--input-border);
+  }
+  .field[aria-invalid='true'] {
+    border-color: var(--bad);
+  }
+  .field:disabled {
+    opacity: 0.7;
+  }
+  .log-panel {
+    background: var(--log-bg);
+    color: var(--log-fg);
+    border: 1px solid var(--log-border);
+    font-family: var(--font-mono);
+  }
+  .sev-0, .sev-1, .sev-2 { color: var(--sev-emerg); font-weight: 700; }
+  .sev-3 { color: var(--sev-err); }
+  .sev-4 { color: var(--sev-warn); }
+  .sev-5 { color: var(--sev-notice); }
+  .sev-6 { color: var(--sev-info); }
+  .sev-7 { color: var(--sev-debug); }
+  .sev-u { color: var(--sev-unknown); }
+}
+
+:focus-visible {
+  outline: 2px solid var(--link);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+    animation: none !important;
+  }
+}
