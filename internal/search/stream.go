@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"math"
+	"runtime"
+	"sync"
 	"time"
 
 	"github.com/gmccollu/woodpile/internal/hub"
@@ -24,6 +26,14 @@ type run struct {
 	sevs         hub.SeveritySet // 0: all
 
 	need int // results still wanted (bounds the compressed-file ring)
+	// cacheKey is the search's parameters and range, for the caches ("": don't cache).
+	cacheKey string
+	// ringBytes is how many bytes of matches a compressed-file pass keeps.
+	ringBytes int
+	// streams are the request's streams (for prefetch); prefetched is set once
+	// prefetch has run.
+	streams    []*stream
+	prefetched bool
 	// noDeadline is set while re-reading a stream's known next line: that
 	// is part of returning a result the previous page found, not new reading.
 	noDeadline bool
@@ -143,8 +153,14 @@ type stream struct {
 	rs, re   int64
 	fileDone bool // asc: reached the end of the region
 	rd       *fwd
+	last     []byte // asc: the last block rd returned, at lastOff
+	lastOff  int64
 	queue    []hit
 	qi       int
+
+	// bound caches key's bound until the stream reads again.
+	bound      int64
+	boundValid bool
 
 	// maxLastBefore[i] is the highest LastReceived (ms) of files[:i];
 	// minFirstAfter[i] the lowest FirstReceived of files[i:].
@@ -189,7 +205,18 @@ func (s *stream) close() {
 		_ = s.cur.Close()
 		s.cur = nil
 	}
-	s.rd = nil
+	s.rd, s.last = nil, nil
+}
+
+// park ends the stream at the end of a request: an asc reader of a compressed
+// file is kept for the next page, anything else is closed.
+func (s *stream) park(r *run) {
+	if r.cacheKey != "" && !r.desc && s.cur != nil && s.cur.file.Compressed && s.rd != nil && !s.fileDone {
+		r.e.readers.park(s.cur.file.ID, &parked{o: s.cur, rd: s.rd, last: s.last, lastOff: s.lastOff})
+		s.cur, s.rd, s.last = nil, nil, nil
+		return
+	}
+	s.close()
 }
 
 // nextFile moves to the next file in scan order.
@@ -227,6 +254,13 @@ func (s *stream) key(r *run) (int64, bool) {
 	if s.pending {
 		return s.pendingMs, true
 	}
+	if !s.boundValid {
+		s.bound, s.boundValid = s.computeBound(r), true
+	}
+	return s.bound, false
+}
+
+func (s *stream) computeBound(r *run) int64 {
 	fi := s.files[s.fi]
 	if r.desc {
 		var b int64
@@ -249,7 +283,7 @@ func (s *stream) key(r *run) (int64, bool) {
 			}
 		}
 		b = max(b, s.maxLastBefore[s.fi])
-		return min(b, r.toMs-1), false
+		return min(b, r.toMs-1)
 	}
 	b := fi.FirstReceived.UnixMilli()
 	if s.pos >= 0 && fi.loaded {
@@ -261,7 +295,7 @@ func (s *stream) key(r *run) (int64, bool) {
 		}
 	}
 	b = min(b, s.minFirstAfter[s.fi+1])
-	return max(b, r.fromMs), false
+	return max(b, r.fromMs)
 }
 
 // step does one unit of reading: it opens the next file or reads one block (a
@@ -271,6 +305,7 @@ func (s *stream) step(r *run) {
 	if s.head() != nil || s.done {
 		return
 	}
+	s.boundValid = false
 	if s.pending {
 		// One read finds the line again (or finds it gone); after that the
 		// stream is ordinary.
@@ -283,22 +318,8 @@ func (s *stream) step(r *run) {
 		return
 	}
 	fi := s.files[s.fi]
-	if s.cur == nil {
-		o, err := r.e.open(r.ctx, fi)
-		if err != nil {
-			if !errors.Is(err, errGone) {
-				r.e.log.Warn("search: skipping a log file", "file", fi.Path, "err", err)
-			}
-			s.nextFile(r.desc)
-			return
-		}
-		s.cur = o
-		r.files[fi.ID] = struct{}{}
-		s.rs, s.re = regionStart(fi.cps, r.fromMs), regionEnd(fi.cps, r.toMs)
-		if s.pos >= 0 && (s.pos < s.rs || (s.re >= 0 && s.pos > s.re)) {
-			// A position outside the region (a hand-made cursor): clamp it.
-			s.pos = min(max(s.pos, s.rs), max(s.re, s.rs))
-		}
+	if !s.openCur(r) {
+		return
 	}
 	var err error
 	switch {
@@ -314,6 +335,45 @@ func (s *stream) step(r *run) {
 		// doesn't keep open files readable): keep what was found, skip the rest.
 		r.e.log.Warn("search: stopped reading a log file", "file", s.cur.file.Path, "err", err)
 		s.nextFileKeepQueue(r.desc)
+	}
+}
+
+// openCur opens the current file if it isn't open, and sets its region. It
+// reports false (having moved to the next file) when the file is gone.
+func (s *stream) openCur(r *run) bool {
+	if s.cur != nil {
+		return true
+	}
+	fi := s.files[s.fi]
+	o, err := r.e.open(r.ctx, fi)
+	if err != nil {
+		if !errors.Is(err, errGone) {
+			r.e.log.Warn("search: skipping a log file", "file", fi.Path, "err", err)
+		}
+		s.nextFile(r.desc)
+		return false
+	}
+	s.cur = o
+	r.files[fi.ID] = struct{}{}
+	s.rs, s.re = regionStart(fi.cps, r.fromMs), regionEnd(fi.cps, r.toMs)
+	if s.pos >= 0 && (s.pos < s.rs || (s.re >= 0 && s.pos > s.re)) {
+		// A position outside the region (a hand-made cursor): clamp it.
+		s.pos = min(max(s.pos, s.rs), max(s.re, s.rs))
+	}
+	return true
+}
+
+// warm opens an asc stream's first file and starts its read-ahead, so every
+// device's compressed file is positioned (decompressed up to the range) at
+// once rather than one after another as the merge reaches them.
+func (s *stream) warm(r *run) {
+	if r.desc || s.done || s.head() != nil || s.finished(false) || !s.openCur(r) {
+		return
+	}
+	if s.cur.file.Compressed && s.rd == nil {
+		if err := s.ensureReader(r, s.files[s.fi]); err != nil {
+			s.close() // step opens it again and reports the error
+		}
 	}
 }
 
@@ -356,17 +416,37 @@ func (s *stream) stepDescPlain(r *run, fi *fileInfo) error {
 	return nil
 }
 
+// ensureReader sets up the asc reader at the stream's position: a reader the
+// previous page parked, or a new one.
+func (s *stream) ensureReader(r *run, fi *fileInfo) error {
+	if s.rd != nil {
+		return nil
+	}
+	start := s.pos
+	if start < 0 {
+		start = s.rs
+	}
+	if s.cur.file.Compressed && r.cacheKey != "" {
+		if p := r.e.readers.take(fi.ID, s.cur.file.Path, start); p != nil {
+			s.cur.Close()
+			s.cur, s.rd, s.pos = p.o, p.rd, start
+			s.rd.prepend(p.last[start-p.lastOff:], start)
+			s.last, s.lastOff = nil, start // the prefix is in rd's buffer now
+			return nil
+		}
+	}
+	rd, err := s.cur.readAhead(start, r.e.block, r.e.decodeSem)
+	if err != nil {
+		return err
+	}
+	s.rd, s.pos = newFwd(rd, start, r.e.block), start
+	s.last, s.lastOff = nil, start
+	return nil
+}
+
 func (s *stream) stepAsc(r *run, fi *fileInfo) error {
-	if s.rd == nil {
-		start := s.pos
-		if start < 0 {
-			start = s.rs
-		}
-		rd, err := s.cur.reader(start)
-		if err != nil {
-			return err
-		}
-		s.rd, s.pos = newFwd(rd, start, r.e.block), start
+	if err := s.ensureReader(r, fi); err != nil {
+		return err
 	}
 	buf, off, err := s.rd.next()
 	if err != nil {
@@ -377,6 +457,7 @@ func (s *stream) stepAsc(r *run, fi *fileInfo) error {
 		return nil
 	}
 	r.scanned += int64(len(buf))
+	s.last, s.lastOff = buf, off
 	s.queue = r.lines(buf, off, s.re, fi, s.queue[:0])
 	s.pos = off + int64(len(buf))
 	if s.re >= 0 && s.pos >= s.re {
@@ -395,31 +476,76 @@ func (s *stream) passDesc(r *run, fi *fileInfo) error {
 	if hi < 0 {
 		hi = s.re
 	}
-	rd, err := s.cur.reader(lo)
+	key := passKey{fi.ID, r.cacheKey}
+	if r.cacheKey != "" && s.hint == 0 {
+		ent := r.e.passes.get(key, lo, hi)
+		if ent == nil && r.prefetch() {
+			ent = r.e.passes.get(key, lo, hi)
+		}
+		if ent != nil {
+			q := s.queue[:0]
+			for i := len(ent.hits) - 1; i >= 0; i-- {
+				if h := ent.hits[i]; hi < 0 || h.end <= hi {
+					q = append(q, h)
+				}
+			}
+			s.queue, s.pos, s.hint = q, ent.frontier, 0
+			return nil
+		}
+	}
+	kept, frontier, reached, done, err := r.pass(s.cur, fi, lo, hi)
 	if err != nil {
 		return err
 	}
+	if !done {
+		// Out of time: everything in [lo, reached) has been seen but nothing can
+		// be returned before the rest of the pass. Resume the pass from there.
+		s.pos, s.hint = hi, reached
+		if hi < 0 {
+			s.pos = -1
+		}
+		return nil
+	}
+	if r.cacheKey != "" && s.hint == 0 {
+		r.e.passes.put(&passEntry{key: key, lo: lo, frontier: frontier, end: reached, eof: hi < 0, hits: kept})
+	}
+	q := s.queue[:0]
+	for i := len(kept) - 1; i >= 0; i-- {
+		q = append(q, kept[i])
+	}
+	// Without a drop the pass covered [lo, hi): what's left is [rs, lo), which is
+	// empty unless the pass resumed at a hint.
+	s.queue, s.pos, s.hint = q, frontier, 0
+	return nil
+}
+
+// pass reads [lo, hi) of a compressed file (hi -1: to the end) forward and
+// returns its last matches in offset order: at most need of them (or as many
+// as ringBytes holds, when caching). frontier is where the kept matches
+// start being complete (lo unless older ones were dropped); reached is where
+// the pass got to. done is false when the budget ran out first.
+func (r *run) pass(o *opened, fi *fileInfo, lo, hi int64) (kept []hit, frontier, reached int64, done bool, err error) {
+	rd, err := o.readAhead(lo, r.e.block, r.e.decodeSem)
+	if err != nil {
+		return nil, 0, 0, false, err
+	}
 	fr := newFwd(rd, lo, r.e.block)
-	ring := newRing(max(r.need, 1), r.e.ringBytes)
+	// Keep more than this page needs when caching: the next pages use it.
+	keep := max(r.need, 1)
+	if r.cacheKey != "" {
+		keep = 1 << 30
+	}
+	ring := newRing(keep, r.ringBytes)
 	var tmp []hit
 	for blocks := 0; ; blocks++ {
 		if blocks > 0 && r.expired() {
-			// Out of time: everything in [lo, fr.off) has been seen but nothing can
-			// be returned before the rest of the pass. Resume the pass from there.
-			s.pos, s.hint = hi, fr.off
-			if hi < 0 {
-				s.pos = -1
-			}
-			return nil
+			return nil, 0, fr.off, false, nil
 		}
 		buf, off, err := fr.next()
 		if err != nil {
-			return err
+			return nil, 0, 0, false, err
 		}
-		if buf == nil {
-			break
-		}
-		if hi >= 0 && off >= hi {
+		if buf == nil || (hi >= 0 && off >= hi) {
 			break
 		}
 		r.scanned += int64(len(buf))
@@ -433,19 +559,83 @@ func (s *stream) passDesc(r *run, fi *fileInfo) error {
 			break
 		}
 	}
-	kept, dropped := ring.items()
-	frontier := lo
+	reached = fr.off
+	if hi >= 0 {
+		reached = min(reached, hi) // matches past hi were left out
+	}
+	items, dropped := ring.items()
+	frontier = lo
 	if dropped {
-		frontier = kept[0].off
+		frontier = items[0].off
 	}
-	q := s.queue[:0]
-	for i := len(kept) - 1; i >= 0; i-- {
-		q = append(q, kept[i])
+	return append([]hit(nil), items...), frontier, reached, true, nil
+}
+
+// prefetch runs, in parallel, the compressed-file passes the other desc
+// streams will need next (a stream at a compressed file with no next line and
+// no cached pass), so the merge doesn't decompress them one after another. It
+// reports whether it ran any.
+func (r *run) prefetch() bool {
+	if r.cacheKey == "" || r.prefetched {
+		return false
 	}
-	// Without a drop the pass covered [lo, hi): what's left is [rs, lo), which is
-	// empty unless the pass resumed at a hint.
-	s.queue, s.pos, s.hint = q, frontier, 0
-	return nil
+	type job struct {
+		fi  fileInfo
+		pos int64
+	}
+	var jobs []job
+	for _, s := range r.streams {
+		if s.head() != nil || s.done || s.pending || s.hint > 0 || s.finished(true) {
+			continue
+		}
+		if fi := s.files[s.fi]; fi.Compressed {
+			jobs = append(jobs, job{fi: *fi, pos: s.pos})
+		}
+	}
+	if len(jobs) < 2 {
+		return false
+	}
+	r.prefetched = true // once per request: later misses are rare and run inline
+	r.e.prefetches.Add(1)
+	var mu sync.Mutex
+	work := make(chan job)
+	var wg sync.WaitGroup
+	for w := 0; w < min(len(jobs), max(1, runtime.NumCPU()/2)); w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := range work {
+				c := &run{e: r.e, ctx: r.ctx, deadline: r.deadline, now: r.now, fromMs: r.fromMs, toMs: r.toMs, desc: true,
+					m: r.m, sevs: r.sevs, need: r.need, cacheKey: r.cacheKey, ringBytes: r.ringBytes}
+				fi := &j.fi
+				o, err := r.e.open(r.ctx, fi)
+				if err != nil {
+					continue
+				}
+				lo, hi := regionStart(fi.cps, r.fromMs), j.pos
+				if hi < 0 {
+					hi = regionEnd(fi.cps, r.toMs)
+				}
+				key := passKey{fi.ID, r.cacheKey}
+				if r.e.passes.get(key, lo, hi) == nil {
+					if kept, frontier, reached, done, err := c.pass(o, fi, lo, hi); err == nil && done {
+						r.e.passes.put(&passEntry{key: key, lo: lo, frontier: frontier, end: reached, eof: hi < 0, hits: kept})
+					}
+				}
+				o.Close()
+				mu.Lock()
+				r.scanned += c.scanned
+				r.files[fi.ID] = struct{}{}
+				mu.Unlock()
+			}
+		}()
+	}
+	for _, j := range jobs {
+		work <- j
+	}
+	close(work)
+	wg.Wait()
+	return true
 }
 
 // ring keeps the newest n hits within a byte budget.

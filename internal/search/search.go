@@ -42,8 +42,10 @@ import (
 	"encoding/binary"
 	"errors"
 	"log/slog"
+	"runtime"
 	"slices"
 	"sort"
+	"sync/atomic"
 	"time"
 
 	"github.com/gmccollu/woodpile/internal/hub"
@@ -56,7 +58,7 @@ const (
 	DefaultBudget    = 10 * time.Second
 	DefaultPageBytes = 8 << 20
 	DefaultBlock     = 128 << 10
-	DefaultRingBytes = 4 << 20
+	DefaultRingBytes = 2 << 20
 	DefaultLimit     = 500
 	MaxLimit         = 5000
 	DefaultRange     = 24 * time.Hour
@@ -95,8 +97,12 @@ type Engine struct {
 	log       *slog.Logger
 	block     int
 	ringBytes int
+	passes    *passCache
+	readers   *readerCache
+	decodeSem chan struct{} // bounds parallel decompression
 
 	testHookOpen func(rel string) // called before each file open
+	prefetches   atomic.Int64     // prefetch runs, for tests
 }
 
 // New returns an Engine.
@@ -125,6 +131,9 @@ func New(opts Options) *Engine {
 	if e.ringBytes <= 0 {
 		e.ringBytes = DefaultRingBytes
 	}
+	e.passes = newPassCache(256 << 20)
+	e.decodeSem = make(chan struct{}, max(1, runtime.NumCPU()-1))
+	e.readers = newReaderCache(64, 2*time.Minute)
 	return e
 }
 
@@ -317,9 +326,20 @@ func (e *Engine) Search(ctx context.Context, q Query) (Page, error) {
 			streams = append(streams, s)
 		}
 	}
+	r.streams = streams
+	r.cacheKey = string(bind) + string(binary.AppendVarint(binary.AppendVarint(nil, r.fromMs), r.toMs))
+	// Every stream may hold a compressed-file pass in the cache at once: share
+	// its budget between them, so paging through all devices doesn't evict one
+	// device's pass to make room for the next.
+	r.ringBytes = min(e.ringBytes, max(int(e.passes.max)/(2*max(len(streams), 1)), 256<<10))
+	if !r.desc {
+		for _, s := range streams {
+			s.warm(r) // after cacheKey: warm takes parked readers
+		}
+	}
 	defer func() {
 		for _, s := range streams {
-			s.close()
+			s.park(r)
 		}
 	}()
 
@@ -425,7 +445,7 @@ func encodeRef(fileID, off, ms int64) string {
 
 func decodeRef(ref string) (fileID, off, ms int64, err error) {
 	bad := &QueryError{Msg: "Invalid ref."}
-	b, err := base64.RawURLEncoding.DecodeString(ref)
+	b, err := base64.RawURLEncoding.Strict().DecodeString(ref)
 	if err != nil || len(b) == 0 {
 		return 0, 0, 0, bad
 	}

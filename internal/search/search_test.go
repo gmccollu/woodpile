@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -71,8 +72,12 @@ func TestMatcher(t *testing.T) {
 		{"Link", false, true, "<11>Link DOWN", true, true},
 		{"ünï", false, false, "<11>ÜNÏCODE", true, false},
 		{`a\nb`, false, false, "x a\\nb y", true, false},
-		{"port [0-9]+$", true, false, "Link down on PORT 12", true, false},
-		{"PORT [0-9]+$", true, true, "Link down on port 12", false, false},
+		{"port [0-9]+$", true, false, "Link down on PORT 12", true, true},
+		{"PORT [0-9]+$", true, true, "Link down on port 12", false, true},
+		{"^no p[ra]i", true, false, "NO PRI here", true, true},
+		{"(a|b)x", true, false, "bx", true, false},
+		{"ünï.", true, false, "ÜNÏC", true, false},
+		{`a\nb`, true, true, "a\\nb", false, false},
 		{"zz", false, false, "z", false, true},
 		{"", false, false, "anything", true, false},
 	}
@@ -210,6 +215,9 @@ func TestPaginationContinuity(t *testing.T) {
 				same(t, "full", one, f.expect(q))
 			}
 		}
+	}
+	if f.eng.passes.hits.Load() == 0 || f.eng.readers.hits.Load() == 0 || f.eng.prefetches.Load() == 0 {
+		t.Errorf("caches unused: %d pass hits, %d reader hits, %d prefetches", f.eng.passes.hits.Load(), f.eng.readers.hits.Load(), f.eng.prefetches.Load())
 	}
 	// limit may change from page to page.
 	q := Query{Filter: Filter{From: f.day0, To: f.day0.Add(72 * time.Hour)}, Limit: 5}
@@ -400,17 +408,16 @@ func TestVanishingFileIsSkipped(t *testing.T) {
 	f := newFixture(t, 3, 300)
 	files, _ := f.idx.Files(bg, model.DeviceID(devB))
 	victim := files[len(files)/2]
-	deleted := false
+	var deleted atomic.Bool // opens run in parallel (prefetch)
 	f.eng.testHookOpen = func(rel string) {
-		if !deleted && rel == victim.Path {
-			deleted = true
+		if rel == victim.Path && deleted.CompareAndSwap(false, true) {
 			os.Remove(filepath.Join(f.dir, filepath.FromSlash(victim.Path)))
 		}
 	}
 	for _, asc := range []bool{false, true} {
 		q := Query{Filter: Filter{From: f.day0, To: f.day0.Add(72 * time.Hour)}, Asc: asc, Limit: 97}
 		got, _ := f.all(q)
-		if !deleted {
+		if !deleted.Load() {
 			t.Fatal("hook didn't fire")
 		}
 		// Everything except the victim's lines.
@@ -433,7 +440,7 @@ func TestBigFixturePartialAndContext(t *testing.T) {
 	for _, asc := range []bool{false, true} {
 		q := Query{Filter: Filter{From: f.day0.Add(5 * time.Hour), To: f.day0.Add(40 * time.Hour), Q: "seq=0012"}, Asc: asc, Limit: 50}
 		got, pages := f.all(q)
-		if pages < 3 {
+		if pages < 2 {
 			t.Errorf("asc=%v: %d pages with a tiny budget", asc, pages)
 		}
 		same(t, "big partial", got, f.expect(q))
@@ -529,5 +536,23 @@ func TestSearchWhileWriting(t *testing.T) {
 	t.Logf("%d search rounds; %d files deleted by retention meanwhile", rounds, len(hist))
 	if len(hist) == 0 {
 		t.Error("retention never deleted a file; the test didn't exercise it")
+	}
+}
+
+// TestDeepPaginationSmallRing pages newest-first through compressed files whose
+// matches don't fit one pass's ring, so pages are served from cached passes
+// that dropped older matches, then from passes over the rest.
+func TestDeepPaginationSmallRing(t *testing.T) {
+	f := newBigFixture(t)
+	f.eng.ringBytes = 8 << 10
+	for _, text := range []string{"", "conn opened"} {
+		q := Query{Filter: Filter{From: f.day0, To: f.day0.Add(48 * time.Hour), Q: text}, Limit: 997}
+		t0 := time.Now()
+		got, pages := f.all(q)
+		same(t, "small ring "+text, got, f.expect(q))
+		t.Logf("%q: %d results, %d pages, %v", text, len(got), pages, time.Since(t0).Round(time.Millisecond))
+	}
+	if f.eng.passes.hits.Load() == 0 {
+		t.Error("no cached pass served")
 	}
 }

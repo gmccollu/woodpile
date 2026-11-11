@@ -32,7 +32,7 @@ func (e *Engine) NewScanner(ctx context.Context, device string, f Filter) (*Scan
 	if err != nil {
 		return nil, err
 	}
-	r := &run{e: e, ctx: ctx, now: e.now(), m: m, sevs: f.Severities, need: 1, files: map[int64]struct{}{}}
+	r := &run{e: e, ctx: ctx, now: e.now(), m: m, sevs: f.Severities, need: 1, files: map[int64]struct{}{}, ringBytes: e.ringBytes}
 	if r.fromMs, r.toMs, err = e.resolveRange(f); err != nil {
 		return nil, err
 	}

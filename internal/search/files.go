@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gmccollu/woodpile/internal/index"
@@ -86,11 +87,94 @@ const maxSkew = time.Minute
 
 // opened is an open log file.
 type opened struct {
-	f    *os.File
-	file index.File // the row it was opened as (Path and Compressed as found on disk)
+	f     *os.File
+	file  index.File // the row it was opened as (Path and Compressed as found on disk)
+	ahead *aheadReader
 }
 
-func (o *opened) Close() error { return o.f.Close() }
+func (o *opened) Close() error {
+	if o.ahead != nil {
+		o.ahead.stop()
+		o.ahead = nil
+	}
+	return o.f.Close()
+}
+
+// readAhead is reader for a forward scan: for a compressed file a goroutine
+// positions the stream and decompresses a few blocks ahead, so decompression
+// runs in parallel with matching and with the other devices' streams. Plain
+// files read directly. Only one reader per opened file is in use at a time.
+func (o *opened) readAhead(off int64, block int, sem chan struct{}) (io.Reader, error) {
+	if !o.file.Compressed {
+		return o.reader(off)
+	}
+	if o.ahead != nil {
+		o.ahead.stop()
+	}
+	a := &aheadReader{ch: make(chan []byte, 4), done: make(chan struct{}), exited: make(chan struct{})}
+	o.ahead = a
+	go func() {
+		defer close(a.exited)
+		defer close(a.ch)
+		sem <- struct{}{}
+		rd, err := o.reader(off)
+		<-sem
+		if err != nil {
+			a.err = err
+			return
+		}
+		for {
+			buf := make([]byte, block)
+			sem <- struct{}{}
+			n, err := io.ReadFull(rd, buf)
+			<-sem
+			if n > 0 {
+				select {
+				case a.ch <- buf[:n]:
+				case <-a.done:
+					return
+				}
+			}
+			if err == io.EOF || err == io.ErrUnexpectedEOF {
+				a.err = io.EOF
+				return
+			}
+			if err != nil {
+				a.err = err
+				return
+			}
+		}
+	}()
+	return a, nil
+}
+
+// aheadReader is the consumer side of readAhead.
+type aheadReader struct {
+	ch     chan []byte
+	cur    []byte
+	err    error // set before ch closes
+	done   chan struct{}
+	exited chan struct{}
+	once   sync.Once
+}
+
+func (a *aheadReader) Read(p []byte) (int, error) {
+	for len(a.cur) == 0 {
+		b, ok := <-a.ch
+		if !ok {
+			return 0, a.err
+		}
+		a.cur = b
+	}
+	n := copy(p, a.cur)
+	a.cur = a.cur[n:]
+	return n, nil
+}
+
+func (a *aheadReader) stop() {
+	a.once.Do(func() { close(a.done) })
+	<-a.exited
+}
 
 // open opens the file with ID id for reading. The index row is looked up just
 // before opening, and the file is checked to be the one the row describes:

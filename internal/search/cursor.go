@@ -148,7 +148,7 @@ var (
 )
 
 func (e *Engine) decodeCursor(s string, bind []byte) (*cursorState, error) {
-	raw, err := base64.RawURLEncoding.DecodeString(s)
+	raw, err := base64.RawURLEncoding.Strict().DecodeString(s)
 	if err != nil || len(raw) < 1+bindLen+macLen {
 		return nil, errCursorInvalid
 	}

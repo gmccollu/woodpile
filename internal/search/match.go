@@ -56,6 +56,9 @@ type matcher struct {
 	prefilter bool
 	// first byte of the needle in both cases, for the fold prefilter.
 	lo, up byte
+	// pre is a regex's prefilter: a substring matcher for the literal every
+	// match starts with.
+	pre *matcher
 }
 
 type matchKind int
@@ -91,7 +94,18 @@ func newMatcher(q string, isRegex, caseSensitive bool) (*matcher, error) {
 			}
 			return nil, &QueryError{Msg: err.Error()}
 		}
-		return &matcher{kind: matchRegex, re: re}, nil
+		m := &matcher{kind: matchRegex, re: re}
+		// Every match begins with the expression's literal prefix (of the
+		// case-sensitive form; with case=false, matched ignoring ASCII case), so
+		// only lines holding it need the regex.
+		if exact, err := regexp.Compile(q); err == nil {
+			if prefix, _ := exact.LiteralPrefix(); prefix != "" && (caseSensitive || isASCII([]byte(prefix))) {
+				if pre, _ := newMatcher(prefix, false, caseSensitive); pre.prefilter {
+					m.pre, m.prefilter = pre, true
+				}
+			}
+		}
+		return m, nil
 	}
 	m := &matcher{needle: []byte(q)}
 	switch {
@@ -130,6 +144,9 @@ func (m *matcher) match(raw []byte) bool {
 // next returns the index of the next candidate at or after from in buf, or
 // -1. Only valid when prefilter is set.
 func (m *matcher) next(buf []byte, from int) int {
+	if m.pre != nil {
+		return m.pre.next(buf, from)
+	}
 	if m.kind == matchExact {
 		if i := bytes.Index(buf[from:], m.needle); i >= 0 {
 			return from + i

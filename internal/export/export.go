@@ -30,6 +30,7 @@ import (
 	"github.com/gmccollu/woodpile/internal/hub"
 	"github.com/gmccollu/woodpile/internal/index"
 	"github.com/gmccollu/woodpile/internal/search"
+	"github.com/gmccollu/woodpile/internal/store/logfile"
 )
 
 // Dir is the exports folder inside the data dir.
@@ -393,7 +394,9 @@ func (m *Manager) Download(id string) (*os.File, Info, error) {
 	if e.info.State != Ready {
 		return nil, e.info, ErrNotReady
 	}
-	f, err := os.Open(m.zipPath(id))
+	// Shared-delete on Windows: expiry or the low-disk guard can still delete
+	// the zip while a download is running.
+	f, err := logfile.OpenFile(m.zipPath(id))
 	if err != nil {
 		return nil, e.info, ErrNotFound
 	}
