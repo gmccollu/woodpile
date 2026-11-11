@@ -231,9 +231,12 @@ body {
     font-size: 12.5px;
     line-height: 1.7;
   }
+  /* Wrapped continuation lines hang under the message column (time + host + severity
+     and their margins), not at column 0. */
   .logline {
-    padding-left: 3ch;
-    text-indent: -3ch;
+    --msgx: calc(var(--tw, 12ch) + var(--hostw, 12ch) + 7ch + 3.4ch);
+    padding-left: var(--msgx);
+    text-indent: calc(-1 * var(--msgx));
     white-space: pre-wrap;
     overflow-wrap: anywhere;
   }

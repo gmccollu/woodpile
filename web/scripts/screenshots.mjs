@@ -227,6 +227,45 @@ const SHOTS = [
     check: `(() => { const h = new Set([...document.querySelectorAll('[role=log] .logline .c.h')].map((x) => x.textContent));
       return h.size === 2 && h.has('edge-fw-02') && h.has('core-sw-01'); })()`,
   },
+  // ---- Embedded line breaks: one message is one row with Wrap off ----
+  {
+    name: 'tail-embedded-break-one-row',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0&mock_rate=400#/dashboard',
+    act: `__set(document.querySelector('input[type=search]'), 'future version');`,
+    after: 4000,
+    check: `(() => { const l = [...document.querySelectorAll('[role=log] .logline')];
+      return l.length > 0 && l.every((x) => x.offsetHeight <= 24 && x.querySelector('.m').textContent.includes('↵') && !x.querySelector('.m').textContent.includes('\\n')); })()`,
+  },
+  {
+    name: 'tail-embedded-break-raw-light',
+    mode: 'light',
+    url: '/?mock_panel=0&mock_rate=400#/dashboard',
+    act: `__set(document.querySelector('input[type=search]'), 'job finished'); await __tick(); __btn('Raw').click();`,
+    after: 4000,
+    check: `(() => { const l = [...document.querySelectorAll('[role=log] .logline')];
+      return l.length > 0 && l.every((x) => x.offsetHeight <= 24 && x.textContent.includes('\\\\r\\\\n')); })()`,
+  },
+  {
+    name: 'search-embedded-break-light',
+    mode: 'light',
+    url: '/?mock_panel=0#/search?q=future%20version&r=24h',
+    wait: 2500,
+    check: `(() => { const l = [...document.querySelectorAll('.logline.clickable')];
+      return l.length > 20 && l.every((x) => x.offsetHeight <= 24 && x.textContent.includes('↵')) && document.querySelectorAll('mark.hl').length >= l.length; })()`,
+  },
+  {
+    name: 'context-embedded-break-one-row',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/search?q=future%20version&r=24h',
+    wait: 2500,
+    act: `document.querySelectorAll('.logline.clickable')[30].click();`,
+    after: 1500,
+    check: `(() => { const l = [...document.querySelectorAll('[role=dialog] .logline')]; const hit = document.querySelector('[role=dialog] .logline.hit');
+      return l.length > 50 && hit && hit.textContent.includes('↵') && l.every((x) => x.offsetHeight <= 24); })()`,
+  },
   {
     name: 'tail-fullscreen-dark',
     mode: 'dark',

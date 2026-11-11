@@ -1,7 +1,7 @@
 <script lang="ts">
   import { ApiError, ALL_SEVS, getContext, search, type SearchParams, type SearchResult, type SevKey } from '../lib/api';
   import { bytes, num, stamp } from '../lib/format';
-  import { matcher, parts } from '../lib/highlight';
+  import { matcher } from '../lib/highlight';
   import { prefs } from '../lib/prefs.svelte';
   import { defaultRange, rangeFromQuery, rangeToQuery, resolveRange, type Range } from '../lib/range';
   import { go, router, setQuery } from '../lib/router.svelte';
@@ -13,6 +13,7 @@
   import Icon from '../components/Icon.svelte';
   import SeverityChips from '../components/SeverityChips.svelte';
   import TimeRange from '../components/TimeRange.svelte';
+  import LogText from '../components/LogText.svelte';
 
   const PAGE = 500;
   const HOST_MAX = 28;
@@ -299,13 +300,14 @@
           role="button"
           tabindex="0"
           data-ref={r.ref}
-          title={prefs.wrap ? 'Show the lines around this one' : r.raw}
+          title={r.raw}
+          aria-label="Show the lines around this one"
           onclick={() => openContext(r.ref)}
           onkeydown={(e) => rowKey(e, r.ref)}
         >
           <span class="c t">{stamp(r.received, prefs.utc)}</span><span class="c h">{deviceName(r.device_id)}</span><span class="c s {sevClass(r.severity)}"
             >{sevLabel(r.severity)}</span
-          ><span>{#each parts(text(r), hl) as p, i (i)}{#if p.hit}<mark class="hl">{p.t}</mark>{:else}{p.t}{/if}{/each}</span>
+          ><span class="m"><LogText text={text(r)} re={hl} raw={showRaw} /></span>
         </div>
       {/each}
       {#if results.length && cursor}
@@ -347,10 +349,10 @@
       </div>
       {#if ctx.loading && !ctx.lines.length}<p class="font-sans text-log-dim">Loading…</p>{/if}
       {#each ctx.lines as l, i (l.ref)}
-        <div class="logline" class:hit={i === ctx.hit} title={prefs.wrap ? undefined : l.raw}>
+        <div class="logline" class:hit={i === ctx.hit} title={l.raw}>
           <span class="c t">{stamp(l.received, prefs.utc)}</span><span class="c h">{deviceName(l.device_id)}</span><span class="c s {sevClass(l.severity)}"
             >{sevLabel(l.severity)}</span
-          ><span>{#each parts(text(l), i === ctx.hit ? hl : null) as p, j (j)}{#if p.hit}<mark class="hl">{p.t}</mark>{:else}{p.t}{/if}{/each}</span>
+          ><span class="m"><LogText text={text(l)} re={i === ctx.hit ? hl : null} raw={showRaw} /></span>
         </div>
       {/each}
       <div class="py-1 text-center font-sans">

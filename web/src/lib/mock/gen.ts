@@ -49,6 +49,8 @@ const TEMPLATES: Record<Kind, Template[]> = {
     [4, 2, 'fwd', () => `deny tcp ${outside()}:${int(1024, 65535)} -> 10.1.0.1:23 by acl outside_in`],
     [3, 0.6, 'ha', () => 'failover: peer heartbeat missed on link1'],
     [2, 0.1, 'sysmon', () => `cpu usage ${int(95, 99)}% for 60 s`],
+    // Some devices put a literal line break after the tag (seen on real hardware).
+    [5, 2, 'scand', () => { const v = int(900, 999); return `\nscanner: future version ${v + 1}, current version ${v}`; }],
   ],
   sw: [
     [5, 20, 'portd', () => `port 1/${int(1, 48)} up 1000 full`],
@@ -71,6 +73,9 @@ const TEMPLATES: Record<Kind, Template[]> = {
     [7, 30, 'app', () => `cache hit ratio 0.${int(80, 99)} over ${int(1000, 9000)} requests`],
     [4, 6, 'kernel', () => 'conntrack table 90% full'],
     [3, 2, 'app', () => `upstream 10.2.0.${int(20, 30)}:8080 timed out after 30 s`],
+    // Multi-line output (CR/LF) and a stray control character.
+    [6, 2, 'backup', () => `job finished\r\nfiles ${int(100, 9000)}\r\nexit status 0\r\n`],
+    [4, 0.5, 'app', () => `disk check \x07 attention: ${int(85, 95)}% used`],
   ],
   ap: [
     [6, 50, 'wlan', () => `client ${mac()} associated ssid corp-wifi rssi -${int(45, 80)}`],
