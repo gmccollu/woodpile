@@ -1,6 +1,6 @@
 //go:build windows
 
-package packaging
+package winacl
 
 import (
 	"os"
@@ -21,8 +21,8 @@ func sddlOf(t *testing.T, path string, info windows.SECURITY_INFORMATION) string
 	return sd.String()
 }
 
-// TestResetDataACL needs an elevated administrator (the GitHub Windows runners are).
-func TestResetDataACL(t *testing.T) {
+// TestResetDataDir needs an elevated administrator (the GitHub Windows runners are).
+func TestResetDataDir(t *testing.T) {
 	if !windows.GetCurrentProcessToken().IsElevated() {
 		t.Skip("needs an elevated administrator")
 	}
@@ -39,8 +39,10 @@ func TestResetDataACL(t *testing.T) {
 	secret := filepath.Join(outside, "secret.txt")
 	os.WriteFile(secret, []byte("s\n"), 0o644)
 	// An explicit grant that must not survive, a junction and a hard link that must go.
-	if out, err := exec.Command("icacls", logFile, "/grant", "*S-1-1-0:F").CombinedOutput(); err != nil {
-		t.Fatalf("icacls: %v %s", err, out)
+	for _, g := range [][]string{{logFile, "*S-1-1-0:F"}, {filepath.Join(data, "logs"), "*S-1-1-0:(OI)(CI)F"}} {
+		if out, err := exec.Command("icacls", g[0], "/grant", g[1]).CombinedOutput(); err != nil {
+			t.Fatalf("icacls: %v %s", err, out)
+		}
 	}
 	junction := filepath.Join(data, "logs", "evil")
 	if out, err := exec.Command("cmd", "/c", "mklink", "/J", junction, outside).CombinedOutput(); err != nil {
@@ -54,13 +56,13 @@ func TestResetDataACL(t *testing.T) {
 	secretBefore := sddlOf(t, secret, windows.DACL_SECURITY_INFORMATION|windows.OWNER_SECURITY_INFORMATION)
 
 	var removed []string
-	if err := ResetDataACL(data, func(f string, a ...any) { removed = append(removed, f) }); err != nil {
+	if err := ResetDataDir(data, func(f string, a ...any) { removed = append(removed, f) }); err != nil {
 		t.Fatal(err)
 	}
 
 	var owner, dacl windows.SECURITY_INFORMATION = windows.OWNER_SECURITY_INFORMATION, windows.DACL_SECURITY_INFORMATION
-	if got := sddlOf(t, data, owner|dacl); got != strings.Replace(WindowsDataSDDL, "G:SY", "", 1) {
-		t.Errorf("data folder: %s, want %s", got, WindowsDataSDDL)
+	if got := sddlOf(t, data, owner|dacl); got != strings.Replace(DataSDDL, "G:SY", "", 1) {
+		t.Errorf("data folder: %s, want %s", got, DataSDDL)
 	}
 	fileDACL, _ := InheritedDACL(false)
 	dirDACL, _ := InheritedDACL(true)
@@ -70,6 +72,12 @@ func TestResetDataACL(t *testing.T) {
 	if got := sddlOf(t, filepath.Join(data, "logs"), owner|dacl); got != "O:BA"+dirDACL {
 		t.Errorf("logs folder: %s, want O:BA%s", got, dirDACL)
 	}
+	filepath.WalkDir(data, func(p string, d os.DirEntry, err error) error {
+		if err == nil && strings.Contains(sddlOf(t, p, dacl), ";;;WD)") {
+			t.Errorf("%s still grants Everyone", p)
+		}
+		return nil
+	})
 	if _, err := os.Lstat(junction); !os.IsNotExist(err) {
 		t.Errorf("junction still there: %v", err)
 	}
@@ -94,7 +102,7 @@ func TestResetDataACL(t *testing.T) {
 	if out, err := exec.Command("cmd", "/c", "mklink", "/J", link, outside).CombinedOutput(); err != nil {
 		t.Fatalf("mklink: %v %s", err, out)
 	}
-	if err := ResetDataACL(link, nil); err == nil {
+	if err := ResetDataDir(link, nil); err == nil {
 		t.Error("a linked data folder was accepted")
 	}
 }

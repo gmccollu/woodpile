@@ -134,7 +134,7 @@
          a folder someone created before the install): owner Administrators, the protected DACL above
          on the folder, and only inherited ACEs below it. Links and extra hard-link names inside are
          deleted, never followed, and a data folder that is itself a link fails the install.
-         woodpile-aclfix.exe is packaging.ResetDataACL (Go, the same SDDL constant as `woodpile install`);
+         woodpile-aclfix.exe is winacl.ResetDataDir (internal/winacl), the same code and SDDL as `woodpile install`;
          it runs from the Binary table as SYSTEM after CreateFolders and before the service starts,
          on install, upgrade and repair, but not on uninstall. -->
     <Binary Id="WoodpileAclFix" SourceFile="$(var.BinDir)\woodpile-aclfix.exe" />

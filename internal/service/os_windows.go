@@ -5,7 +5,6 @@ package service
 import (
 	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,7 +20,6 @@ import (
 
 	"github.com/gmccollu/woodpile/internal/config"
 	"github.com/gmccollu/woodpile/internal/winacl"
-	"github.com/gmccollu/woodpile/packaging"
 )
 
 // Firewall rules, named as the MSI names them (packaging/windows/woodpile.wxs).
@@ -53,7 +51,7 @@ const paramsKey = `SYSTEM\CurrentControlSet\Services\` + WindowsName + `\Paramet
 // not a system or home folder, not a reparse point, empty or Woodpile's, and if
 // it already exists, owned by SYSTEM or Administrators. Then it gets the MSI's
 // protected ACL, and everything inside loses any explicit entries (a planted
-// Everyone:F) and inherits it.
+// Everyone:F) and inherits it; links inside are removed (winacl.ResetDataDir).
 func prepareWindowsDataDir(h *host, dir string) error {
 	if err := checkDataDir("windows", dir, homeDirs()); err != nil {
 		return err
@@ -74,24 +72,13 @@ func prepareWindowsDataDir(h *host, dir string) error {
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return err
 	}
-	if err := winacl.SetSDDL(dir, packaging.WindowsDataSDDL, true); err != nil {
+	// The same reset the MSI runs (winacl.ResetDataDir): the protected DACL on dir; owner
+	// Administrators and only inherited entries below it (a planted Everyone:F goes); links,
+	// junctions and extra hard-link names inside are removed, never followed.
+	if err := winacl.ResetDataDir(dir, h.say); err != nil {
 		return fmt.Errorf("set the permissions on %s: %w", dir, err)
 	}
-	return filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if p == dir {
-			return nil
-		}
-		if d.Type()&(fs.ModeSymlink|fs.ModeIrregular) != 0 {
-			return fmt.Errorf("%s is a link or junction; remove it and install again", p)
-		}
-		if err := winacl.ResetToInherited(p); err != nil {
-			return fmt.Errorf("reset the permissions on %s: %w", p, err)
-		}
-		return nil
-	})
+	return nil
 }
 
 func installOS(o InstallOptions) (Result, error) {
