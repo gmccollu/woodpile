@@ -46,8 +46,6 @@ Change this file first if the contract changes.
 `devices` counts exclude hidden devices.
 
 `GET /api/rejected` → `[{"ip": "198.51.100.7", "count_24h": 120, "last_seen": "..."}]` (senders refused by the allowlist)
-```
-```
 
 ## Devices
 
