@@ -1,7 +1,8 @@
 // Unit tests for site/download.js: cd site && npm test
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { classify, detectPlatform, loadRelease, pick, latestApiUrl, releasesUrl, REPO } from '../download.js';
+import { classify, detectPlatform, loadRelease, pick, releasesUrl, RELEASES_FILE, REPO } from '../download.js';
+import { summarize } from '../tools/releases.mjs';
 
 // Every file the release workflow produces (packaging commit 79b5d2f): X is the version,
 // "1.0.0" or a prerelease such as "0.9.0-rc2" (a hyphen, never "~" or ".rc").
@@ -142,36 +143,66 @@ test('userAgentData wins where the browser has it (Windows on ARM reports x64 in
 });
 
 const res = (status, body) => ({ status, ok: status >= 200 && status < 300, json: async () => body });
+const fileWith = (stable, prerelease) => async (url) => {
+  assert.equal(url, RELEASES_FILE); // same origin: never the GitHub API
+  return res(200, { generated_at: '2026-11-11T00:00:00Z', stable, prerelease });
+};
 
-test('the release loads, and is cached for 10 minutes', async () => {
-  const store = new Map();
-  const storage = { getItem: (k) => store.get(k) ?? null, setItem: (k, v) => store.set(k, v) };
-  let calls = 0;
-  const f = async (url) => {
-    calls++;
-    assert.equal(url, latestApiUrl());
-    return res(200, RELEASE);
-  };
-  const a = await loadRelease(f, storage, 1_000);
-  assert.equal(a.ok, true);
-  assert.equal(a.release.tag_name, 'v1.0.0');
-  await loadRelease(f, storage, 1_000 + 9 * 60_000);
-  assert.equal(calls, 1);
-  await loadRelease(f, storage, 1_000 + 11 * 60_000);
-  assert.equal(calls, 2);
+test('releases.json with a stable release: offered as stable (a newer prerelease is ignored)', async () => {
+  const r = await loadRelease(fileWith(releaseFor('1.0.0'), releaseFor('1.1.0-rc1')));
+  assert.equal(r.ok, true);
+  assert.equal(r.kind, 'stable');
+  assert.equal(r.release.tag_name, 'v1.0.0');
 });
 
-test('fallbacks: no release yet, rate limit, network error, server error, no files', async () => {
-  assert.deepEqual(await loadRelease(async () => res(404, { message: 'Not Found' })), { ok: false, reason: 'none' });
-  assert.deepEqual(await loadRelease(async () => res(403, { message: 'API rate limit exceeded' })), { ok: false, reason: 'rate' });
-  assert.deepEqual(await loadRelease(async () => res(429, {})), { ok: false, reason: 'rate' });
-  assert.deepEqual(await loadRelease(async () => { throw new TypeError('Failed to fetch'); }), { ok: false, reason: 'network' });
-  assert.deepEqual(await loadRelease(async () => res(502, {})), { ok: false, reason: 'error' });
+test('releases.json with only a prerelease: offered as a release candidate', async () => {
+  const r = await loadRelease(fileWith(null, releaseFor('0.9.0-rc2')));
+  assert.equal(r.ok, true);
+  assert.equal(r.kind, 'prerelease');
+  assert.equal(r.release.tag_name, 'v0.9.0-rc2');
+  assert.deepEqual(pick(r.release.assets, { os: 'macos', arch: 'arm64' }).best.map((a) => a.name), [
+    'woodpile_0.9.0-rc2_macos_universal.pkg',
+    'woodpile_0.9.0-rc2_darwin_universal.tar.gz',
+  ]);
+});
+
+test('neither, or no usable files, or no file at all: the releases-page fallback', async () => {
+  assert.deepEqual(await loadRelease(fileWith(null, null)), { ok: false, reason: 'none' });
+  assert.deepEqual(await loadRelease(fileWith({ tag_name: 'v1.0.0', assets: [{ name: 'checksums.txt' }] }, null)), { ok: false, reason: 'none' });
+  assert.deepEqual(await loadRelease(async () => res(404, {})), { ok: false, reason: 'missing' });
+  assert.deepEqual(await loadRelease(async () => res(500, {})), { ok: false, reason: 'error' });
+  assert.deepEqual(await loadRelease(async () => { throw new TypeError('Failed to fetch'); }), { ok: false, reason: 'error' });
   assert.deepEqual(await loadRelease(async () => ({ status: 200, ok: true, json: async () => { throw new SyntaxError('bad'); } })), { ok: false, reason: 'error' });
-  assert.deepEqual(await loadRelease(async () => res(200, { tag_name: 'v1.0.0', assets: [{ name: 'checksums.txt' }] })), { ok: false, reason: 'empty' });
+});
+
+test('releases.json is built from the API: latest stable and latest prerelease, no drafts, only the fields used', () => {
+  const api = (tag, published_at, extra = {}) => ({
+    tag_name: tag,
+    name: `Woodpile ${tag}`,
+    html_url: `https://github.com/gmccollu/woodpile/releases/tag/${tag}`,
+    published_at,
+    draft: false,
+    prerelease: tag.includes('-'),
+    body: 'long notes',
+    author: { login: 'someone' },
+    assets: [{ name: `woodpile_${tag.slice(1)}_amd64.deb`, size: 5, browser_download_url: 'https://x/y', digest: 'sha256:ab', uploader: {}, id: 1 }],
+    ...extra,
+  });
+  // --slurp gives an array of pages
+  const pages = [
+    [api('v0.9.0-rc1', '2026-11-01T00:00:00Z'), api('v0.9.0-rc2', '2026-11-08T00:00:00Z')],
+    [api('v1.0.0', '2026-11-20T00:00:00Z', { draft: true, published_at: null }), api('v0.8.0', '2026-10-01T00:00:00Z')],
+  ];
+  const out = summarize(pages, new Date('2026-11-11T00:00:00Z'));
+  assert.equal(out.generated_at, '2026-11-11T00:00:00.000Z');
+  assert.equal(out.stable.tag_name, 'v0.8.0');
+  assert.equal(out.prerelease.tag_name, 'v0.9.0-rc2');
+  assert.deepEqual(Object.keys(out.prerelease).sort(), ['assets', 'html_url', 'name', 'published_at', 'tag_name']);
+  assert.deepEqual(out.prerelease.assets[0], { name: 'woodpile_0.9.0-rc2_amd64.deb', size: 5, browser_download_url: 'https://x/y', digest: 'sha256:ab' });
+  assert.deepEqual(summarize([], new Date(0)), { generated_at: '1970-01-01T00:00:00.000Z', stable: null, prerelease: null });
 });
 
 test('one constant names the repository', () => {
-  assert.equal(latestApiUrl(), `https://api.github.com/repos/${REPO.owner}/${REPO.name}/releases/latest`);
   assert.equal(releasesUrl(), `https://github.com/${REPO.owner}/${REPO.name}/releases/latest`);
+  assert.equal(RELEASES_FILE, './releases.json');
 });

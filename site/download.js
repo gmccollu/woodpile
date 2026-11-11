@@ -13,7 +13,8 @@ export const REPO = { owner: 'gmccollu', name: 'woodpile' };
 
 export const repoUrl = (path = '') => `https://github.com/${REPO.owner}/${REPO.name}${path}`;
 export const releasesUrl = () => repoUrl('/releases/latest');
-export const latestApiUrl = () => `https://api.github.com/repos/${REPO.owner}/${REPO.name}/releases/latest`;
+/** Written at deploy time by pages.yml (site/tools/releases.mjs); same origin, so no API call from the browser. */
+export const RELEASES_FILE = './releases.json';
 
 const ARCH = { amd64: 'x64', x86_64: 'x64', arm64: 'arm64', aarch64: 'arm64', universal: 'universal' };
 const ARCH_LABEL = { x64: 'x64', arm64: 'ARM64', universal: 'Intel and Apple silicon' };
@@ -106,51 +107,34 @@ export function sha256Of(asset) {
   return typeof d === 'string' && d.startsWith('sha256:') ? d.slice(7) : '';
 }
 
-const CACHE_KEY = 'woodpile.site.latest';
-const CACHE_MS = 10 * 60_000;
-
 /**
- * Fetches the latest release from the GitHub API. Never throws:
- *   { ok: true, release } or { ok: false, reason: 'none' | 'rate' | 'network' | 'error' | 'empty' }.
- * "none" is the normal state before 1.0: /releases/latest ignores prereleases.
- * A successful answer is cached for 10 minutes (sessionStorage), to stay well inside the
- * API's 60 requests an hour per address.
+ * Reads releases.json (same origin). Never throws:
+ *   { ok: true, release, kind: 'stable' | 'prerelease' } or { ok: false, reason: 'none' | 'missing' | 'error' }.
+ * A stable release wins; a prerelease is offered only when there's no stable one yet.
  */
-export async function loadRelease(fetchFn, storage = null, now = Date.now()) {
-  try {
-    const hit = storage && JSON.parse(storage.getItem(CACHE_KEY) || 'null');
-    if (hit && now - hit.at < CACHE_MS && hit.release) return { ok: true, release: hit.release };
-  } catch {
-    /* ignore a bad cache entry */
-  }
+export async function loadRelease(fetchFn) {
   let res;
   try {
-    res = await fetchFn(latestApiUrl(), { headers: { Accept: 'application/vnd.github+json' }, credentials: 'omit', referrerPolicy: 'no-referrer' });
-  } catch {
-    return { ok: false, reason: 'network' };
-  }
-  if (res.status === 404) return { ok: false, reason: 'none' };
-  if (res.status === 403 || res.status === 429) return { ok: false, reason: 'rate' };
-  if (!res.ok) return { ok: false, reason: 'error' };
-  let release;
-  try {
-    release = await res.json();
+    res = await fetchFn(RELEASES_FILE, { cache: 'no-cache', credentials: 'omit' });
   } catch {
     return { ok: false, reason: 'error' };
   }
-  if (!release || !Array.isArray(release.assets) || !release.assets.some((a) => classify(a.name))) return { ok: false, reason: 'empty' };
+  if (res.status === 404) return { ok: false, reason: 'missing' };
+  if (!res.ok) return { ok: false, reason: 'error' };
+  let data;
   try {
-    storage?.setItem(CACHE_KEY, JSON.stringify({ at: now, release }));
+    data = await res.json();
   } catch {
-    /* storage full or disabled */
+    return { ok: false, reason: 'error' };
   }
-  return { ok: true, release };
+  const usable = (r) => r && Array.isArray(r.assets) && r.assets.some((a) => classify(a.name));
+  if (usable(data?.stable)) return { ok: true, release: data.stable, kind: 'stable' };
+  if (usable(data?.prerelease)) return { ok: true, release: data.prerelease, kind: 'prerelease' };
+  return { ok: false, reason: 'none' };
 }
 
 export const FALLBACK_TEXT = {
   none: 'No release has been published yet. When it is, the downloads appear here and on the releases page.',
-  rate: "GitHub's API limit for your network was reached, so the list can't be shown here. The releases page has every file.",
-  network: "GitHub couldn't be reached from this page. The releases page has every file.",
-  error: "The release list couldn't be read. The releases page has every file.",
-  empty: "The latest release has no downloadable files yet. The releases page has the details.",
+  missing: "The download list isn't available here right now. The releases page has every file.",
+  error: "The download list couldn't be read. The releases page has every file.",
 };

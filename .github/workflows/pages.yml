@@ -1,10 +1,14 @@
 # Pages: publish the project website (site/) with GitHub Pages.
 #
 # Publishes on every change to site/ on main (Pages enabled 2026-11-11, source: GitHub Actions),
-# and on demand.
+# whenever a release is published, edited or deleted, once a day, and on demand.
 #
-# site/ is static (no build step); only these files are uploaded, not the review
-# screenshots or the test and tool folders.
+# site/ is static (no build step). The download section reads releases.json, which this job
+# writes from the releases API with its own token, into the artifact only (never committed):
+# the page itself makes no requests to other sites, so shared corporate egress addresses
+# can't run into the API's anonymous rate limit.
+#
+# Only the page files are uploaded, not the review screenshots or the test and tool folders.
 #
 # Uses only the official actions/* actions, pinned by commit SHA (version in the comment).
 name: Pages
@@ -13,10 +17,15 @@ on:
   push:
     branches: [main]
     paths: ["site/**", ".github/workflows/pages.yml"]
+  release:
+    types: [published, edited, deleted]
+  schedule:
+    # Daily, so the list never drifts for long (for example after a release asset is replaced).
+    - cron: "17 5 * * *"
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: read # enough to read releases
   pages: write
   id-token: write
 
@@ -47,6 +56,16 @@ jobs:
           cp site/*.html site/*.css site/*.js site/favicon.svg _site/
           cp -R site/img _site/img
           touch _site/.nojekyll
+
+      - name: Write releases.json (latest stable and latest prerelease)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh api --paginate --slurp "repos/$REPO/releases?per_page=100" > "$RUNNER_TEMP/releases-raw.json"
+          node site/tools/releases.mjs < "$RUNNER_TEMP/releases-raw.json" > _site/releases.json
+          node -e 'const r = require("./_site/releases.json");
+            for (const k of ["stable", "prerelease"]) console.log(k + ":", r[k] ? r[k].tag_name + " (" + r[k].assets.length + " files)" : "none");'
           ls -lR _site
 
       - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0

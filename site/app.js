@@ -49,7 +49,7 @@ async function downloads() {
   const sums = document.getElementById('dl-sums');
   if (!status || !primary) return;
 
-  const [platform, result] = await Promise.all([detectPlatform(navigator), loadRelease(fetch.bind(window), window.sessionStorage)]);
+  const [platform, result] = await Promise.all([detectPlatform(navigator), loadRelease(fetch.bind(window))]);
   if (!result.ok) {
     status.textContent = FALLBACK_TEXT[result.reason] || FALLBACK_TEXT.error;
     status.classList.add('notice');
@@ -62,9 +62,27 @@ async function downloads() {
   const rel = result.release;
   const { best, others: rest, checksums } = pick(rel.assets, platform);
   const version = String(rel.tag_name || rel.name || '').replace(/^v/, '');
-  status.textContent = best.length
-    ? `Woodpile ${version} for ${OS_NAME[platform.os]}${platform.os !== 'macos' && platform.arch === 'arm64' ? ' on ARM' : ''}:`
-    : `Woodpile ${version}. It runs on a Windows, macOS or Linux computer; pick the file for the one you'll use:`;
+  const forWhat = best.length
+    ? ` for ${OS_NAME[platform.os]}${platform.os !== 'macos' && platform.arch === 'arm64' ? ' on ARM' : ''}:`
+    : `. It runs on a Windows, macOS or Linux computer; pick the file for the one you'll use:`;
+  if (result.kind === 'prerelease') {
+    // Only a release candidate so far: say so plainly, then offer it the same way.
+    const osPart = best.length ? `${OS_NAME[platform.os]}${platform.os !== 'macos' && platform.arch === 'arm64' ? ' on ARM' : ''}` : '';
+    status.replaceChildren(
+      el('b', '', `Release candidate ${version} is available for testing.`),
+      best.length ? ` Downloads for ${osPart}:` : " It runs on a Windows, macOS or Linux computer; pick the file for the one you'll use:",
+    );
+    const note = el(
+      'p',
+      'notice small',
+      "It's a test build: good for trying Woodpile out and for reporting problems. For an always-on server, the stable release is on its way.",
+    );
+    note.id = 'dl-rc-note';
+    document.getElementById('dl-rc-note')?.remove();
+    status.after(note);
+  } else {
+    status.textContent = `Woodpile ${version}${forWhat}`;
+  }
   primary.replaceChildren(...best.map((a) => assetCard(a, true)));
 
   if (others && body) {

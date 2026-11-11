@@ -1,6 +1,7 @@
 // Review screenshots of the site at desktop and phone widths, light and dark, into
 // site/screenshots-review/ (gitignored). Drives headless Chrome over the DevTools protocol.
-// The GitHub API call is answered from a fake release (or a 404), so nothing goes out.
+// releases.json (written at deploy time) is served by the harness itself: a stable
+// release, only a prerelease, neither, or a 404. Fails on any cross-origin request.
 //
 //   cd site && python3 -m http.server 8765 &
 //   node tools/screenshots.mjs            (BASE=http://127.0.0.1:8765, CHROME=… to override)
@@ -36,7 +37,13 @@ const releaseFor = (X) =>
       digest: name === 'checksums.txt' ? null : `sha256:${hex(i + 1)}`,
     })),
   });
-const RELEASES = { release: releaseFor('1.0.0'), rc: releaseFor('0.9.0-rc2') };
+const file = (stable, prerelease) => JSON.stringify({ generated_at: '2026-11-11T00:00:00Z', stable: stable && JSON.parse(stable), prerelease: prerelease && JSON.parse(prerelease) });
+const FILES = {
+  release: [200, file(releaseFor('1.0.0'), releaseFor('1.1.0-rc1'))],
+  rc: [200, file(null, releaseFor('0.9.0-rc2'))],
+  none: [200, file(null, null)],
+  404: [404, 'Not Found'],
+};
 
 const WIN = { ua: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0 Safari/537.36', meta: { platform: 'Windows', platformVersion: '15.0.0', architecture: 'x86', bitness: '64', model: '', mobile: false } };
 const MAC = { ua: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 15_6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0 Safari/537.36', meta: { platform: 'macOS', platformVersion: '15.6.0', architecture: 'arm', bitness: '64', model: '', mobile: false } };
@@ -49,33 +56,35 @@ const both = (s) => [
 ];
 
 const SHOTS = [
-  ...both({ name: 'home-desktop', path: '/', w: 1400, h: 900, client: WIN, api: 'release',
+  ...both({ name: 'home-desktop', path: '/', w: 1400, h: 900, client: WIN, rel: 'release',
     check: `document.querySelectorAll('#dl-primary .asset.best').length === 2 && document.querySelector('#dl-primary .asset .n').textContent === 'Windows installer (x64)' && document.querySelectorAll('#dl-others-body li').length === 10` }),
-  ...both({ name: 'home-phone', path: '/', w: 390, h: 844, client: PHONE, api: 'release',
+  ...both({ name: 'home-phone', path: '/', w: 390, h: 844, client: PHONE, rel: 'release',
     check: `document.querySelectorAll('#dl-primary .asset').length === 0 && document.getElementById('dl-others').open && document.querySelectorAll('#dl-others-body li').length === 12 && document.documentElement.scrollWidth <= innerWidth
       && [...document.querySelectorAll('#dl-others-body .file')].every((f) => f.getBoundingClientRect().right <= f.closest('li').getBoundingClientRect().right)
       && [...document.querySelectorAll('#dl-others-body .dl')].every((b) => b.textContent === 'Download')` }),
-  { name: 'home-desktop-all-downloads-light', mode: 'light', path: '/#download', w: 1400, h: 900, client: WIN, api: 'release',
+  { name: 'home-desktop-all-downloads-light', mode: 'light', path: '/#download', w: 1400, h: 900, client: WIN, rel: 'release',
     act: `(document.getElementById('dl-others').open = true, true)`,
     check: `[...document.querySelectorAll('#dl-others-body li')].every((li) => li.getBoundingClientRect().height < 80)` },
-  { name: 'home-prerelease-dark', mode: 'dark', path: '/#download', w: 1400, h: 900, client: WIN, api: 'rc',
-    check: `document.querySelector('#dl-status').textContent === 'Woodpile 0.9.0-rc2 for Windows:' && [...document.querySelectorAll('#dl-primary .asset .f')][0].textContent.startsWith('woodpile_0.9.0-rc2_windows_amd64.msi')` },
-  { name: 'home-mac-light', mode: 'light', path: '/#download', w: 1400, h: 900, client: MAC, api: 'release',
+  { name: 'home-prerelease-dark', mode: 'dark', path: '/#download', w: 1400, h: 900, client: WIN, rel: 'rc',
+    check: `document.querySelector('#dl-status').textContent === 'Release candidate 0.9.0-rc2 is available for testing. Downloads for Windows:'
+      && document.querySelector('#dl-status b').textContent === 'Release candidate 0.9.0-rc2 is available for testing.'
+      && !!document.getElementById('dl-rc-note') && [...document.querySelectorAll('#dl-primary .asset .f')][0].textContent.startsWith('woodpile_0.9.0-rc2_windows_amd64.msi')` },
+  { name: 'home-mac-light', mode: 'light', path: '/#download', w: 1400, h: 900, client: MAC, rel: 'release',
     check: `[...document.querySelectorAll('#dl-primary .asset .n')].map((x) => x.textContent).join('|') === 'macOS installer (Intel and Apple silicon)|macOS portable (Intel and Apple silicon)'` },
-  { name: 'home-linux-arm-dark', mode: 'dark', path: '/#download', w: 1400, h: 900, client: LINUX_ARM, api: 'release',
+  { name: 'home-linux-arm-dark', mode: 'dark', path: '/#download', w: 1400, h: 900, client: LINUX_ARM, rel: 'release',
     check: `document.querySelectorAll('#dl-primary .asset.best').length === 3 && document.querySelector('#dl-status').textContent.includes('on ARM')` },
-  { name: 'home-fallback-light', mode: 'light', path: '/#download', w: 1400, h: 900, client: WIN, api: '404',
+  { name: 'home-fallback-light', mode: 'light', path: '/#download', w: 1400, h: 900, client: WIN, rel: 'none',
     check: `document.querySelector('#dl-status').textContent.startsWith('No release has been published yet') && document.querySelector('#dl-primary a.btn').href.endsWith('/releases/latest')` },
-  { name: 'home-ratelimit-dark', mode: 'dark', path: '/#download', w: 390, h: 844, client: PHONE, api: '403',
-    check: `document.querySelector('#dl-status').textContent.includes('limit')` },
-  ...both({ name: 'install-desktop', path: '/install.html', w: 1400, h: 900, client: MAC, api: 'none' }),
-  ...both({ name: 'install-phone', path: '/install.html', w: 390, h: 844, client: PHONE, api: 'none',
+  { name: 'home-missing-dark', mode: 'dark', path: '/#download', w: 390, h: 844, client: PHONE, rel: '404',
+    check: `document.querySelector('#dl-status').textContent.includes("isn't available here") && document.querySelector('#dl-primary a.btn').href.endsWith('/releases/latest')` },
+  ...both({ name: 'install-desktop', path: '/install.html', w: 1400, h: 900, client: MAC, rel: 'release' }),
+  ...both({ name: 'install-phone', path: '/install.html', w: 390, h: 844, client: PHONE, rel: 'release',
     check: `[...document.querySelectorAll('main *')].every((e) => e.closest('pre, table') || e.getBoundingClientRect().right <= innerWidth + 1)` }),
 ];
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const profile = mkdtempSync(join(tmpdir(), 'woodpile-site-'));
-const chrome = spawn(CHROME, ['--headless=new', `--remote-debugging-port=${PORT}`, `--user-data-dir=${profile}`, '--hide-scrollbars', '--no-first-run', 'about:blank'], { stdio: 'ignore' });
+const chrome = spawn(CHROME, ['--headless=new', `--remote-debugging-port=${PORT}`, `--user-data-dir=${profile}`, '--hide-scrollbars', '--no-first-run', '--disable-extensions', 'about:blank'], { stdio: 'ignore' });
 
 async function target() {
   for (let i = 0; i < 50; i++) {
@@ -97,8 +106,9 @@ try {
   let id = 0;
   const pending = new Map();
   const events = [];
-  let api = 'none';
-  let apiCalls = 0;
+  let rel = 'release';
+  let fileCalls = 0;
+  const foreign = [];
   const send = (method, params = {}) =>
     new Promise((res, rej) => {
       const n = ++id;
@@ -112,16 +122,18 @@ try {
       pending.delete(msg.id);
       msg.error ? rej(new Error(msg.error.message)) : res(msg.result);
     } else if (msg.method === 'Fetch.requestPaused') {
-      apiCalls++;
-      const p = msg.params;
-      const bodies = { release: [200, RELEASES.release], rc: [200, RELEASES.rc], 404: [404, '{"message":"Not Found"}'], 403: [403, '{"message":"API rate limit exceeded"}'] };
-      const [code, body] = bodies[api] ?? [500, '{}'];
+      fileCalls++;
+      const [code, body] = FILES[rel];
       send('Fetch.fulfillRequest', {
-        requestId: p.requestId,
+        requestId: msg.params.requestId,
         responseCode: code,
-        responseHeaders: [{ name: 'Content-Type', value: 'application/json' }, { name: 'Access-Control-Allow-Origin', value: '*' }],
+        responseHeaders: [{ name: 'Content-Type', value: 'application/json' }],
         body: Buffer.from(body).toString('base64'),
       });
+    } else if (msg.method === 'Network.requestWillBeSent') {
+      const u = msg.params.request.url;
+      // Only network requests count (a browser extension's own scripts aren't the site's).
+      if (/^(https?|wss?):/.test(u) && new URL(u).origin !== new URL(BASE).origin) foreign.push(u);
     } else if (msg.method) events.push(msg);
   };
   const evaluate = async (expr) => {
@@ -133,13 +145,15 @@ try {
   await send('Page.enable');
   await send('Runtime.enable');
   await send('Log.enable');
-  await send('Fetch.enable', { patterns: [{ urlPattern: 'https://api.github.com/*' }] });
+  await send('Network.enable');
+  await send('Fetch.enable', { patterns: [{ urlPattern: `${BASE}/releases.json*` }] });
   mkdirSync(OUT, { recursive: true });
 
   for (const s of SHOTS) {
     try {
-      api = s.api;
-      apiCalls = 0;
+      rel = s.rel;
+      fileCalls = 0;
+      foreign.length = 0;
       await send('Storage.clearDataForOrigin', { origin: new URL(BASE).origin, storageTypes: 'all' });
       await send('Emulation.setDeviceMetricsOverride', { width: s.w, height: s.h, deviceScaleFactor: 1, mobile: !!s.client.mobile });
       await send('Emulation.setUserAgentOverride', { userAgent: s.client.ua, ...(s.client.meta ? { userAgentMetadata: { brands: [], fullVersionList: [], fullVersion: '140.0', ...s.client.meta } } : {}) });
@@ -164,13 +178,14 @@ try {
         failed++;
         console.error(`  ! ${s.name}: check failed: ${s.check}`);
       }
-      if (s.api !== 'none' && apiCalls !== 1) {
+      if (foreign.length) {
         failed++;
-        console.error(`  ! ${s.name}: expected 1 GitHub API call, saw ${apiCalls}`);
+        console.error(`  ! ${s.name}: ${foreign.length} cross-origin request(s): ${foreign.slice(0, 3).join(', ')}`);
       }
-      if (s.api === 'none' && apiCalls !== 0) {
+      const wantFile = s.path.startsWith('/install') ? 0 : 1;
+      if (fileCalls !== wantFile) {
         failed++;
-        console.error(`  ! ${s.name}: the install page called the GitHub API`);
+        console.error(`  ! ${s.name}: expected ${wantFile} request(s) for releases.json, saw ${fileCalls}`);
       }
       const height = Math.min(await evaluate('Math.ceil(document.documentElement.scrollHeight)'), 6000);
       await send('Emulation.setDeviceMetricsOverride', { width: s.w, height: Math.max(s.h, height), deviceScaleFactor: 1, mobile: !!s.client.mobile });
