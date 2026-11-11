@@ -51,7 +51,7 @@ service, install refuses, so there's never a second one.`, stderr)
 	if code, done := parse(fs, args, stdout); done {
 		return code
 	}
-	res, err := serviceInstall(service.InstallOptions{ConfigPath: *cfg, DataDir: *dataDir,
+	res, err := serviceInstall(service.InstallOptions{ConfigPath: *cfg, DataDir: *dataDir, Version: version,
 		Out: &headed{w: stdout, head: "Installing the Woodpile service:"}})
 	if err != nil {
 		return fail(stderr, "install", err)
