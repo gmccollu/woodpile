@@ -18,6 +18,7 @@ func TestDeviceLimitBanner(t *testing.T) {
 	}{
 		{"cap", "the limit of 500 active devices was reached"},
 		{"rate", "new-device rate limit"},
+		{"prefix", "from one network"},
 	} {
 		bs := buildBanners(nil, store.Usage{DeviceLimited: true, DeviceLimitReason: tc.reason, MaxDevices: 500, RefusedMsgs: 7}, "/data")
 		if len(bs) != 1 || bs[0].Kind != "device_limit" || bs[0].Level != api.LevelWarn || !strings.Contains(bs[0].Text, tc.want) ||

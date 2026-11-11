@@ -1,13 +1,11 @@
 package api
 
 import (
-	"cmp"
 	"fmt"
 	"net/http"
 	"net/url"
 	"slices"
 	"strconv"
-	"strings"
 )
 
 // Device list paging (docs/api.md, GET /api/devices).
@@ -75,69 +73,22 @@ func ParseDeviceQuery(v url.Values) (DeviceQuery, error) {
 	return q, nil
 }
 
-// pageDevices filters, sorts and pages ds (every device, normalized).
-func pageDevices(ds []Device, q DeviceQuery) DevicePage {
-	needle := strings.ToLower(q.Q)
-	out := make([]Device, 0, len(ds))
-	for _, d := range ds {
-		switch {
-		case q.Hidden == "only" && !d.Hidden, q.Hidden == "exclude" && d.Hidden:
-			continue
-		case q.Group != "" && d.Group != q.Group, q.Ungrouped && d.Group != "":
-			continue
-		case needle != "" && !strings.Contains(strings.ToLower(d.ID), needle) && !strings.Contains(strings.ToLower(d.IP), needle) &&
-			!strings.Contains(strings.ToLower(d.Name), needle):
-			continue
-		}
-		out = append(out, d)
-	}
-	byID := func(a, b Device) int { return strings.Compare(a.ID, b.ID) }
-	slices.SortStableFunc(out, func(a, b Device) int {
-		var c int
-		switch q.Sort {
-		case "name":
-			an, bn := a.Name, b.Name // a device without a name sorts by its IP
-			if an == "" {
-				an = a.IP
-			}
-			if bn == "" {
-				bn = b.IP
-			}
-			c = cmp.Compare(strings.ToLower(an), strings.ToLower(bn))
-		case "last_heard":
-			c = b.LastHeard.Compare(a.LastHeard)
-		case "first_seen":
-			c = b.FirstSeen.Compare(a.FirstSeen)
-		default:
-			c = cmp.Compare(b.MsgsPerMin, a.MsgsPerMin)
-		}
-		if c == 0 {
-			c = byID(a, b)
-		}
-		return c
-	})
-	page := DevicePage{Total: len(out), Devices: []Device{}}
-	if q.Offset < len(out) {
-		page.Devices = out[q.Offset:min(q.Offset+q.Limit, len(out))]
-	}
-	return page
-}
-
 func (s *Server) getDevices(w http.ResponseWriter, r *http.Request) {
 	q, err := ParseDeviceQuery(r.URL.Query())
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	ds, err := s.backend.Devices(r.Context())
+	page, err := s.backend.QueryDevices(r.Context(), q)
 	if err != nil {
 		s.backendError(w, r, err)
 		return
 	}
-	for i := range ds {
-		ds[i].normalize()
+	page.Devices = nonNil(page.Devices)
+	for i := range page.Devices {
+		page.Devices[i].normalize()
 	}
-	writeJSON(w, http.StatusOK, pageDevices(ds, q))
+	writeJSON(w, http.StatusOK, page)
 }
 
 // Group is one entry of GET /api/groups.
@@ -147,27 +98,12 @@ type Group struct {
 }
 
 func (s *Server) getGroups(w http.ResponseWriter, r *http.Request) {
-	ds, err := s.backend.Devices(r.Context())
+	gs, err := s.backend.Groups(r.Context())
 	if err != nil {
 		s.backendError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, groupsOf(ds))
-}
-
-// groupsOf counts the non-hidden devices of each group, sorted by name;
-// ungrouped devices aren't listed.
-func groupsOf(ds []Device) []Group {
-	n := map[string]int{}
-	for _, d := range ds {
-		if d.Group != "" && !d.Hidden {
-			n[d.Group]++
-		}
-	}
-	out := make([]Group, 0, len(n))
-	for g, c := range n {
-		out = append(out, Group{Name: g, Devices: c})
-	}
-	slices.SortFunc(out, func(a, b Group) int { return strings.Compare(a.Name, b.Name) })
-	return out
+	// A group whose devices are all hidden isn't listed.
+	gs = slices.DeleteFunc(slices.Clone(gs), func(g Group) bool { return g.Devices == 0 })
+	writeJSON(w, http.StatusOK, nonNil(gs))
 }

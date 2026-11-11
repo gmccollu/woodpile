@@ -28,9 +28,18 @@ type Backend interface {
 	// Rejected serves GET /api/rejected: senders refused by the allowlist.
 	Rejected(ctx context.Context) ([]RejectedSender, error)
 
-	// Devices serves GET /api/devices: every device, hidden ones included; this
-	// package filters, sorts and pages them (DeviceQuery).
+	// Devices returns every device, hidden ones included (for in-process
+	// callers; the API pages through QueryDevices).
 	Devices(ctx context.Context) ([]Device, error)
+
+	// QueryDevices serves GET /api/devices: one page, filtered and sorted as q
+	// says (docs/api.md), with the total matching.
+	QueryDevices(ctx context.Context, q DeviceQuery) (DevicePage, error)
+
+	// Groups serves GET /api/groups: every group with its number of
+	// non-hidden devices, sorted by name (groups with none may be included;
+	// this package leaves them out).
+	Groups(ctx context.Context) ([]Group, error)
 
 	// UpdateDevice serves PATCH /api/devices/{id}. Nil fields in p are left
 	// alone. It returns the updated device, or an error wrapping ErrNotFound for

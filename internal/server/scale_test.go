@@ -57,4 +57,21 @@ func TestDeviceEndpointsAt10000Devices(t *testing.T) {
 	if !r.srv.be.hiddenOf("10.0.0.7") || r.srv.be.groupOf("10.0.0.7") != "lab" {
 		t.Error("caches not refreshed")
 	}
+	// Groups: "lab" holds only a hidden device, so it isn't listed.
+	r.do(t, "PATCH", "/api/devices/10.0.0.8", map[string]any{"group": "HQ"}, nil)
+	r.do(t, "PATCH", "/api/devices/10.0.0.9", map[string]any{"group": "HQ"}, nil)
+	var groups []api.Group
+	timed("GET /api/groups", func() { r.do(t, "GET", "/api/groups", nil, &groups) })
+	if len(groups) != 1 || groups[0] != (api.Group{Name: "HQ", Devices: 2}) {
+		t.Errorf("groups %+v", groups)
+	}
+	// Paging in SQL: filters and the total.
+	timed("GET /api/devices?group=HQ", func() { r.do(t, "GET", "/api/devices?group=HQ", nil, &page) })
+	if page.Total != 2 || len(page.Devices) != 2 {
+		t.Errorf("HQ page %+v", page.Total)
+	}
+	r.do(t, "GET", "/api/devices?hidden=only", nil, &page)
+	if page.Total != 1 || page.Devices[0].ID != "10.0.0.7" {
+		t.Errorf("hidden page %+v", page)
+	}
 }

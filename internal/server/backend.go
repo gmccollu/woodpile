@@ -285,8 +285,11 @@ func buildBanners(ls []listen.ListenerStatus, u store.Usage, dataDir string) []a
 	}
 	if u.DeviceLimited {
 		why := fmt.Sprintf("the limit of %d active devices was reached", u.MaxDevices)
-		if u.DeviceLimitReason == "rate" {
+		switch u.DeviceLimitReason {
+		case "rate":
 			why = "too many new devices appeared at once (the new-device rate limit)"
+		case "prefix":
+			why = "too many new devices appeared from one network (the per-network new-device limit)"
 		}
 		text := fmt.Sprintf("New senders are being refused: %s. Their messages are counted as dropped (%d so far). "+
 			"Raise the limits in Settings → Listeners if these devices are expected.", why, u.RefusedMsgs)

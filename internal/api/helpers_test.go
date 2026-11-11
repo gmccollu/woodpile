@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -14,6 +15,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -530,3 +532,88 @@ func wantError(t *testing.T, r resp, code int, contains string) {
 }
 
 func discardLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
+
+// pageDevices filters, sorts and pages ds (every device, normalized).
+func pageDevices(ds []Device, q DeviceQuery) DevicePage {
+	needle := strings.ToLower(q.Q)
+	out := make([]Device, 0, len(ds))
+	for _, d := range ds {
+		switch {
+		case q.Hidden == "only" && !d.Hidden, q.Hidden == "exclude" && d.Hidden:
+			continue
+		case q.Group != "" && d.Group != q.Group, q.Ungrouped && d.Group != "":
+			continue
+		case needle != "" && !strings.Contains(strings.ToLower(d.ID), needle) && !strings.Contains(strings.ToLower(d.IP), needle) &&
+			!strings.Contains(strings.ToLower(d.Name), needle):
+			continue
+		}
+		out = append(out, d)
+	}
+	byID := func(a, b Device) int { return strings.Compare(a.ID, b.ID) }
+	slices.SortStableFunc(out, func(a, b Device) int {
+		var c int
+		switch q.Sort {
+		case "name":
+			an, bn := a.Name, b.Name // a device without a name sorts by its IP
+			if an == "" {
+				an = a.IP
+			}
+			if bn == "" {
+				bn = b.IP
+			}
+			c = cmp.Compare(strings.ToLower(an), strings.ToLower(bn))
+		case "last_heard":
+			c = b.LastHeard.Compare(a.LastHeard)
+		case "first_seen":
+			c = b.FirstSeen.Compare(a.FirstSeen)
+		default:
+			c = cmp.Compare(b.MsgsPerMin, a.MsgsPerMin)
+		}
+		if c == 0 {
+			c = byID(a, b)
+		}
+		return c
+	})
+	page := DevicePage{Total: len(out), Devices: []Device{}}
+	if q.Offset < len(out) {
+		page.Devices = out[q.Offset:min(q.Offset+q.Limit, len(out))]
+	}
+	return page
+}
+
+// groupsOf counts the non-hidden devices of each group, sorted by name;
+// ungrouped devices aren't listed (groups whose devices are all hidden are,
+// with 0, as the index does).
+func groupsOf(ds []Device) []Group {
+	n := map[string]int{}
+	for _, d := range ds {
+		if d.Group == "" {
+			continue
+		}
+		if _, ok := n[d.Group]; !ok {
+			n[d.Group] = 0
+		}
+		if !d.Hidden {
+			n[d.Group]++
+		}
+	}
+	out := make([]Group, 0, len(n))
+	for g, c := range n {
+		out = append(out, Group{Name: g, Devices: c})
+	}
+	slices.SortFunc(out, func(a, b Group) int { return strings.Compare(a.Name, b.Name) })
+	return out
+}
+
+func (b *fakeBackend) QueryDevices(ctx context.Context, q DeviceQuery) (DevicePage, error) {
+	ds, _ := b.Devices(ctx)
+	for i := range ds {
+		ds[i].normalize()
+	}
+	return pageDevices(ds, q), nil
+}
+
+func (b *fakeBackend) Groups(ctx context.Context) ([]Group, error) {
+	ds, _ := b.Devices(ctx)
+	return groupsOf(ds), nil
+}
