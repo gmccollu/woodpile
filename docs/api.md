@@ -22,6 +22,7 @@ Change this file first if the contract changes.
     {"proto": "tcp", "addr": "0.0.0.0", "port": 514, "ok": false, "error": "bind: address already in use", "holder": "syslogd (pid 312)"}
   ],
   "host_ips": ["10.1.0.50", "fd00::50"],
+  "ui_cert_fingerprint": "",                  // LAN mode: SHA-256 of the UI's certificate, "AB:CD:…" (64 hex pairs); "" on localhost
   "banners": [{"kind": "listener_bind", "level": "error", "text": "TCP 514 is in use by syslogd (pid 312).",
                "action": "retry_listeners"}]   // action: "" | "retry_listeners"; kinds: listener_bind, writes_paused, low_disk
 }

@@ -139,13 +139,16 @@ func Open(cfgPath string, opts Options) (*Server, error) {
 	// the files on disk.
 	t0 := time.Now()
 	if s.store, err = store.Open(store.Options{
-		DataDir:        dataDir,
-		Index:          s.idx,
-		PartBytes:      cfg.Storage.PartBytes,
-		RetentionDays:  cfg.Storage.RetentionDays,
-		RetentionBytes: cfg.Storage.RetentionBytes,
-		Reclaim:        s.exports.Reclaim,
-		Logger:         log,
+		DataDir:             dataDir,
+		Index:               s.idx,
+		PartBytes:           cfg.Storage.PartBytes,
+		RetentionDays:       cfg.Storage.RetentionDays,
+		RetentionBytes:      cfg.Storage.RetentionBytes,
+		MaxDevices:          cfg.Listeners.MaxDevices,
+		NewDeviceBurst:      cfg.Listeners.NewDeviceBurst,
+		NewDevicesPerMinute: float64(cfg.Listeners.NewDevicesPerMinute),
+		Reclaim:             s.exports.Reclaim,
+		Logger:              log,
 	}); err != nil {
 		return nil, fmt.Errorf("open the log store: %w", err)
 	}
@@ -427,7 +430,7 @@ func (s *Server) watchState(started time.Time, stop <-chan struct{}) {
 			StartedAt: started,
 			Config:    s.cfgPath,
 			DataDir:   dataDir,
-			UI:        RunStateUI{Listening: ui.Listening, URL: ui.URL, LANMode: ui.LANMode},
+			UI:        RunStateUI{Listening: ui.Listening, URL: ui.URL, LANMode: ui.LANMode, CertFingerprint: ui.CertFingerprint},
 		}
 		if ui.Err != nil {
 			rs.UI.Error = ui.Err.Error()

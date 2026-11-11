@@ -388,9 +388,10 @@ func watchDevices(ctx context.Context, base string, out io.Writer) {
 	seen := map[string]bool{}
 	first := true
 	for {
-		var ds []api.Device
-		if err := getJSON(client, base+"/api/devices", &ds); err == nil {
-			for _, d := range ds {
+		// Newest first, so a new sender is on the first page however many there are.
+		var page api.DevicePage
+		if err := getJSON(client, base+"/api/devices?sort=first_seen&limit=1000", &page); err == nil {
+			for _, d := range page.Devices {
 				if seen[d.ID] {
 					continue
 				}

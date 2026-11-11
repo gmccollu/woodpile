@@ -120,6 +120,7 @@ func (s *Server) apiRoutes() *http.ServeMux {
 			s.backendError(w, r, err)
 			return
 		}
+		st.UICertFingerprint = s.State().CertFingerprint
 		st.normalize()
 		writeJSON(w, http.StatusOK, st)
 	}})

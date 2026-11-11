@@ -149,6 +149,9 @@ type Status struct {
 	Listeners               []Listener `json:"listeners"`
 	HostIPs                 []string   `json:"host_ips"`
 	Banners                 []Banner   `json:"banners"`
+	// UICertFingerprint is the SHA-256 of the UI's certificate in LAN mode
+	// ("AB:CD:…"), "" in localhost mode. Filled by this package.
+	UICertFingerprint string `json:"ui_cert_fingerprint"`
 }
 
 // Listener is one syslog listener's state.
@@ -248,6 +251,10 @@ type ListenersSettings struct {
 	UDP       ListenerSettings `json:"udp"`
 	TCP       ListenerSettings `json:"tcp"`
 	Allowlist []string         `json:"allowlist"`
+	// New-sender limits (the device_limit banner).
+	MaxDevices          int `json:"max_devices"`
+	NewDeviceBurst      int `json:"new_device_burst"`
+	NewDevicesPerMinute int `json:"new_devices_per_minute"`
 }
 
 // ListenerSettings is one syslog listener's settings.

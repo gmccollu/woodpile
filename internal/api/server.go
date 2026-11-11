@@ -68,6 +68,9 @@ type State struct {
 	URL       string // where to open the UI
 	LANMode   bool   // serving LAN mode right now (not just configured)
 	Err       error  // the last start error, if the server isn't listening or fell back
+	// CertFingerprint is the SHA-256 of the certificate served in LAN mode
+	// (AB:CD:…), "" in localhost mode.
+	CertFingerprint string
 }
 
 // Server is the HTTP server for the API and the UI. Create it with New and run it
@@ -89,9 +92,10 @@ type Server struct {
 	state   State
 	changed chan struct{} // signalled (without blocking) when state changes
 
-	lan          atomic.Bool  // the running server is in LAN mode
-	requireLocal atomic.Bool  // ui.require_login_local
-	port         atomic.Int64 // the running server's port
+	lan          atomic.Bool                // the running server is in LAN mode
+	requireLocal atomic.Bool                // ui.require_login_local
+	certSrc      atomic.Pointer[certSource] // the LAN-mode certificate in use (nil in localhost mode)
+	port         atomic.Int64               // the running server's port
 }
 
 // New prepares a Server. It reads the password hash and the UI files but doesn't
@@ -187,17 +191,25 @@ func (s *Server) setState(st State) {
 	s.mu.Lock()
 	s.state = st
 	s.mu.Unlock()
-	select {
-	case s.changed <- struct{}{}:
-	default:
-	}
+	s.signalChanged()
 }
 
 // State returns what the UI server is doing now.
 func (s *Server) State() State {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.state
+	st := s.state
+	s.mu.Unlock()
+	if cs := s.certSrc.Load(); st.LANMode && cs != nil {
+		st.CertFingerprint = cs.fingerprint()
+	}
+	return st
+}
+
+func (s *Server) signalChanged() {
+	select {
+	case s.changed <- struct{}{}:
+	default:
+	}
 }
 
 // Reconfigure applies a new UI config: the server stops listening, ends open
@@ -362,11 +374,13 @@ func (s *Server) start(cfg UIConfig) (*instance, error) {
 			identity: s.opts.identity,
 			onGenerate: func(reason string) {
 				s.event(LevelInfo, EventKindUI, "Generated a self-signed UI certificate ("+reason+").")
+				s.signalChanged() // the fingerprint in State changed
 			},
 		}
 		if _, err := cs.load(); err != nil { // fail now, not on the first handshake
 			return nil, err
 		}
+		s.certSrc.Store(cs)
 		tlsCfg = cs.tlsConfig()
 		host = s.opts.lanAddr
 	}
@@ -405,6 +419,7 @@ func (s *Server) start(cfg UIConfig) (*instance, error) {
 		}()
 	}
 	if !cfg.LANMode {
+		s.certSrc.Store(nil)
 		inst.url = fmt.Sprintf("http://localhost:%d/", port)
 		serve(newServer(s.handler), ln)
 		return inst, nil

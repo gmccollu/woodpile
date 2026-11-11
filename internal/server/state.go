@@ -29,6 +29,8 @@ type RunStateUI struct {
 	URL       string `json:"url"`
 	LANMode   bool   `json:"lan_mode"`
 	Error     string `json:"error,omitempty"`
+	// CertFingerprint is the SHA-256 of the LAN-mode certificate (AB:CD:…).
+	CertFingerprint string `json:"cert_fingerprint,omitempty"`
 }
 
 func writeState(dataDir string, rs RunState) error {

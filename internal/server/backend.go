@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -152,7 +153,7 @@ func (b *backend) serviceEvent(level index.Level, kind index.Kind, text string) 
 func (b *backend) groupOf(id string) string { return (*b.groups.Load())[id] }
 
 func (b *backend) refreshGroups(ctx context.Context) error {
-	ds, err := b.idx.ListDevices(ctx)
+	ds, err := b.listDevices(ctx)
 	if err != nil {
 		return err
 	}
@@ -219,7 +220,7 @@ func (b *backend) firstMessageAt(ctx context.Context) (*time.Time, error) {
 		t := time.UnixMilli(ms).UTC()
 		return &t, nil
 	}
-	ds, err := b.idx.ListDevices(ctx)
+	ds, err := b.listDevices(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -278,6 +279,15 @@ func buildBanners(ls []listen.ListenerStatus, u store.Usage, dataDir string) []a
 		text := fmt.Sprintf("Disk space is low: %s free on the disk holding %s. Woodpile is deleting the oldest logs to keep %s free.",
 			formatBytes(int64(u.FreeBytes)), dataDir, formatBytes(int64(u.ReserveBytes)))
 		out = append(out, api.Banner{Kind: "low_disk", Level: api.LevelWarn, Text: text})
+	}
+	if u.DeviceLimited {
+		why := fmt.Sprintf("the limit of %d active devices was reached", u.MaxDevices)
+		if u.DeviceLimitReason == "rate" {
+			why = "too many new devices appeared at once (the new-device rate limit)"
+		}
+		text := fmt.Sprintf("New senders are being refused: %s. Their messages are counted as dropped (%d so far). "+
+			"Raise the limits in Settings → Listeners if these devices are expected.", why, u.RefusedMsgs)
+		out = append(out, api.Banner{Kind: "device_limit", Level: api.LevelWarn, Text: text})
 	}
 	return out
 }
@@ -397,8 +407,15 @@ func deviceStatus(lastHeard, now time.Time, q config.Quiet) string {
 	return statusOffline
 }
 
-func (b *backend) Devices(ctx context.Context) ([]api.Device, error) {
+// listDevices is the index's device list without index.RefusedDeviceID (the
+// stats bucket of refused new senders, not a device).
+func (b *backend) listDevices(ctx context.Context) ([]index.Device, error) {
 	ds, err := b.idx.ListDevices(ctx)
+	return slices.DeleteFunc(ds, func(d index.Device) bool { return d.ID == index.RefusedDeviceID }), err
+}
+
+func (b *backend) Devices(ctx context.Context) ([]api.Device, error) {
+	ds, err := b.listDevices(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -453,6 +470,7 @@ type rates struct {
 func (b *backend) deviceRates(ctx context.Context, now time.Time) (rates, error) {
 	from := now.UTC().Truncate(time.Minute).Add(-time.Minute)
 	counts, err := b.idx.DeviceCounts(ctx, from, time.Time{})
+	delete(counts, index.RefusedDeviceID)
 	return rates{from: from, counts: counts}, err
 }
 
@@ -545,11 +563,15 @@ func (b *backend) SaveSettings(ctx context.Context, in api.Settings) (api.Settin
 			return api.Settings{}, fmt.Errorf("apply the listener settings: %w", err)
 		}
 	}
-	if cur.Storage != next.Storage {
+	if cur.Storage != next.Storage || cur.Listeners.MaxDevices != next.Listeners.MaxDevices ||
+		cur.Listeners.NewDeviceBurst != next.Listeners.NewDeviceBurst || cur.Listeners.NewDevicesPerMinute != next.Listeners.NewDevicesPerMinute {
 		b.store.SetLimits(store.Limits{
-			RetentionDays:  next.Storage.RetentionDays,
-			RetentionBytes: next.Storage.RetentionBytes,
-			PartBytes:      next.Storage.PartBytes,
+			RetentionDays:       next.Storage.RetentionDays,
+			RetentionBytes:      next.Storage.RetentionBytes,
+			PartBytes:           next.Storage.PartBytes,
+			MaxDevices:          next.Listeners.MaxDevices,
+			NewDeviceBurst:      next.Listeners.NewDeviceBurst,
+			NewDevicesPerMinute: float64(next.Listeners.NewDevicesPerMinute),
 		})
 	}
 	b.log.Info("settings saved", "path", b.cfgPath)
