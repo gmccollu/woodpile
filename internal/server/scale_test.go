@@ -11,9 +11,14 @@ import (
 	"github.com/gmccollu/woodpile/internal/index"
 )
 
+// scaleLimit is the most any device endpoint may take at 10,000 devices on a
+// small CI runner (without -race).
+const scaleLimit = 500 * time.Millisecond
+
 // TestDeviceEndpointsAt10000Devices: the device list, the dashboard's stats and
 // a PATCH (which refreshes the live tail's group and hidden caches) stay fast
-// with the store's device cap of 10,000.
+// with the store's device cap of 10,000. Results are checked always; the
+// timing only without -race.
 func TestDeviceEndpointsAt10000Devices(t *testing.T) {
 	if testing.Short() {
 		t.Skip("-short")
@@ -45,8 +50,11 @@ func TestDeviceEndpointsAt10000Devices(t *testing.T) {
 		f()
 		d := time.Since(t0)
 		t.Logf("%s: %v", what, d.Round(time.Millisecond))
-		if d > 2*time.Second {
-			t.Errorf("%s took %v", what, d)
+		// Timing only without -race: instrumented SQLite on a CI runner is 25x
+		// slower and says nothing about real hardware. CI runs this test without
+		// -race too (ci.yml, "Scale test without -race").
+		if !raceEnabled && d > scaleLimit {
+			t.Errorf("%s took %v (limit %v)", what, d, scaleLimit)
 		}
 	}
 	var page api.DevicePage
