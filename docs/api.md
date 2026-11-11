@@ -49,8 +49,10 @@ Change this file first if the contract changes.
 senders). `reason` is the latest refusal's reason: `allowlist` or `per_source` (over the TCP connections-per-source limit).
 Sorted by `count_24h` descending, at most 200 entries. The server tracks at most 10,000 refused IPs and evicts the
 least recently seen.
-Banner kind `device_limit` (warn): new senders are being refused because the device cap (`max_devices`, default
-10,000) or the new-device rate (burst 1,000, then 100 per minute) was reached; their messages count as dropped.
+Banner kind `device_limit` (warn): new senders are being refused because the active-device cap
+(`listeners.max_devices`, default 10,000 devices that sent in the last 10 minutes) or the new-device rate
+(`listeners.new_device_burst` 5,000, then `listeners.new_devices_per_minute` 200) was reached; their messages count
+as dropped. Senders that already have logs on disk are exempt from the rate. All three are editable in Settings.
 `banners` in `/api/status` are sent in priority order: errors first, then warnings.
 
 ## Devices
@@ -170,7 +172,8 @@ normalising (dedupe, sort). `listeners.allowlist` entries may be a bare IP or a 
 {
   "listeners": {"udp": {"enabled": true, "addr": "0.0.0.0", "port": 514},
                 "tcp": {"enabled": true, "addr": "0.0.0.0", "port": 514},
-                "allowlist": []},
+                "allowlist": [],
+                "max_devices": 10000, "new_device_burst": 5000, "new_devices_per_minute": 200},
   "storage": {"data_dir": "...", "retention_days": 30, "retention_bytes": 21474836480, "part_bytes": 104857600},
   "ui": {"lan_mode": false, "port": 8514, "cert_file": "", "key_file": "", "require_login_local": false},
   "quiet": {"quiet_after_seconds": 300, "offline_after_seconds": 3600}
