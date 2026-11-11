@@ -517,7 +517,10 @@ func TestBusyTableEvictsBiggestSource(t *testing.T) {
 	dial(v4, 3)
 	dial(v6, 4)
 	fresh := dial(v6, 5) // the table was full: 127.0.0.1's oldest goes
-	if !closedByServer(old, 5*time.Second) {
+	// The eviction happened when the listener accepted it; the bounds are only
+	// generous for slow runners.
+	waitFor(t, "the eviction", func() bool { return s.Status().TCPConnsEvicted == 1 })
+	if !closedByServer(old, 30*time.Second) {
 		t.Fatal("the oldest connection of the biggest source wasn't evicted")
 	}
 	if closedByServer(fresh, 50*time.Millisecond) {
@@ -532,8 +535,32 @@ func TestBusyTableEvictsBiggestSource(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer extra.Close()
-	if !closedByServer(extra, 5*time.Second) {
+	if !closedByServer(extra, 30*time.Second) {
 		t.Error("newcomer from a source holding as many as any other was accepted")
 	}
 	waitFor(t, "the refusal", func() bool { return s.Status().TCPConnsRefused == 1 })
+}
+
+// Accept times can tie (Windows' clock is coarse); "oldest" is the accept order.
+func TestEvictOldestOnClockTie(t *testing.T) {
+	tl := trackTable(4, 32, 256)
+	near := func(ip string) (*tconn, net.Conn) {
+		a, b := net.Pipe()
+		tc := newTconn(a, netip.MustParseAddr(ip), pipeEpoch) // the same instant for all
+		if !tl.track(tc) {
+			t.Fatalf("%s refused", ip)
+		}
+		return tc, b
+	}
+	for round := 0; round < 20; round++ { // map order is random: try it many times
+		tl = trackTable(4, 32, 256)
+		_, first := near("192.0.2.1")
+		near("192.0.2.1")
+		near("192.0.2.1")
+		near("198.51.100.1")
+		near("198.51.100.2")
+		if !pipeClosed(first) {
+			t.Fatalf("round %d: evicted a newer connection, not the first accepted", round)
+		}
+	}
 }

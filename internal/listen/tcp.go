@@ -38,6 +38,7 @@ type tcpListener struct {
 	conns    map[*tconn]struct{}
 	perAddr  map[netip.Addr]int   // open connections per sender address
 	perGroup map[netip.Prefix]int // per source group: the IPv4 address, or the IPv6 /64
+	seq      uint64               // last accept number handed out
 	closing  bool
 	wg       sync.WaitGroup // the accept loop and every connection
 }
@@ -49,6 +50,7 @@ type tconn struct {
 	addr    netip.Addr   // from without a zone, for the per-address count
 	group   netip.Prefix // sourceKey(from)
 	connAt  time.Time
+	seq     uint64       // accept order; "oldest" goes by this, not connAt (Windows' clock can tie)
 	last    atomic.Int64 // UnixNano of the connect or the last complete message
 	cut     atomic.Bool  // we closed it (eviction or shutdown): a partial message is truncated
 	blocked atomic.Bool  // closed because its sender was blocked: nothing more is stored
@@ -178,6 +180,8 @@ func (t *tcpListener) track(tc *tconn) bool {
 				"evicted", victim.from.String(), "why", why)
 		}
 	}
+	t.seq++
+	tc.seq = t.seq
 	t.conns[tc] = struct{}{}
 	t.perAddr[tc.addr]++
 	t.perGroup[tc.group]++
@@ -202,7 +206,7 @@ func (t *tcpListener) oldestOfBiggest(newcomer netip.Prefix) *tconn {
 	}
 	var oldest *tconn
 	for c := range t.conns {
-		if c.group == big && (oldest == nil || c.connAt.Before(oldest.connAt)) {
+		if c.group == big && (oldest == nil || c.seq < oldest.seq) {
 			oldest = c
 		}
 	}
@@ -215,7 +219,7 @@ func (t *tcpListener) longestIdle(now time.Time) *tconn {
 	var best *tconn
 	var bestAt int64
 	for c := range t.conns {
-		if at := c.last.Load(); best == nil || at < bestAt {
+		if at := c.last.Load(); best == nil || at < bestAt || (at == bestAt && c.seq < best.seq) {
 			best, bestAt = c, at
 		}
 	}
