@@ -108,6 +108,50 @@ normalising (dedupe, sort). `listeners.allowlist` entries may be a bare IP or a 
 
 `GET /api/storage/history` → `[{"time", "file", "device_id", "bytes", "reason": "age|cap|low_disk"}]`
 
+## Auth
+
+Two modes, set by `ui.lan_mode` in `/api/settings`:
+- **Localhost (default):** plain HTTP on `127.0.0.1:<ui.port>`, no login. The server still refuses a `Host` header
+  other than `localhost`, `127.0.0.1` or `[::1]` with the UI port (`403`), so a web page can't reach it by
+  rebinding its own name to 127.0.0.1.
+- **LAN:** HTTPS on every interface, with a password. Turning it on needs a password first: a `PUT /api/settings`
+  with `"lan_mode": true` and no password set gets `400 {"errors": {"ui.lan_mode": "..."}}`. The certificate is
+  self-signed and generated on the machine (or one the user configured). Plain `http://` on the same port gets a
+  `301` to `https://`. Changing `lan_mode` or `port` restarts the UI server just after the PUT's response, which
+  also closes open live tails; the UI has to reload at the new address (`https://` after turning LAN mode on,
+  `http://localhost:<port>/` after turning it off).
+
+In both modes, a state-changing request (anything but GET/HEAD/OPTIONS) from another origin is refused with `403`
+(`Sec-Fetch-Site` or `Origin` vs `Host`). In LAN mode every `/api/` route needs a session (`401 {"error": ...}`
+otherwise) except `/api/session`, `/api/login`, `/api/logout` and `GET /healthz`; the static UI files are public.
+
+`GET /api/session`
+```json
+{"mode": "lan", "auth_required": true, "authenticated": true, "password_set": true,
+ "csrf_token": "opaque"}                    // "" when not logged in, and always "" in localhost mode
+```
+In localhost mode: `{"mode": "localhost", "auth_required": false, "authenticated": true, "password_set": false, "csrf_token": ""}`.
+The UI calls this first: in LAN mode with `authenticated: false` it shows the login form.
+
+`POST /api/login` body `{"password": "..."}` → `200` with the session object above, and a session cookie
+(`__Host-woodpile_session`, `Secure; HttpOnly; SameSite=Strict; Path=/`). `401` for a wrong password, `400` in
+localhost mode. Each IP (each /64 for IPv6) gets 5 quick attempts, then one a second (`429`, `Retry-After`), and
+10 failures within 15 minutes lock it out for 15 minutes (`429` with `Retry-After`, even for the right password).
+
+`POST /api/logout` → `204`, ends the session and clears the cookie.
+
+`PUT /api/password` body `{"current": "...", "new": "..."}` → `204`. `new` is 8–1024 bytes; a bad one gets
+`400 {"error": ..., "errors": {"new": "..."}}`. In localhost mode `current` is ignored (whoever can reach the UI there
+is trusted, as for every other setting). In LAN mode it needs a session and `current` (`403` if wrong; it counts
+toward the lockout), and it ends every other session. The password is stored only as an Argon2id hash in
+`<data>/ui-password.hash` (mode 0600), never in the TOML.
+
+**CSRF:** in LAN mode every state-changing request with a session must send the session's `csrf_token` in an
+`X-CSRF-Token` header, or it gets `403`. Login is exempt (it has no session yet). `EventSource` needs no token: the
+live tail is a GET.
+
+`GET /healthz` → `{"ok": true}` (no login in either mode).
+
 ## Errors
 
 Any non-2xx returns `{"error": "human-readable message"}`.
