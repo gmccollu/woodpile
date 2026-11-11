@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -455,7 +456,23 @@ func safeHolder(f func(string, int) string, proto string, port int) (h string) {
 
 // osError returns the OS part of a listen error ("bind: address already in use"),
 // without Go's "listen udp 0.0.0.0:514: " prefix.
+//
+// The common failures read the same on every OS, matched on the errno (see
+// commonErrText): "bind: address already in use", "bind: permission denied" (on
+// Windows "permission denied or port reserved by the system") and "bind: address
+// not available". Anything else keeps the OS text.
 func osError(err error) string {
+	call := ""
+	var se *os.SyscallError
+	if errors.As(err, &se) {
+		call = se.Syscall
+	}
+	if text := commonErrText(err); text != "" {
+		if call != "" {
+			return call + ": " + text
+		}
+		return text
+	}
 	var op *net.OpError
 	if errors.As(err, &op) && op.Err != nil {
 		return op.Err.Error()

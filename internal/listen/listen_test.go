@@ -416,8 +416,7 @@ func TestBindClashAndRetry(t *testing.T) {
 	}
 	for i, proto := range []string{"udp", "tcp"} {
 		l := st.Listeners[i]
-		if l.Proto != proto || l.OK || !strings.Contains(l.Error, "address already in use") ||
-			strings.Contains(l.Error, "listen ") || l.Holder != "otherd (pid 4242)" || l.Addr != "127.0.0.1" {
+		if l.Proto != proto || l.OK || l.Error != "bind: address already in use" || l.Holder != "otherd (pid 4242)" || l.Addr != "127.0.0.1" {
 			t.Errorf("%s status %+v", proto, l)
 		}
 	}

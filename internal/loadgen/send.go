@@ -16,7 +16,6 @@ import (
 	"net/netip"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -288,9 +287,3 @@ func sendTCP(ctx context.Context, o *SendOptions, res *SendResult) error {
 	}
 	return nil
 }
-
-func isNoBufs(err error) bool {
-	return errors.Is(err, syscall.ENOBUFS) || errors.Is(err, syscall.EAGAIN)
-}
-
-func isConnRefused(err error) bool { return errors.Is(err, syscall.ECONNREFUSED) }
