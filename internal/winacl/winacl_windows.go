@@ -46,7 +46,12 @@ func SetSDDL(path, sddl string, owner bool) error {
 // ResetToInherited removes path's explicit entries and makes it inherit its
 // parent's, with owner Administrators.
 func ResetToInherited(path string) error {
-	empty, err := windows.ACLFromEntries(nil, nil)
+	// An empty DACL from SDDL (ACLFromEntries with no entries dereferences them).
+	sd, err := windows.SecurityDescriptorFromString("D:")
+	if err != nil {
+		return err
+	}
+	empty, _, err := sd.DACL()
 	if err != nil {
 		return err
 	}
