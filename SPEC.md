@@ -48,6 +48,10 @@ proposal and can change.
 | Hidden devices | Stay hidden if they send again; the Devices page's hidden list shows their last-heard time |
 | Stats | Per-minute buckets for 24 h, hourly buckets for 7 days |
 | File modes | Log files 0640, directories 0750 |
+| UDP buffer on macOS | macOS refuses (rather than caps) requests above `kern.ipc.maxsockbuf` (8 MiB), so the listener steps down to the largest size accepted. 10k msg/s passes with 8 MiB |
+| Rejected/drop counters | Hourly buckets; "24 h" is the current hour plus the 23 before it. A refused TCP connection counts once |
+| Live-tail sampling | Token bucket, 50 lines/s per subscriber; `sampled.rate` is that subscriber's matching rate |
+| Measured (M1, Apple M4 Pro) | 10k msg/s for 30 s over UDP, TCP-LF and TCP-octet: 300,000 sent, 300,000 on disk, 0 missing each. Zero loss up to 60k msg/s (UDP) and 100k (TCP) |
 
 ## 3. Architecture
 
