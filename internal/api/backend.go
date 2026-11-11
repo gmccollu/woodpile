@@ -231,8 +231,10 @@ type StorageSettings struct {
 
 // UISettings holds the web UI settings.
 type UISettings struct {
-	LANMode bool `json:"lan_mode"`
-	Port    int  `json:"port"`
+	LANMode  bool   `json:"lan_mode"`
+	Port     int    `json:"port"`
+	CertFile string `json:"cert_file"` // empty: use the self-signed certificate
+	KeyFile  string `json:"key_file"`
 }
 
 // QuietSettings holds the device status thresholds.

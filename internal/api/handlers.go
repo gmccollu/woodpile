@@ -292,9 +292,11 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 	// Apply a UI change after this response: the restart waits for this
 	// request to finish before it closes the listener.
 	cur := s.currentUI()
-	if saved.UI.LANMode != cur.LANMode || saved.UI.Port != cur.Port {
+	if saved.UI.LANMode != cur.LANMode || saved.UI.Port != cur.Port ||
+		saved.UI.CertFile != cur.CertFile || saved.UI.KeyFile != cur.KeyFile {
 		next := cur
 		next.LANMode, next.Port = saved.UI.LANMode, saved.UI.Port
+		next.CertFile, next.KeyFile = saved.UI.CertFile, saved.UI.KeyFile
 		s.log.Info("api: UI settings changed; restarting the UI server", "lan_mode", next.LANMode, "port", next.Port)
 		s.Reconfigure(next)
 	}
