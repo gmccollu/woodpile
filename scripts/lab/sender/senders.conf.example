@@ -1,0 +1,4 @@
+# /opt/woodpile-lab/senders.conf (written by `wl setup-sender` from lab.env)
+PARENT=eth0                 # the sender host's NIC on the target subnet
+PREFIX=24                   # prefix length of that subnet
+IPS="192.0.2.110 192.0.2.111 192.0.2.112 192.0.2.113 192.0.2.114 192.0.2.115 192.0.2.116 192.0.2.117"

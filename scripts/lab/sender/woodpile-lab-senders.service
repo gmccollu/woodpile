@@ -1,0 +1,13 @@
+[Unit]
+Description=Woodpile lab sender namespaces (ipvlan legs, one source IP each)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/woodpile-lab/bin/wl-netns up
+ExecStop=/opt/woodpile-lab/bin/wl-netns down
+
+[Install]
+WantedBy=multi-user.target

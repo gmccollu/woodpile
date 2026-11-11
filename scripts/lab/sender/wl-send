@@ -1,0 +1,143 @@
+#!/bin/bash
+# wl-send: send one numbered `woodpile send` run from several sender namespaces at once.
+# The count and the rate are split evenly over the chosen namespaces, each with its own
+# contiguous block of sequence numbers, so `verifyseq -n COUNT` checks the whole run.
+#
+#   wl-send --host IP --count N --run ID [--rate R] [--proto udp|tcp] [--framing lf|octet]
+#           [--port 514] [--first-seq S] [--size B] [--ns 0-7] [--out DIR] [--timeout SECS]
+#           [--detach UNIT]
+#   wl-send --unit-status UNIT | --unit-stop UNIT
+#
+# --rate is the total msg/s (0: as fast as possible). --timeout bounds each sender (for the
+# firewall-closed checks, where a TCP connect would otherwise wait minutes). --detach runs
+# the same send as a transient systemd unit (survives the ssh session); its results go to
+# --out. The last line is machine-readable:
+#   WLSEND run=ID want=N sent=X senders=K elapsed_s=T rate=R failed=F out=DIR
+# Exit status 0 when every sender sent its whole share. Run as root (ip netns exec).
+set -euo pipefail
+LAB=${WL_HOME:-/opt/woodpile-lab}
+WP=$LAB/bin/woodpile
+CONF=${WL_CONF:-$LAB/senders.conf}
+DRY=${WL_DRYRUN:-}
+
+host="" port=514 proto=udp framing=lf count=0 rate=0 run="" first=0 size=160 nsspec="" out="" tmo="" detach=""
+orig=("$@")
+while [ $# -gt 0 ]; do
+	case "$1" in
+	--host) host=$2; shift 2 ;;
+	--port) port=$2; shift 2 ;;
+	--proto) proto=$2; shift 2 ;;
+	--framing) framing=$2; shift 2 ;;
+	--count) count=$2; shift 2 ;;
+	--rate) rate=$2; shift 2 ;;
+	--run) run=$2; shift 2 ;;
+	--first-seq) first=$2; shift 2 ;;
+	--size) size=$2; shift 2 ;;
+	--ns) nsspec=$2; shift 2 ;;
+	--out) out=$2; shift 2 ;;
+	--timeout) tmo=$2; shift 2 ;;
+	--detach) detach=$2; shift 2 ;;
+	--unit-status)
+		systemctl status --no-pager "$2" 2>&1 | head -5 || true
+		exit 0 ;;
+	--unit-stop)
+		systemctl stop "$2"; exit 0 ;;
+	*) echo "wl-send: unknown option $1" >&2; exit 2 ;;
+	esac
+done
+[ -n "$host" ] && [ -n "$run" ] && [ "$count" -gt 0 ] || { echo "wl-send: --host, --run and --count are required" >&2; exit 2; }
+case "$proto" in udp | tcp) ;; *) echo "wl-send: --proto udp|tcp" >&2; exit 2 ;; esac
+[[ "$run" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "wl-send: bad --run" >&2; exit 2; }
+[ -z "$DRY" ] && [ -z "${WL_TEST_NO_NETNS:-}" ] && [ "$(id -u)" != 0 ] && { echo "wl-send: run as root" >&2; exit 2; }
+
+# shellcheck source=/dev/null
+[ -f "$CONF" ] && . "$CONF"
+nall=$(($(echo ${IPS:-} | wc -w)))
+[ -n "$DRY" ] && [ "$nall" = 0 ] && nall=8
+[ "$nall" -gt 0 ] || { echo "wl-send: no IPS in $CONF" >&2; exit 2; }
+[ -n "$nsspec" ] || nsspec=0-$((nall - 1))
+list=()
+IFS=, read -r -a parts <<<"$nsspec"
+for p in "${parts[@]}"; do
+	if [[ "$p" =~ ^([0-9]+)-([0-9]+)$ ]]; then
+		for ((k = BASH_REMATCH[1]; k <= BASH_REMATCH[2]; k++)); do list+=("$k"); done
+	elif [[ "$p" =~ ^[0-9]+$ ]]; then list+=("$p")
+	else echo "wl-send: bad --ns $nsspec" >&2; exit 2; fi
+done
+for k in "${list[@]}"; do [ "$k" -lt "$nall" ] || { echo "wl-send: namespace $k doesn't exist ($nall configured)" >&2; exit 2; }; done
+n=${#list[@]}
+[ "$count" -ge "$n" ] || { echo "wl-send: --count $count is smaller than the $n senders" >&2; exit 2; }
+
+[ -n "$out" ] || out=/var/tmp/woodpile-lab/send-$run-$(date -u +%Y%m%dT%H%M%SZ)
+mkdir -p "$out"
+
+if [ -n "$detach" ]; then
+	[[ "$detach" =~ ^woodpile-lab-[A-Za-z0-9_-]+$ ]] || { echo "wl-send: --detach UNIT must be woodpile-lab-*" >&2; exit 2; }
+	args=()
+	skip=0
+	for a in "${orig[@]}"; do
+		if [ "$skip" = 1 ]; then skip=0; continue; fi
+		case "$a" in --detach | --out) skip=1; continue ;; esac
+		args+=("$a")
+	done
+	if [ -n "$DRY" ]; then echo "DRY systemd-run --unit=$detach --collect $LAB/bin/wl-send ${args[*]} --out $out"; exit 0; fi
+	systemd-run --unit="$detach" --collect --quiet --property=KillMode=control-group "$LAB/bin/wl-send" "${args[@]}" --out "$out"
+	echo "WLSEND detached unit=$detach out=$out"
+	exit 0
+fi
+
+base=$((count / n)) extra=$((count % n))
+seq=$first
+pids=()
+for ((j = 0; j < n; j++)); do
+	k=${list[$j]}
+	c=$base
+	[ "$j" -lt "$extra" ] && c=$((c + 1))
+	r=0
+	[ "$rate" != 0 ] && r=$(python3 -c "print(round($rate / $n, 3))")
+	cmd=("$WP" send --host "$host" --port "$port" --proto "$proto" --framing "$framing" --count "$c" --rate "$r"
+		--run "$run" --first-seq "$seq" --size "$size" --hostname "wl-sender-$k")
+	echo "$k $c $seq" >>"$out/plan"
+	if [ -n "$DRY" ]; then
+		echo "DRY ns=wps$k ${cmd[*]}"
+	else
+		nsx=(ip netns exec "wps$k")
+		[ -n "${WL_TEST_NO_NETNS:-}" ] && nsx=() # tests only: run without a namespace
+		if [ -n "$tmo" ]; then
+			${nsx[@]+"${nsx[@]}"} timeout "$tmo" "${cmd[@]}" >"$out/sender-$k.out" 2>&1 &
+		else
+			${nsx[@]+"${nsx[@]}"} "${cmd[@]}" >"$out/sender-$k.out" 2>&1 &
+		fi
+		pids+=($!)
+	fi
+	seq=$((seq + c))
+done
+[ -n "$DRY" ] && exit 0
+failed=0
+for p in "${pids[@]}"; do wait "$p" || failed=$((failed + 1)); done
+python3 - "$out" "$run" "$count" "$failed" <<'PY' | tee "$out/summary"
+import re, sys, glob, os
+out, run, want, failed = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
+def secs(d):
+    t = 0.0
+    for v, u in re.findall(r"([0-9.]+)(h|ms|µs|us|ns|m|s)", d):
+        t += float(v) * {"h": 3600, "m": 60, "s": 1, "ms": 1e-3, "µs": 1e-6, "us": 1e-6, "ns": 1e-9}[u]
+    return t
+plan = {l.split()[0]: int(l.split()[1]) for l in open(os.path.join(out, "plan"))}
+sent = 0; el = 0.0; short = 0
+for k, c in sorted(plan.items(), key=lambda x: int(x[0])):
+    try:
+        txt = open(os.path.join(out, f"sender-{k}.out"), errors="replace").read()
+    except OSError:
+        txt = ""
+    m = re.search(r"Sent (\d+) messages? .*? in (\S+) \(", txt) or re.search(r"Sent (\d+) message", txt)
+    s = int(m.group(1)) if m else 0
+    e = secs(m.group(2)) if m and m.lastindex and m.lastindex >= 2 else 0.0
+    sent += s; el = max(el, e)
+    if s != c:
+        short += 1
+        print(f"sender {k}: sent {s} of {c}: {txt.strip().splitlines()[-1] if txt.strip() else 'no output'}")
+rate = sent / el if el else 0
+print(f"WLSEND run={run} want={want} sent={sent} senders={len(plan)} elapsed_s={el:.3f} rate={rate:.0f} failed={max(failed, short)} out={out}")
+PY
+[ "$failed" = 0 ] && grep -q " failed=0 " "$out/summary"

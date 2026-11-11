@@ -1,0 +1,532 @@
+#!/bin/bash
+# wl: the Woodpile lab driver (Phase 2: release-candidate install and network tests on real VMs).
+# Every host, address and login comes from scripts/lab/lab.env (gitignored; see lab.env.example).
+# The driver reaches the sender host and the VMs only through ssh host aliases in LAB_SSH_CONFIG
+# (typically ProxyJump through the sender), so nothing here knows a hostname or an IP.
+#
+#   wl fetch TAG                 download TAG's release assets (gh, on a machine with GitHub access) and check them
+#   wl tools                     build verifyseq (linux, windows) and the linux sender binary into LAB_ASSETS/tools
+#   wl setup-sender              install the sender tools and the sender namespaces (one source IP each)
+#   wl senders [TARGET]          sender namespace status (and ping TARGET's address from each)
+#   wl stage TARGET              copy the VM-side script, verifyseq, the package and the portable binary
+#   wl install TARGET            stage + install the package + service checks
+#   wl check TARGET              service as its account; the host firewall with a closed/open control;
+#                                every sender IP reaches UDP and TCP 514 and shows up as its own device
+#   wl correctness TARGET        LAB_CORRECT_N messages (UDP, TCP-LF, TCP-octet) on disk exactly once
+#   wl stress TARGET             UDP and TCP rate steps: loss, CPU, RSS per step, and the knee
+#   wl reboot TARGET             reboot with a stream running: the service returns, data intact, sending resumes
+#   wl portable TARGET           the tarball/zip binary run by hand, reached from the senders
+#   wl soak TARGET start|status|stop|verify   LAB_SOAK_HOURS at LAB_SOAK_RATE from all senders, sampled on the VM
+#   wl collect TARGET            pull back the VM's logs and samples
+#   wl all TARGET                install check correctness stress reboot portable collect
+#
+# Results: LAB_RESULTS/<target>/<UTC time>-<step>/ (log, JSON, CSV) and a PASS/FAIL line per check in
+# LAB_RESULTS/<target>/results.log. Exit status 0 when the step's checks all pass.
+set -euo pipefail
+here=$(cd "$(dirname "$0")" && pwd)
+ENVFILE=${LAB_ENV:-$here/lab.env}
+[ -f "$ENVFILE" ] || { echo "wl: $ENVFILE not found (copy lab.env.example)" >&2; exit 2; }
+# shellcheck source=/dev/null
+. "$ENVFILE"
+: "${LAB_SSH_CONFIG:?}" "${LAB_SENDER:?}" "${LAB_RESULTS:?}" "${LAB_ASSETS:?}"
+LAB_CORRECT_N=${LAB_CORRECT_N:-100000}
+LAB_STRESS_UDP=${LAB_STRESS_UDP:-"10000 20000 40000"}
+LAB_STRESS_TCP=${LAB_STRESS_TCP:-"10000 20000 40000"}
+LAB_STRESS_SECS=${LAB_STRESS_SECS:-60}
+LAB_STRESS_MAX=${LAB_STRESS_MAX:-160000}
+LAB_SOAK_RATE=${LAB_SOAK_RATE:-3000}
+LAB_SOAK_HOURS=${LAB_SOAK_HOURS:-24}
+LAB_MSG_SIZE=${LAB_MSG_SIZE:-160}
+LAB_FW_ENABLE=${LAB_FW_ENABLE:-1}
+LAB_PORTABLE_PORT=${LAB_PORTABLE_PORT:-15514}
+
+SSH=(ssh -F "$LAB_SSH_CONFIG" -o BatchMode=yes)
+SCP=(scp -F "$LAB_SSH_CONFIG" -o BatchMode=yes -q)
+step_dir="" target="" fails=0
+
+die() { echo "wl: $*" >&2; exit 2; }
+tv() { local v="LAB_${target}_$1"; echo "${!v:-}"; } # per-target setting, e.g. tv IP
+log() { printf '%s %s\n' "$(date -u +%H:%M:%SZ)" "$*" | tee -a "$step_dir/log"; }
+check() { # check <description> <command...>: a PASS/FAIL line in the step log and results.log
+	local what=$1; shift
+	if "$@"; then log "PASS $what"; echo "$(date -u +%FT%TZ) PASS $target $what" >>"$LAB_RESULTS/$target/results.log"
+	else log "FAIL $what"; echo "$(date -u +%FT%TZ) FAIL $target $what" >>"$LAB_RESULTS/$target/results.log"; fails=$((fails + 1)); fi
+}
+new_step() {
+	step_dir=$LAB_RESULTS/$target/$(date -u +%Y%m%dT%H%M%SZ)-$1
+	mkdir -p "$step_dir"
+	log "== $1 on $target ($(tv OS), $(tv KIND)), results in $step_dir"
+}
+end_step() { if [ "$fails" = 0 ]; then log "STEP PASS"; else log "STEP FAIL ($fails)"; fi; [ "$fails" = 0 ]; }
+set_target() {
+	target=${1:?target}
+	case " ${LAB_TARGETS:-} " in *" $target "*) ;; *) die "unknown target '$target' (LAB_TARGETS: ${LAB_TARGETS:-})" ;; esac
+	[ -n "$(tv SSH)" ] && [ -n "$(tv IP)" ] && [ -n "$(tv OS)" ] || die "LAB_${target}_SSH, _IP and _OS must be set"
+	mkdir -p "$LAB_RESULTS/$target"
+}
+runid() { python3 -c "import secrets; print(secrets.token_hex(4))"; }
+jget() { python3 -c "import json,sys; d=json.loads(sys.stdin.read() or '{}'); print(eval(sys.argv[1], {}, {'d': d}))" "$1"; }
+
+# ---- remote execution ----
+vm() { # vm <action> [args...]: the VM-side script
+	if [ "$(tv OS)" = windows ]; then
+		"${SSH[@]}" "$(tv SSH)" "powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File C:/woodpile-lab/win-lab.ps1 $*"
+	else
+		"${SSH[@]}" "$(tv SSH)" "/opt/woodpile-lab/linux-lab.sh $*"
+	fi
+}
+vm_put() { # vm_put <local> <remote path>
+	"${SCP[@]}" "$1" "$(tv SSH):$2"
+}
+vm_get() { "${SCP[@]}" "$(tv SSH):$1" "$2"; }
+vm_tmp() { if [ "$(tv OS)" = windows ]; then echo "C:/woodpile-lab"; else echo "/var/tmp/woodpile-lab"; fi; }
+send() { # send [wl-send args...] (the target's address is added); prints the WLSEND line
+	{ "${SSH[@]}" "$LAB_SENDER" "sudo -n /opt/woodpile-lab/bin/wl-send --host $(tv IP) --size $LAB_MSG_SIZE $*" || true; } |
+		tee -a "$step_dir/log" | { grep '^WLSEND' || true; } | tail -1
+}
+verify() { # verify <run> <n> [missing_ok] [wait]: verifyseq's JSON line
+	{ vm verify "$@" || true; } | { grep '^{' || echo '{}'; } | tail -1 | tee -a "$step_dir/verify.jsonl"
+}
+verify_ok() { verify "$@" | grep -q '"ok":true'; } # verify_ok <run> <n> [missing_ok] [wait]
+has() { echo "$1" | grep -q -- "$2"; }             # has <text> <pattern>
+has_line() { echo "$1" | grep -qx -- "$2"; }
+field() { sed -n "s/.* $1=\([^ ]*\).*/\1/p"; } # field <name> < WLSEND line
+
+asset() { # asset <glob>: one matching release asset in LAB_ASSETS
+	local m
+	m=$(find "$LAB_ASSETS" -maxdepth 1 -name "$1" ! -name '*arm64*' ! -name '*aarch64*' | sort | tail -1)
+	[ -n "$m" ] || die "no asset matching $1 in $LAB_ASSETS (wl fetch TAG)"
+	echo "$m"
+}
+pkg_for() {
+	case "$(tv KIND)" in
+	deb) asset 'woodpile_*_amd64.deb' ;;
+	rpm) asset 'woodpile-*.x86_64.rpm' ;;
+	msi) asset 'woodpile_*_windows_amd64.msi' ;;
+	*) die "LAB_${target}_KIND must be deb, rpm or msi" ;;
+	esac
+}
+
+# ---- commands ----
+cmd_fetch() {
+	local tag=${1:?tag} repo=${LAB_GH_REPO:?LAB_GH_REPO}
+	mkdir -p "$LAB_ASSETS"
+	GH_HOST=${LAB_GH_HOST:-github.com} gh release download "$tag" -R "$repo" -D "$LAB_ASSETS" --clobber \
+		-p 'checksums.txt' -p '*_amd64.deb' -p '*.x86_64.rpm' -p '*_windows_amd64.msi' -p '*_linux_amd64.tar.gz' -p '*_windows_amd64.zip'
+	(cd "$LAB_ASSETS" && if command -v sha256sum >/dev/null; then sha256sum -c --ignore-missing checksums.txt; else shasum -a 256 -c --ignore-missing checksums.txt; fi)
+	echo "$tag" >"$LAB_ASSETS/TAG"
+	ls -l "$LAB_ASSETS"
+}
+
+cmd_tools() {
+	local repo t=$LAB_ASSETS/tools
+	repo=$(cd "$here/../.." && pwd)
+	mkdir -p "$t"
+	(cd "$repo" && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o "$t/verifyseq-linux-amd64" ./scripts/verifyseq &&
+		CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -o "$t/verifyseq-windows-amd64.exe" ./scripts/verifyseq &&
+		CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o "$t/woodpile-linux-amd64" ./cmd/woodpile)
+	ls -l "$t"
+}
+
+cmd_setup_sender() {
+	: "${LAB_SENDER_PARENT:?}" "${LAB_SENDER_PREFIX:?}" "${LAB_SENDER_IPS:?}"
+	local n b user
+	n=$(echo "$LAB_SENDER_IPS" | wc -w | tr -d ' ')
+	[ "$n" -ge 8 ] || die "LAB_SENDER_IPS has $n addresses; the tests want at least 8"
+	b=$(mktemp -d)
+	cp "$here/sender/wl-netns" "$here/sender/wl-send" "$here/sender/woodpile-lab-senders.service" "$here/sender/install-sender.sh" "$b/"
+	cp "${LAB_SENDER_BIN:-$LAB_ASSETS/tools/woodpile-linux-amd64}" "$b/woodpile"
+	printf 'PARENT=%s\nPREFIX=%s\nIPS="%s"\n' "$LAB_SENDER_PARENT" "$LAB_SENDER_PREFIX" "$LAB_SENDER_IPS" >"$b/senders.conf"
+	user=$("${SSH[@]}" "$LAB_SENDER" 'id -un')
+	"${SSH[@]}" "$LAB_SENDER" 'rm -rf ~/woodpile-lab-bundle && mkdir -p ~/woodpile-lab-bundle'
+	COPYFILE_DISABLE=1 tar -C "$b" -czf - . | "${SSH[@]}" "$LAB_SENDER" 'tar -C ~/woodpile-lab-bundle -xzf -'
+	rm -rf "$b"
+	if "${SSH[@]}" "$LAB_SENDER" "sudo -n bash ~/woodpile-lab-bundle/install-sender.sh $user"; then
+		echo "setup-sender: ok"
+	else
+		echo "setup-sender: the bundle is in ~$user/woodpile-lab-bundle on the sender; run as root there:"
+		echo "  sudo bash ~$user/woodpile-lab-bundle/install-sender.sh $user"
+		exit 3
+	fi
+}
+
+cmd_senders() {
+	local ip=""
+	[ -n "${1:-}" ] && { set_target "$1"; ip=$(tv IP); }
+	"${SSH[@]}" "$LAB_SENDER" "sudo -n /opt/woodpile-lab/bin/wl-netns status $ip"
+}
+
+cmd_stage() {
+	local pkg tmp d t
+	pkg=$(pkg_for)
+	t=$LAB_ASSETS/tools
+	if [ "$(tv OS)" = windows ]; then
+		"${SSH[@]}" "$(tv SSH)" 'powershell -NoProfile -Command "New-Item -ItemType Directory -Force C:\woodpile-lab, C:\woodpile-lab\portable | Out-Null"'
+		vm_put "$here/remote/win-lab.ps1" C:/woodpile-lab/win-lab.ps1
+		vm_put "$t/verifyseq-windows-amd64.exe" C:/woodpile-lab/verifyseq.exe
+		vm_put "$pkg" "C:/woodpile-lab/$(basename "$pkg")"
+		tmp=$(mktemp -d)
+		unzip -q -o "$(asset 'woodpile_*_windows_amd64.zip')" -d "$tmp"
+		vm_put "$(find "$tmp" -name woodpile.exe | head -1)" C:/woodpile-lab/portable/woodpile.exe
+		rm -rf "$tmp"
+	else
+		"${SSH[@]}" "$(tv SSH)" 'sudo -n install -d -o "$(id -un)" /opt/woodpile-lab /var/tmp/woodpile-lab ~/woodpile-portable'
+		vm_put "$here/remote/linux-lab.sh" /opt/woodpile-lab/linux-lab.sh
+		vm_put "$t/verifyseq-linux-amd64" /opt/woodpile-lab/verifyseq
+		vm_put "$pkg" "/opt/woodpile-lab/$(basename "$pkg")"
+		tmp=$(mktemp -d)
+		tar -C "$tmp" -xzf "$(asset 'woodpile_*_linux_amd64.tar.gz')"
+		d=$(find "$tmp" -type f -name woodpile | head -1)
+		vm_put "$d" woodpile-portable/woodpile
+		rm -rf "$tmp"
+		"${SSH[@]}" "$(tv SSH)" 'chmod 0755 /opt/woodpile-lab/linux-lab.sh /opt/woodpile-lab/verifyseq ~/woodpile-portable/woodpile'
+	fi
+	echo "staged $(basename "$pkg") on $target"
+}
+
+svc_ok() { # the service JSON says: running as its account, holding UDP and TCP 514, UI healthy
+	local j=$1
+	if [ "$(tv OS)" = windows ]; then
+		echo "$j" | python3 -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if d["state"]=="Running" and d["account"].lower()=="nt service\\woodpile" and d["udp514_sockets"]>0 and d["tcp514_listen"]>0 and "ok" in d["healthz"] else 1)'
+	else
+		echo "$j" | python3 -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if d["active"]=="active" and d["user"]=="woodpile" and d["udp514_sockets"]>0 and d["tcp514_listen"]>0 and "ok" in d["healthz"] else 1)'
+	fi
+}
+svc_json() { vm svc | grep '^{' | tail -1 | tee -a "$step_dir/svc.jsonl"; }
+
+cmd_install() {
+	new_step install
+	cmd_stage 2>&1 | tee -a "$step_dir/log"
+	local pkg; pkg=$(basename "$(pkg_for)")
+	if [ "$(tv OS)" = windows ]; then check "msiexec /i $pkg" vm install "C:/woodpile-lab/$pkg"
+	else check "install $pkg" vm install "/opt/woodpile-lab/$pkg"; fi
+	local j=""
+	for _ in $(seq 30); do j=$(svc_json) && svc_ok "$j" && break; sleep 2; done
+	log "service: $j"
+	check "service runs as its unprivileged account and holds UDP+TCP 514; UI healthy" svc_ok "$j"
+	if [ "$(tv OS)" != windows ]; then
+		check "only CAP_NET_BIND_SERVICE (CapEff 0000000000000400)" test "$(echo "$j" | jget 'd["cap_eff"]')" = 0000000000000400
+		check "rmem_max raised to 32 MiB" test "$(echo "$j" | jget 'd["rmem_max"]')" -ge 33554432
+	fi
+	end_step
+}
+
+# send_check <ns> <proto> <count> <expect: all|none>: one run from one sender namespace
+send_check() {
+	local ns=$1 proto=$2 n=$3 want=$4 r line got
+	r=$(runid)
+	line=$(send --ns "$ns" --proto "$proto" --count "$n" --rate 500 --run "$r" --timeout 20 || true)
+	got=$(verify "$r" "$n" 0 "${5:-15s}" | jget 'd.get("received", 0)')
+	log "sender $ns $proto: $(echo "$line" | field sent) sent, $got on disk (run $r)"
+	if [ "$want" = all ]; then [ "$got" = "$n" ]; else [ "$got" = 0 ]; fi
+}
+
+cmd_check() {
+	new_step check
+	local j fw ns ips dev
+	j=$(svc_json)
+	check "service runs as its account, UDP+TCP 514, UI healthy" svc_ok "$j"
+	fw=$(vm fw-state | grep '^{' | tail -1); log "firewall: $fw"
+	if [ "$(tv OS)" = windows ]; then
+		if echo "$fw" | grep -q 'False'; then
+			if [ "$LAB_FW_ENABLE" = 1 ]; then log "turning the firewall on (every profile)"; vm fw-enable | tee -a "$step_dir/log"
+			else log "WARN a firewall profile is off: the firewall leg proves nothing"; fi
+		fi
+		check "the MSI's firewall rules exist" has "$fw" Woodpile
+	else
+		case "$fw" in
+		*'"firewall": "ufw-inactive"'* | *'"firewall": "firewalld-inactive"'*)
+			if [ "$LAB_FW_ENABLE" = 1 ]; then log "turning the host firewall on (SSH kept open)"; vm fw-enable | tee -a "$step_dir/log"
+			else log "WARN the host firewall is off: the firewall leg proves nothing"; fi ;;
+		*'"firewall": "none"'*) log "WARN no host firewall on this VM" ;;
+		esac
+	fi
+	fw=$(vm fw-state | grep '^{' | tail -1); log "firewall now: $fw"
+	# negative control: with 514 closed, nothing gets through
+	vm fw-close | tee -a "$step_dir/log" || true
+	check "firewall closed: UDP from sender 0 is blocked" send_check 0 udp 200 none 5s
+	check "firewall closed: TCP from sender 0 is blocked" send_check 0 tcp 200 none 5s
+	# open exactly as docs/install.md says (Windows: the MSI's own rules)
+	vm fw-open | tee -a "$step_dir/log"
+	log "firewall after open: $(vm fw-state | grep '^{' | tail -1)"
+	ips=($LAB_SENDER_IPS)
+	for ((ns = 0; ns < ${#ips[@]}; ns++)); do
+		check "sender $ns (${ips[$ns]}) reaches UDP 514 through the firewall" send_check "$ns" udp 500 all
+		check "sender $ns (${ips[$ns]}) reaches TCP 514 through the firewall" send_check "$ns" tcp 500 all
+	done
+	dev=$(vm devices | tr -d '\r')
+	log "device folders: $(echo "$dev" | tr '\n' ' ')"
+	for ip in "${ips[@]}"; do
+		check "device folder for $ip" has_line "$dev" "$ip"
+	done
+	end_step
+}
+
+cmd_correctness() {
+	new_step correctness
+	local n=$LAB_CORRECT_N r q u t1 t2 a b c v
+	r=$(runid)
+	q=$((n / 4)); u=$((n - 2 * q)) # half UDP (senders 0-3), a quarter TCP-LF (4-5), a quarter TCP-octet (6-7)
+	log "run $r: $u UDP + $q TCP-LF + $q TCP-octet = $n"
+	t1=$(mktemp); t2=$(mktemp)
+	send --ns 0-3 --proto udp --count "$u" --rate 8000 --run "$r" --first-seq 0 >"$t1" &
+	a=$!
+	send --ns 4-5 --proto tcp --framing lf --count "$q" --rate 4000 --run "$r" --first-seq "$u" >"$t2" &
+	b=$!
+	c=$(send --ns 6-7 --proto tcp --framing octet --count "$q" --rate 4000 --run "$r" --first-seq $((u + q)) | field sent)
+	wait "$a" || true; wait "$b" || true
+	log "sent: UDP $(field sent <"$t1"), TCP-LF $(field sent <"$t2"), TCP-octet $c"
+	rm -f "$t1" "$t2"
+	v=$(verify "$r" "$n" 0 60s)
+	log "verify: $v"
+	check "$n messages on disk exactly once (0 missing, 0 duplicates)" has "$v" '"ok":true'
+	echo "$r $n" >"$LAB_RESULTS/$target/correctness.run"
+	end_step
+}
+
+stress_step() { # stress_step <proto> <rate>: prints "knee" when this step is past the knee
+	local proto=$1 rate=$2 secs=$LAB_STRESS_SECS r n line csv v st
+	r=$(runid); n=$((rate * secs))
+	csv="$step_dir/samples-$proto-$rate.csv"
+	vm sample "$(vm_tmp)/s-$r.csv" 1 $((secs + 20)) >/dev/null 2>&1 &
+	local sp=$!
+	sleep 3
+	line=$(send --proto "$proto" --framing lf --count "$n" --rate "$rate" --run "$r")
+	wait "$sp" || true
+	vm_get "$(vm_tmp)/s-$r.csv" "$csv" || true
+	v=$(verify "$r" "$n" 0 20s)
+	st=$(vm stats 2>/dev/null | tr -d '\r' || echo '{}')
+	python3 - "$proto" "$rate" "$n" "$line" "$v" "$csv" "$st" "$step_dir/stress.jsonl" <<'PY'
+import csv, json, re, sys
+proto, rate, n, line, v, path, st, out = sys.argv[1:]
+rate, n = int(rate), int(n)
+sent = int(re.search(r"sent=(\d+)", line).group(1)) if "sent=" in line else 0
+achieved = float(re.search(r"rate=(\d+)", line).group(1)) if "rate=" in line else 0.0
+v = json.loads(v or "{}"); st = json.loads(st or "{}")
+rows = []
+try:
+    rows = [r for r in csv.DictReader(open(path)) if r.get("cpu_s")]
+except OSError:
+    pass
+cpu = rss = None; drops = None
+if len(rows) >= 2:
+    dt = int(rows[-1]["elapsed_s"]) - int(rows[0]["elapsed_s"]) or 1
+    cpu = round((float(rows[-1]["cpu_s"]) - float(rows[0]["cpu_s"])) / dt * 100, 1)
+    key = "rss_kb" if "rss_kb" in rows[0] else "ws_kb"
+    rss = round(max(int(r[key]) for r in rows) / 1024, 1)
+    if "udp_drops" in rows[0]:
+        drops = int(rows[-1]["udp_drops"]) - int(rows[0]["udp_drops"])
+rec = {"proto": proto, "target_rate": rate, "achieved_rate": achieved, "sent": sent, "received": v.get("received"),
+       "missing": v.get("missing"), "duplicates": v.get("duplicates"),
+       "loss_pct": round(100 * (v.get("missing") or 0) / max(n, 1), 3), "cpu_pct_of_one_core": cpu, "rss_peak_mib": rss,
+       "kernel_udp_drops": drops, "server_dropped_24h": st.get("dropped_24h"), "kernel_dropped_24h": st.get("kernel_dropped_24h")}
+open(out, "a").write(json.dumps(rec) + "\n")
+print(f"STEP {proto} {rate}/s: achieved {achieved:.0f}/s, sent {sent}, on disk {v.get('received')}, missing {v.get('missing')} "
+      f"({rec['loss_pct']}%), dup {v.get('duplicates')}, CPU {cpu}% of a core, RSS peak {rss} MiB, kernel drops {drops}")
+knee = (v.get("missing") or 0) > 0 or (v.get("duplicates") or 0) > 0 or achieved < 0.95 * rate
+print("knee" if knee else "ok")
+PY
+}
+
+cmd_stress() {
+	new_step stress
+	local proto rates rate res last
+	for proto in udp tcp; do
+		if [ "$proto" = udp ]; then rates=$LAB_STRESS_UDP; else rates=$LAB_STRESS_TCP; fi
+		last=""
+		for rate in $rates; do
+			res=$(stress_step "$proto" "$rate"); echo "$res" >>"$step_dir/log"; echo "$res" | sed -n 1p
+			last=$rate
+			if echo "$res" | grep -qx knee; then log "KNEE $proto at or below $rate msg/s"; last=knee; break; fi
+			sleep 10
+		done
+		rate=${last:-0}
+		while [ "$last" != knee ] && [ $((rate * 2)) -le "$LAB_STRESS_MAX" ]; do # no knee yet: keep doubling
+			rate=$((rate * 2))
+			res=$(stress_step "$proto" "$rate"); echo "$res" >>"$step_dir/log"; echo "$res" | sed -n 1p
+			if echo "$res" | grep -qx knee; then log "KNEE $proto between $((rate / 2)) and $rate msg/s"; last=knee; fi
+			sleep 10
+		done
+		[ "$last" = knee ] || log "no knee for $proto up to $LAB_STRESS_MAX msg/s"
+	done
+	# the spec's bar (SPEC §2): 10,000 msg/s with no drops on 4 cores / 8 GB
+	check "10,000 msg/s UDP with no loss (SPEC §2)" python3 -c "
+import json,sys
+r=[json.loads(l) for l in open('$step_dir/stress.jsonl')]
+sys.exit(0 if any(x['proto']=='udp' and x['target_rate']==10000 and x['missing']==0 and x['duplicates']==0 for x in r) else 1)"
+	check "10,000 msg/s TCP with no loss" python3 -c "
+import json,sys
+r=[json.loads(l) for l in open('$step_dir/stress.jsonl')]
+sys.exit(0 if any(x['proto']=='tcp' and x['target_rate']==10000 and x['missing']==0 and x['duplicates']==0 for x in r) else 1)"
+	end_step
+}
+
+wait_ssh() { # wait_ssh <down|up> <seconds>
+	local i
+	for ((i = 0; i < $2; i += 5)); do
+		if "${SSH[@]}" -o ConnectTimeout=5 "$(tv SSH)" exit 2>/dev/null; then [ "$1" = up ] && return 0
+		else [ "$1" = down ] && return 0; fi
+		sleep 5
+	done
+	return 1
+}
+
+cmd_reboot() {
+	new_step reboot
+	local prev r1 r2 n=10000 j v line t0 sp sl
+	prev=$(cat "$LAB_RESULTS/$target/correctness.run" 2>/dev/null || true)
+	r1=$(runid)
+	line=$(send --ns 0-7 --proto tcp --count "$n" --rate 5000 --run "$r1")
+	check "before reboot: run $r1 complete" verify_ok "$r1" "$n" 0 30s
+	# a UDP stream from senders 0-1 at 200 msg/s across the reboot (it shows when receiving resumes)
+	sl=$(runid)
+	send --ns 0-1 --proto udp --count 72000 --rate 200 --run "$sl" >"$step_dir/stream.wlsend" &
+	sp=$!
+	sleep 20
+	t0=$(date +%s)
+	vm reboot | tee -a "$step_dir/log" || true
+	check "VM went down" wait_ssh down 180
+	check "VM came back (ssh)" wait_ssh up 900
+	log "ssh back after $(($(date +%s) - t0)) s"
+	j=""
+	for _ in $(seq 60); do j=$(svc_json 2>/dev/null) && svc_ok "$j" && break; sleep 5; done
+	log "service after boot: $j"
+	check "service came back by itself, as its account, on UDP+TCP 514" svc_ok "$j"
+	check "run $r1 still complete after the reboot" verify_ok "$r1" "$n" 0 10s
+	if [ -n "$prev" ]; then
+		# shellcheck disable=SC2086
+		check "correctness run ${prev% *} still complete after the reboot" verify_ok ${prev} 0 10s
+	fi
+	r2=$(runid)
+	send --ns 0-7 --proto udp --count "$n" --rate 2000 --run "$r2" >/dev/null
+	check "sending resumes: a new run $r2 is complete" verify_ok "$r2" "$n" 0 30s
+	wait "$sp" || true
+	v=$(verify "$sl" 72000 0 30s)
+	log "stream across the reboot: $(cat "$step_dir/stream.wlsend"); on disk: $v (the gap is the reboot window)"
+	check "the stream across the reboot has no duplicates" has "$v" '"duplicates":0'
+	end_step
+}
+
+cmd_portable() {
+	new_step portable
+	local port=$LAB_PORTABLE_PORT r n=10000 v d
+	if [ "$(tv OS)" = windows ]; then
+		d=C:/woodpile-lab/portable/data
+		vm portable start "$port" | tee -a "$step_dir/log"
+		r=$(runid)
+		send --ns 0 --proto tcp --count 200 --rate 200 --run "$r" --port "$port" --timeout 20 >/dev/null || true
+		v=$(vm_verify_portable "$r" 200 "$d")
+		log "without a firewall rule for the hand-run exe: $v (Windows blocks an unlisted program unless a rule allows it)"
+		vm portable stop | tee -a "$step_dir/log"
+		vm portable start "$port" allow | tee -a "$step_dir/log"
+	else
+		d=$("${SSH[@]}" "$(tv SSH)" 'echo ~/woodpile-portable/data')
+		vm portable start "$port" | tee -a "$step_dir/log"
+	fi
+	r=$(runid)
+	send --ns 0-3 --proto udp --count $((n / 2)) --rate 4000 --run "$r" --port "$port" >/dev/null
+	send --ns 4-7 --proto tcp --count $((n / 2)) --rate 4000 --run "$r" --port "$port" --first-seq $((n / 2)) >/dev/null
+	v=$(vm_verify_portable "$r" "$n" "$d")
+	log "portable: $v"
+	check "portable binary run by hand: $n from the 8 senders on disk exactly once" has "$v" '"ok":true'
+	vm portable stop "$port" | tee -a "$step_dir/log"
+	end_step
+}
+vm_verify_portable() { # <run> <n> <data dir>
+	if [ "$(tv OS)" = windows ]; then
+		"${SSH[@]}" "$(tv SSH)" "C:/woodpile-lab/verifyseq.exe -data $3 -run $1 -n $2 -wait 20s -json" | grep '^{' | tail -1 || true
+	else
+		"${SSH[@]}" "$(tv SSH)" "/opt/woodpile-lab/verifyseq -data $3 -run $1 -n $2 -wait 20s -json" | grep '^{' | tail -1 || true
+	fi
+}
+
+cmd_soak() {
+	local op=${1:?start|status|stop|verify} state=$LAB_RESULTS/$target/soak.env secs udp_rate tcp_rate nu nt r
+	case "$op" in
+	start)
+		new_step soak-start
+		secs=$(python3 -c "print(int($LAB_SOAK_HOURS * 3600))")
+		udp_rate=$((LAB_SOAK_RATE * 3 / 4)); tcp_rate=$((LAB_SOAK_RATE - udp_rate)) # senders 0-5 UDP, 6-7 TCP
+		nu=$((udp_rate * secs)); nt=$((tcp_rate * secs)); r=$(runid)
+		vm soak-sampler start $((secs + 3600)) | tee -a "$step_dir/log"
+		"${SSH[@]}" "$LAB_SENDER" "sudo -n /opt/woodpile-lab/bin/wl-send --host $(tv IP) --size $LAB_MSG_SIZE --ns 0-5 --proto udp --count $nu --rate $udp_rate --run $r --detach woodpile-lab-soak-$target-udp" | tee -a "$step_dir/log"
+		"${SSH[@]}" "$LAB_SENDER" "sudo -n /opt/woodpile-lab/bin/wl-send --host $(tv IP) --size $LAB_MSG_SIZE --ns 6-7 --proto tcp --count $nt --rate $tcp_rate --run $r --first-seq $nu --detach woodpile-lab-soak-$target-tcp" | tee -a "$step_dir/log"
+		printf 'SOAK_RUN=%s\nSOAK_N=%s\nSOAK_START=%s\nSOAK_SECS=%s\n' "$r" $((nu + nt)) "$(date -u +%FT%TZ)" "$secs" >"$state"
+		log "soak $r started: $LAB_SOAK_RATE msg/s for $LAB_SOAK_HOURS h ($((nu + nt)) messages); state in $state"
+		;;
+	status)
+		# shellcheck source=/dev/null
+		. "$state"
+		echo "soak $SOAK_RUN started $SOAK_START for $SOAK_SECS s"
+		"${SSH[@]}" "$LAB_SENDER" "sudo -n /opt/woodpile-lab/bin/wl-send --unit-status woodpile-lab-soak-$target-udp; sudo -n /opt/woodpile-lab/bin/wl-send --unit-status woodpile-lab-soak-$target-tcp" || true
+		vm soak-sampler status || true
+		vm stats || true
+		;;
+	stop)
+		"${SSH[@]}" "$LAB_SENDER" "sudo -n /opt/woodpile-lab/bin/wl-send --unit-stop woodpile-lab-soak-$target-udp; sudo -n /opt/woodpile-lab/bin/wl-send --unit-stop woodpile-lab-soak-$target-tcp" || true
+		vm soak-sampler stop || true
+		echo "soak stopped (verify will then show the unsent tail as missing)"
+		;;
+	verify)
+		new_step soak-verify
+		# shellcheck source=/dev/null
+		. "$state"
+		local out
+		out=$(vm_tmp)/soak-verify-$SOAK_RUN.json
+		vm verify-detached "$SOAK_RUN" "$SOAK_N" "$out" | tee -a "$step_dir/log"
+		for _ in $(seq 360); do vm_get "$out" "$step_dir/soak-verify.json" 2>/dev/null && break; sleep 30; done
+		log "verify: $(cat "$step_dir/soak-verify.json" 2>/dev/null)"
+		vm_get "$(vm_tmp)/soak-samples.csv" "$step_dir/soak-samples.csv" || true
+		check "soak: every message on disk exactly once" grep -q '"ok":true' "$step_dir/soak-verify.json"
+		python3 - "$step_dir/soak-samples.csv" <<'PY' | tee -a "$step_dir/log"
+import csv, statistics, sys
+rows = [r for r in csv.DictReader(open(sys.argv[1])) if r.get("cpu_s")]
+if len(rows) < 20:
+    print("too few samples"); sys.exit(0)
+key = "rss_kb" if "rss_kb" in rows[0] else "ws_kb"
+h = "fds" if "fds" in rows[0] else "handles"
+m = [int(r[key]) for r in rows]; f = [int(r[h]) for r in rows]
+k = max(3, len(rows) // 10)
+early, late = statistics.median(m[k:2 * k]), statistics.median(m[-k:])
+print(f"memory: median {early/1024:.1f} MiB early, {late/1024:.1f} MiB late, max {max(m)/1024:.1f} MiB; {h}: min {min(f)} max {max(f)} last {f[-1]} ({len(rows)} samples)")
+print("SOAK_MEM_FLAT" if late <= early * 1.5 + 20 * 1024 else "SOAK_MEM_GREW")
+print("SOAK_HANDLES_BOUNDED" if max(f) <= 400 else "SOAK_HANDLES_HIGH")
+PY
+		check "soak: memory flat" grep -q SOAK_MEM_FLAT "$step_dir/log"
+		check "soak: handles bounded" grep -q SOAK_HANDLES_BOUNDED "$step_dir/log"
+		end_step
+		;;
+	*) die "soak start|status|stop|verify" ;;
+	esac
+}
+
+cmd_collect() {
+	new_step collect
+	local f
+	if [ "$(tv OS)" = windows ]; then f=C:/woodpile-lab/collect-$target.zip; else f=/var/tmp/woodpile-lab/collect-$target.tgz; fi
+	vm collect "$f" | tee -a "$step_dir/log"
+	vm_get "$f" "$step_dir/" && log "collected $(basename "$f")"
+	cp "$LAB_RESULTS/$target/results.log" "$step_dir/" 2>/dev/null || true
+}
+
+c=${1:-help}
+shift || true
+case "$c" in
+fetch) cmd_fetch "$@" ;;
+tools) cmd_tools ;;
+setup-sender) cmd_setup_sender ;;
+senders) cmd_senders "$@" ;;
+stage) set_target "$1"; cmd_stage ;;
+install | check | correctness | stress | reboot | portable | collect) set_target "$1"; "cmd_$c" ;;
+soak) set_target "$1"; shift; cmd_soak "$@" ;;
+all)
+	set_target "$1"
+	rc=0
+	for s in install check correctness stress reboot; do fails=0; "cmd_$s" || rc=1; done
+	case "$(tv KIND)" in deb | msi) fails=0; cmd_portable || rc=1 ;; esac
+	fails=0; cmd_collect || true
+	exit "$rc"
+	;;
+help | -h | --help) sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//' ;;
+*) die "unknown command $c (wl help)" ;;
+esac

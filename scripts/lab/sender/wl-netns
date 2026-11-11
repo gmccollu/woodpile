@@ -1,0 +1,71 @@
+#!/bin/bash
+# wl-netns: sender namespaces for the Woodpile lab load source. Each namespace wps<i> holds one
+# ipvlan (L2) leg off the host's NIC $PARENT with one sender address, so a syslog server on the
+# same subnet sees N distinct devices over a real network. The legs share the parent's MAC
+# (ipvlan), which suits virtual switches that drop forged MACs. No default route: a namespace
+# reaches only its own on-link prefix.
+#
+#   wl-netns up | down | status [TARGET_IP]
+#
+# Config: /opt/woodpile-lab/senders.conf (PARENT, PREFIX, IPS). Run as root.
+set -euo pipefail
+CONF=${WL_CONF:-/opt/woodpile-lab/senders.conf}
+# shellcheck source=/dev/null
+. "$CONF"
+: "${PARENT:?PARENT not set in $CONF}" "${PREFIX:?PREFIX not set}" "${IPS:?IPS not set}"
+[ "$(id -u)" = 0 ] || { echo "wl-netns: run as root" >&2; exit 2; }
+
+up() {
+	ip link show "$PARENT" >/dev/null
+	local i=0 ip ns leg
+	for ip in $IPS; do
+		ns=wps$i leg=wpl$i
+		[ -e "/run/netns/$ns" ] || ip netns add "$ns"
+		if ! ip -n "$ns" link show "$leg" >/dev/null 2>&1; then
+			# refuse an address someone else answers for (duplicate address detection)
+			if command -v arping >/dev/null && ! arping -D -q -c 2 -w 3 -I "$PARENT" "$ip"; then
+				echo "wl-netns: $ip answers ARP already; not using it" >&2
+				exit 1
+			fi
+			ip link add "$leg" link "$PARENT" type ipvlan mode l2
+			ip link set "$leg" netns "$ns"
+		fi
+		ip netns exec "$ns" sysctl -q -w net.ipv6.conf.all.disable_ipv6=1 >/dev/null
+		ip -n "$ns" link set lo up
+		ip -n "$ns" addr replace "$ip/$PREFIX" dev "$leg"
+		ip -n "$ns" link set "$leg" up
+		i=$((i + 1))
+	done
+	echo "wl-netns: $i sender namespaces up on $PARENT"
+}
+
+down() {
+	local i=0 ip
+	for ip in $IPS; do
+		[ -e "/run/netns/wps$i" ] && ip netns del "wps$i"
+		i=$((i + 1))
+	done
+	echo "wl-netns: sender namespaces removed"
+}
+
+status() {
+	local target=${1:-} i=0 ip ns got r
+	for ip in $IPS; do
+		ns=wps$i
+		if [ ! -e "/run/netns/$ns" ]; then echo "$ns $ip DOWN (no namespace)"; i=$((i + 1)); continue; fi
+		got=$(ip -n "$ns" -4 -o addr show dev "wpl$i" 2>/dev/null | awk '{print $4}')
+		r=""
+		if [ -n "$target" ]; then
+			if ip netns exec "$ns" ping -c 1 -W 2 "$target" >/dev/null 2>&1; then r="ping $target ok"; else r="ping $target FAIL"; fi
+		fi
+		echo "$ns $ip ${got:-NOADDR} $r"
+		i=$((i + 1))
+	done
+}
+
+case "${1:-}" in
+up) up ;;
+down) down ;;
+status) status "${2:-}" ;;
+*) echo "usage: wl-netns up|down|status [TARGET_IP]" >&2; exit 2 ;;
+esac
