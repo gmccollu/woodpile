@@ -417,7 +417,6 @@ type Usage struct {
 	FreeBytes          uint64    // free space on the data volume (last check)
 	VolumeBytes        uint64    // size of the data volume (last check)
 	ReserveBytes       uint64    // free space the low-disk guard keeps (for the current volume size)
-	MinFreeBytes       uint64    // Deprecated: same value as ReserveBytes
 	DaysKept           int       // calendar days from the oldest file's day to today
 	Oldest             time.Time // earliest received time on disk (zero if none)
 	Files              int       // log files on disk
@@ -444,7 +443,6 @@ func (s *Store) Usage() Usage {
 	u.FreeBytes, u.VolumeBytes = s.lastFree, s.lastTotal
 	s.diskMu.Unlock()
 	u.ReserveBytes = s.minFree(u.VolumeBytes)
-	u.MinFreeBytes = u.ReserveBytes
 	oldestDay := ""
 	s.catMu.Lock()
 	u.BytesOnDisk = s.catBytes

@@ -773,7 +773,7 @@ func TestReserveRule(t *testing.T) {
 			e.write(ip(1), "x")
 			e.maintain()
 			u := e.s.Usage()
-			if u.ReserveBytes != c.want || u.MinFreeBytes != c.want {
+			if u.ReserveBytes != c.want {
 				t.Fatalf("reserve %d (%.2f GiB), want %d", u.ReserveBytes, float64(u.ReserveBytes)/GiB, c.want)
 			}
 			if e.s.Paused() {
