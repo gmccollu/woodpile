@@ -150,6 +150,11 @@ first. `ready_at` / `expires_at` are set once the export is ready; `filters` ech
 `GET /api/exports/{id}` → one entry, same shape.
 
 `GET /api/exports/{id}/download` → the zip (`Content-Disposition: attachment; filename="woodpile-<from>-<to>.zip"`).
+When login is required, a browser download can't send the `X-Woodpile-Session` header, so the UI first calls
+`POST /api/exports/{id}/ticket` (normal auth) → `{"url": "/api/exports/{id}/download?ticket=<opaque>"}` and navigates
+to that URL. A ticket is single-use, valid for 60 s, bound to the session that asked for it and to that export, and
+stored only hashed; the download route accepts it in place of the header (the cookie is still required). Without
+login required, the ticket step is optional.
 `409` if it isn't ready, `404` if unknown or expired.
 
 `DELETE /api/exports/{id}` → `204`. It cancels a building export or deletes a ready one.
@@ -214,7 +219,8 @@ In localhost mode: `{"mode": "localhost", "auth_required": false, "authenticated
 header (below). `/api/session` never returns the session secret.
 `password_set` reports the real state in both modes (the LAN checkbox depends on it).
 
-`ui.require_login_local` (default false): when true and a password is set, localhost mode also requires login
+`ui.require_login_local` (default false; **turned on automatically when a password is first set**, and can be
+turned off): when true and a password is set, localhost mode also requires login
 (the same session rules as LAN mode). It can't be turned on without a password.
 
 `PUT /api/password` requires `current` whenever a password is already set, in both modes. `woodpile
