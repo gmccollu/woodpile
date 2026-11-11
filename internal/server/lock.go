@@ -13,6 +13,10 @@ import (
 // goes away with the process, even after a crash.
 const LockFileName = "woodpile.lock"
 
+// errNotPlainFile is returned for a lock file that's a symlink, a hard link or not
+// a regular file.
+var errNotPlainFile = errors.New("is a link or not a regular file; refusing to use it (remove it if it shouldn't be there)")
+
 // ErrLocked means another process holds the data dir's lock.
 var ErrLocked = errors.New("another Woodpile process is using this data folder")
 
@@ -25,7 +29,9 @@ type DirLock struct {
 // wrapping ErrLocked when another process holds it.
 func LockDataDir(dataDir string) (*DirLock, error) {
 	path := filepath.Join(dataDir, LockFileName)
-	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o640)
+	// Never through a symlink or a hard link: a root `woodpile reindex` on a folder
+	// the service account controls must not truncate some other file.
+	f, err := openLockFile(path, true)
 	if err != nil {
 		return nil, fmt.Errorf("open the lock file: %w", err)
 	}
@@ -60,7 +66,7 @@ func (l *DirLock) Unlock() error {
 // tell (for example no permission to open the lock file).
 func DataDirInUse(dataDir string) (bool, error) {
 	path := filepath.Join(dataDir, LockFileName)
-	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	f, err := openLockFile(path, false)
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil
 	}
