@@ -106,16 +106,16 @@ func (fd *fairDev) oldest(allowProtected bool) int {
 // far), in fair-share order. Each device's fair share is RetentionBytes divided by
 // the devices with data on disk.
 //
-//  1. Devices over their share, the most over first, oldest file first.
+//  1. Devices over their share, the most over first, oldest file first, newest day
+//     included: so the cap stays within about a part's size of hard.
 //  2. Devices first seen in the last 24 h, oldest file first.
-//  3. Everyone, oldest file first.
+//  3. Everyone, oldest file first, except each device's newest day of closed files.
 //  4. Only for the low-disk guard (lowDisk, newestDays), when nothing else is left:
 //     each device's newest day too, oldest first.
 //
-// Steps 1–3 never take a device's newest day of closed files (step 2's devices have
-// no older data). Active and parked files are never taken. So neither one flooding
-// device nor a flood spread over many new senders can wipe an established device's
-// recent history.
+// A device within its share keeps its newest day of closed files through steps 1–3,
+// and active and parked files are never taken here. So neither one flooding device
+// nor a flood spread over many new senders can wipe a quiet device's recent history.
 func (s *Store) fairDelete(now time.Time, reason index.Reason, lowDisk, newestDays bool, firstSeen map[string]time.Time,
 	done func(freed uint64) bool) {
 	devs := s.fairDevices(now, lowDisk, firstSeen)
@@ -140,7 +140,7 @@ func (s *Store) fairDelete(now time.Time, reason index.Reason, lowDisk, newestDa
 		}
 		for _, fd := range devs { // 1: over share, most over first
 			if fd.bytes > share {
-				i := fd.oldest(false)
+				i := fd.oldest(true) // over its share: its newest day isn't protected
 				consider(fd, i, pick != nil && (fd.bytes-share > pick.bytes-share || (fd.bytes == pick.bytes && fd.id < pick.id)))
 			}
 		}

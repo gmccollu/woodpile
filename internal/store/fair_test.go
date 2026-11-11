@@ -23,9 +23,9 @@ func randText(r *rand.Rand, n int) string {
 }
 
 // TestFairShareManySmallSenders is the review's N7 case: a flood spread over 200 new
-// senders, each small, pushes the store over its cap. Largest-first would have wiped
-// the busiest real device. With fair shares the target keeps its newest day, and the
-// new senders' data goes before any of the target's newest day.
+// senders, each small, pushes the store over its cap. Largest-first wiped only the
+// busiest real device. With fair shares every device over its share pays, the new
+// senders included, and the target keeps today's file.
 func TestFairShareManySmallSenders(t *testing.T) {
 	e := newEnv(t, func(o *Options) { o.PartBytes = 32 << 10 })
 	r := rand.New(rand.NewSource(3))
@@ -49,13 +49,10 @@ func TestFairShareManySmallSenders(t *testing.T) {
 		}
 	}
 	e.maintain()
-	before := e.files(target)
 	e.s.SetLimits(Limits{RetentionBytes: duLogs(e.dir) / 2})
 	e.maintain()
-	after := e.files(target)
-	t.Logf("target files %d -> %d: %v", len(before), len(after), after)
-	if !contains(after, "2026-11-09.log.gz") {
-		t.Fatalf("the target lost its newest closed day: %v", after)
+	if after := e.files(target); !contains(after, "2026-11-10.log") {
+		t.Fatalf("the target lost today's file: %v", after)
 	}
 	hist, _ := e.idx.Deletions(bg, time.Time{}, time.Time{}, 0)
 	var targetDel, spoofDel int
@@ -66,8 +63,57 @@ func TestFairShareManySmallSenders(t *testing.T) {
 			spoofDel++
 		}
 	}
+	t.Logf("deleted: target %d files, new senders %d", targetDel, spoofDel)
 	if spoofDel == 0 {
 		t.Fatalf("no new sender's file was deleted; target lost %d", targetDel)
+	}
+}
+
+// TestCapNearlyHard: many established devices within their share and one over it.
+// The size cap holds to within one part's size, the over-share device paying with
+// its newest day too, and every quiet device keeps its newest day.
+func TestCapNearlyHard(t *testing.T) {
+	const part = 16 << 10
+	e := newEnv(t, func(o *Options) { o.PartBytes = part })
+	r := rand.New(rand.NewSource(11))
+	var quiet []netip.Addr
+	for i := 0; i < 30; i++ {
+		quiet = append(quiet, netip.AddrFrom4([4]byte{198, 51, 100, byte(i)}))
+	}
+	heavy := ip(1)
+	end := e.clock.Now()
+	for d := 3; d >= 0; d-- { // three closed days and today for every device
+		e.clock.Set(end.Add(-time.Duration(d) * 24 * time.Hour))
+		for _, q := range quiet {
+			e.write(q, fmt.Sprintf("quiet day -%d %s", d, randText(r, 300)))
+		}
+		for i := 0; i < 150; i++ { // ~150 KB a day: many parts, most of it today and yesterday
+			e.write(heavy, fmt.Sprintf("heavy day -%d %s", d, randText(r, 1000)))
+		}
+		e.maintain()
+	}
+	e.clock.Set(end)
+	e.maintain()
+	limit := duLogs(e.dir) / 3
+	e.s.SetLimits(Limits{RetentionBytes: limit})
+	e.maintain()
+	if got := duLogs(e.dir); got > limit+part {
+		t.Fatalf("%d bytes on disk, cap %d (+ one part %d)", got, limit, part)
+	}
+	for _, q := range quiet {
+		if got := e.files(q); !contains(got, "2026-11-09.log.gz") || !contains(got, "2026-11-10.log") {
+			t.Fatalf("%v lost its newest day: %v", q, got)
+		}
+	}
+	var heavyNewest int
+	hist, _ := e.idx.Deletions(bg, time.Time{}, time.Time{}, 0)
+	for _, h := range hist {
+		if h.DeviceID == "192.0.2.1" && strings.Contains(h.File, "2026-11-09") {
+			heavyNewest++
+		}
+	}
+	if heavyNewest == 0 {
+		t.Fatal("the over-share device kept its newest day while the store was over the cap")
 	}
 }
 
