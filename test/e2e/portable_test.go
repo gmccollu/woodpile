@@ -3,6 +3,7 @@ package e2e
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -138,4 +139,112 @@ func TestPortable(t *testing.T) {
 		t.Fatalf("on disk after stopping: %+v %v", v, err)
 	}
 	t.Logf("portable: UI fell back %d -> %d, 4000/4000 on disk, stopped in %v", uiPort, ui, took.Round(time.Millisecond))
+}
+
+// startPortable starts `woodpile portable` on loopback ports and waits for its banner.
+func startPortable(t *testing.T, dir string, syslogPort, uiPort int) (*exec.Cmd, *syncBuf, chan error) {
+	t.Helper()
+	out := &syncBuf{}
+	cmd := exec.Command(binary, "portable", "--dir", dir, "--no-browser",
+		"--port", fmt.Sprint(syslogPort), "--listen", "127.0.0.1", "--ui-port", fmt.Sprint(uiPort))
+	cmd.Stdout, cmd.Stderr = out, out
+	prepareCmd(cmd)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	exited := make(chan error, 1)
+	go func() { exited <- cmd.Wait() }()
+	t.Cleanup(func() {
+		select {
+		case err := <-exited:
+			exited <- err
+		default:
+			_ = cmd.Process.Kill() // our own child, by PID
+			<-exited
+		}
+		if t.Failed() {
+			t.Logf("console:\n%s", out.String())
+		}
+	})
+	waitFor(t, "the banner", 30*time.Second, func() bool { return strings.Contains(out.String(), "Press Ctrl-C") })
+	return cmd, out, exited
+}
+
+func stopPortable(t *testing.T, cmd *exec.Cmd, out *syncBuf, exited chan error) {
+	t.Helper()
+	if err := terminate(cmd); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-exited:
+		exited <- err
+		if err != nil {
+			t.Fatalf("portable exited with %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("portable didn't stop within 10 s")
+	}
+	if !strings.Contains(out.String(), "Woodpile stopped; everything is saved") {
+		t.Error("no clean-stop line")
+	}
+}
+
+// With ui.require_login_local on, the API needs a login even on localhost; the
+// console's readiness check and new-device lines read the server in-process, so
+// they keep working.
+func TestPortableRequireLoginLocal(t *testing.T) {
+	if testingShort() {
+		t.Skip("-short")
+	}
+	dir := t.TempDir()
+	syslogPort, uiPort := pickPorts(t)
+	cmd, out, exited := startPortable(t, dir, syslogPort, uiPort)
+	base := fmt.Sprintf("http://127.0.0.1:%d", uiPort)
+	put := func(path string, body string) int {
+		req, _ := http.NewRequest("PUT", base+path, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	if code := put("/api/password", `{"current":"","new":"correct horse battery"}`); code != 204 {
+		t.Fatalf("set password: %d", code)
+	}
+	resp, err := http.Get(base + "/api/settings")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var settings map[string]any
+	json.NewDecoder(resp.Body).Decode(&settings)
+	resp.Body.Close()
+	settings["ui"].(map[string]any)["require_login_local"] = true
+	b, _ := json.Marshal(settings)
+	if code := put("/api/settings", string(b)); code != 200 {
+		t.Fatalf("turn on require_login_local: %d", code)
+	}
+	stopPortable(t, cmd, out, exited)
+
+	// Again, now with the login required.
+	cmd, out, exited = startPortable(t, dir, syslogPort, uiPort)
+	if !strings.Contains(out.String(), fmt.Sprintf("Listening on UDP %d and TCP %d", syslogPort, syslogPort)) {
+		t.Errorf("banner without the listeners:\n%s", out.String())
+	}
+	if resp, err := http.Get(base + "/api/devices"); err != nil || resp.StatusCode != 401 {
+		t.Fatalf("the API doesn't need a login: %v %v", resp, err)
+	} else {
+		resp.Body.Close()
+	}
+	run := loadgen.NewRunID()
+	if _, err := loadgen.Send(context.Background(), loadgen.SendOptions{
+		Addr: fmt.Sprintf("127.0.0.1:%d", syslogPort), Proto: "tcp", Count: 500, RunID: run}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the new-device line", 20*time.Second, func() bool { return strings.Contains(out.String(), "New device 127.0.0.1") })
+	stopPortable(t, cmd, out, exited)
+	if v, err := loadgen.Verify(dir, run, 500); err != nil || v.Missing != 0 || v.Duplicates != 0 {
+		t.Fatalf("%+v %v", v, err)
+	}
 }

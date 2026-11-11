@@ -2,13 +2,11 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
-	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -287,8 +285,7 @@ func runPortable(o portableOpts, stdout, stderr io.Writer) (code int) {
 	done := make(chan error, 1)
 	go func() { done <- srv.Run(ctx) }()
 
-	base := fmt.Sprintf("http://127.0.0.1:%d", port)
-	st, stErr := waitForUI(ctx, srv, base, done)
+	st, stErr := waitForUI(ctx, srv, done)
 	if stErr != nil {
 		stop()
 		err := <-done
@@ -319,7 +316,7 @@ func runPortable(o portableOpts, stdout, stderr io.Writer) (code int) {
 			log.Warn("couldn't open the browser", "err", err)
 		}
 	}
-	go watchDevices(ctx, base, stdout)
+	go watchDevices(ctx, srv, stdout)
 
 	err = <-done
 	fmt.Fprintln(stdout)
@@ -341,9 +338,10 @@ func alreadyRunning(dir string) string {
 
 var errStoppedEarly = errors.New("the server stopped while starting")
 
-// waitForUI waits until the UI answers and returns /api/status.
-func waitForUI(ctx context.Context, srv *server.Server, base string, done chan error) (api.Status, error) {
-	client := &http.Client{Timeout: 2 * time.Second}
+// waitForUI waits until the UI is listening and returns the server's status.
+// Both come from the server in this process, not over HTTP, so they work
+// whatever the UI's login settings (require_login_local).
+func waitForUI(ctx context.Context, srv *server.Server, done chan error) (api.Status, error) {
 	deadline := time.Now().Add(20 * time.Second)
 	for time.Now().Before(deadline) {
 		select {
@@ -357,41 +355,28 @@ func waitForUI(ctx context.Context, srv *server.Server, base string, done chan e
 		if !srv.UIState().Listening {
 			continue
 		}
-		var st api.Status
-		if err := getJSON(client, base+"/api/status", &st); err == nil {
-			return st, nil
-		}
+		return srv.LocalStatus(ctx)
 	}
 	if e := srv.UIState().Err; e != nil {
 		return api.Status{}, fmt.Errorf("the UI didn't start: %v", e)
 	}
-	return api.Status{}, errors.New("the UI didn't answer within 20 s")
+	return api.Status{}, errors.New("the UI didn't start within 20 s")
 }
 
-func getJSON(c *http.Client, url string, v any) error {
-	resp, err := c.Get(url)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("%s: %s", url, resp.Status)
-	}
-	return json.NewDecoder(io.LimitReader(resp.Body, 8<<20)).Decode(v)
+// deviceLister is the part of the server watchDevices needs.
+type deviceLister interface {
+	LocalDevices(ctx context.Context) ([]api.Device, error)
 }
 
 // watchDevices prints a line for each device that sends its first message
-// while we run (polling the local API; the index learns of a device within the
-// store's few-second index interval).
-func watchDevices(ctx context.Context, base string, out io.Writer) {
-	client := &http.Client{Timeout: 3 * time.Second}
+// while we run. It asks the server in this process (the index learns of a
+// device within the store's few-second index interval).
+func watchDevices(ctx context.Context, srv deviceLister, out io.Writer) {
 	seen := map[string]bool{}
 	first := true
 	for {
-		// Newest first, so a new sender is on the first page however many there are.
-		var page api.DevicePage
-		if err := getJSON(client, base+"/api/devices?sort=first_seen&limit=1000", &page); err == nil {
-			for _, d := range page.Devices {
+		if ds, err := srv.LocalDevices(ctx); err == nil {
+			for _, d := range ds {
 				if seen[d.ID] {
 					continue
 				}
