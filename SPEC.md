@@ -273,13 +273,39 @@ Still unproven:
 - arm64 packages; the macOS firewall prompt for a logged-in user; `reset-password` restarting a real service.
 
 ## 9. Roadmap (after v1)
-- TLS syslog (RFC 5425, port 6514)
-- Alerts: device quiet, disk filling, drops (email and webhook)
-- Device setup helper (generated logging config per vendor)
-- Device identity by hostname as an option, for relayed traffic
-- Forwarding to a SIEM; RELP
-- Signed installers
-- An opt-in update check (off by default)
+
+**Scope rule:** Woodpile is an *evidence collector for troubleshooting*: it collects, keeps, searches and exports what
+network devices send, so it can be handed to whoever is helping. It isn't a monitoring system, a flow-analytics
+product or a SIEM. Each new data type has to fit that rule (decided 2026-11-11).
+
+### 1.x
+- **Pluggable data types:** generalise the pipeline (listener → per-device store → index → search → export) so
+  each data type adds its own listener, record format, UI tab and export section, with syslog as the first.
+  Devices stay keyed by source IP across types.
+- **SNMP trap receiver** (UDP 162; v1, v2c, and v3 with user-configured credentials stored like the UI password).
+  Traps are stored decoded as text lines, with varbinds and the raw PDU, in the same per-device, per-day files. No
+  MIB compiler in the first version; numeric OIDs, plus an optional folder of MIB files for names.
+- TLS syslog (RFC 5425, port 6514).
+- Alerts: device quiet, error-rate spike, disk filling, drops (email and webhook). Simple thresholds only.
+- Device identity by hostname as an option, for relayed traffic.
+- Forwarding to another collector; RELP.
+- Signed installers.
+- An opt-in update check (off by default).
+
+### 2.0
+- **NetFlow v5/v9 and IPFIX collector** (UDP 2055/4739, configurable): template handling per exporter and
+  observation domain, compact columnar storage per device per hour, retention and the disk guard shared with
+  syslog. Search by time, IPs, ports and protocol; simple top-talker and top-port views for a time window;
+  windowed export (CSV or IPFIX file). No long-term flow analytics, baselining or anomaly detection.
+- **The export zip covers every data type**: syslog, traps and flows for the chosen devices and window, with one
+  manifest.
+- A small **OID watcher** (maybe): poll a handful of OIDs (CPU, memory, interface counters) on chosen devices at a
+  fixed interval and show them over time. Not a general SNMP poller.
+- Device setup helper (generated logging, trap and flow-export config per vendor).
+
+### Out of scope
+- SIEM features: correlation rules, threat detection, compliance reporting, case management.
+- Full network monitoring: discovery, topology, general SNMP polling, dashboards-as-code.
 
 ## 10. Open questions
 1. Where the repo lives. The answer given was the internal GHE, which conflicts with "open source on
