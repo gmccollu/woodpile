@@ -67,7 +67,10 @@ frontend install.
 
 ### 3.1 Listeners
 - UDP and TCP on 514 by default. Both ports and bind addresses can be changed in config.
-- TCP framing: auto-detect octet-counting (RFC 6587 §3.4.1) or newline-delimited, per connection.
+- TCP framing: auto-detect octet-counting (RFC 6587 §3.4.1) or newline-delimited (LF, CRLF or NUL), per
+  message. A frame counts as octet-counted when it starts with up to 10 digits, a space and `<`. After a
+  connection's first octet frame, the `<` check is dropped for that connection. This keeps a newline-framed line
+  starting with "123 " from being read as a count.
 - Max message size is 64 KiB. Anything longer is truncated and counted (`truncated` counter), never dropped.
 - UDP socket receive buffer: ask for 32 MiB. On Linux the kernel caps this at `net.core.rmem_max`, so the deb/rpm
   installs `/etc/sysctl.d/60-woodpile.conf` raising it to 32 MiB, and removes it on uninstall **(decided)**. On

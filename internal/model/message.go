@@ -20,7 +20,8 @@ type Message struct {
 	// Parsed metadata (zero values when absent).
 	Facility  int       // 0-23, or SeverityUnknown if no PRI
 	Severity  int       // 0-7, or SeverityUnknown if no PRI
-	Timestamp time.Time // the device's own timestamp, if parseable
+	Timestamp time.Time // the device's own timestamp as a UTC instant, if parseable. Zone-less device times are
+	// read as UTC wall-clock time (the real zone can't be known), so the UI labels this "device time".
 	Hostname  string
 	App       string
 }
