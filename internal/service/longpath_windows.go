@@ -37,5 +37,9 @@ func getLong(p string) (string, bool) {
 	if err != nil || n == 0 || int(n) > len(buf) {
 		return "", false
 	}
-	return strings.TrimRight(windows.UTF16ToString(buf[:n]), `\`), true
+	l := strings.TrimRight(windows.UTF16ToString(buf[:n]), `\`)
+	if len(l) == 2 && l[1] == ':' {
+		l += `\` // a drive root keeps its separator: "C:" alone is drive-relative
+	}
+	return l, true
 }

@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -212,9 +213,47 @@ func TestSearchContextExport(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer c.Close()
-	t0 := time.Now()
 	p.stop()
-	if d := time.Since(t0); d > 3*time.Second {
+	// Measured by the server's own log ("shutting down" to "stopped cleanly"), not
+	// the wall clock: on a busy Windows arm64 runner the Ctrl-Break alone took 3.5 s
+	// to arrive, while the shutdown itself took 0.2 s.
+	if d, ok := shutdownTook(p.logPath); !ok {
+		t.Error("no shutdown lines in the log")
+	} else if d > 3*time.Second {
 		t.Errorf("shutdown took %v with an idle connection open", d)
 	}
+}
+
+// shutdownTook reads the last "shutting down" and "stopped cleanly" times from a
+// woodpile log.
+func shutdownTook(logPath string) (time.Duration, bool) {
+	b, err := os.ReadFile(logPath)
+	if err != nil {
+		return 0, false
+	}
+	var start, end time.Time
+	for _, line := range strings.Split(string(b), "\n") {
+		ts, ok := strings.CutPrefix(line, "time=")
+		if !ok {
+			continue
+		}
+		f := strings.Fields(ts)
+		if len(f) == 0 {
+			continue
+		}
+		at, err := time.Parse(time.RFC3339Nano, f[0])
+		if err != nil {
+			continue
+		}
+		switch {
+		case strings.Contains(line, `msg="shutting down"`):
+			start = at
+		case strings.Contains(line, `msg="stopped cleanly"`):
+			end = at
+		}
+	}
+	if start.IsZero() || end.IsZero() || end.Before(start) {
+		return 0, false
+	}
+	return end.Sub(start), true
 }

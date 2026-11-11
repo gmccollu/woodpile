@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"unicode"
@@ -129,14 +130,19 @@ func winWithin(dir, root string) bool {
 // not a clean absolute path.
 func checkDataDir(goos, dir string, homes []string) error {
 	if goos == "windows" {
-		return checkWindowsDataDir(longPath(dir), homes)
+		// The raw checks (control characters, ..) before longPath resolves anything.
+		if err := checkWindowsDataDir(dir, nil, true); err != nil {
+			return err
+		}
+		return checkWindowsDataDir(longPath(dir), homes, false)
 	}
-	if err := checkServicePath("the data folder", dir); err != nil {
+	// Unix paths with Unix rules (package path), whatever OS this runs on.
+	if err := checkUnixPath("the data folder", dir); err != nil {
 		return err
 	}
 	fold := goos == "darwin"
 	same := func(a, b string) bool {
-		a, b = filepath.Clean(a), filepath.Clean(b)
+		a, b = path.Clean(a), path.Clean(b)
 		if fold {
 			return strings.EqualFold(a, b)
 		}
@@ -157,12 +163,12 @@ func checkDataDir(goos, dir string, homes []string) error {
 		}
 	}
 	for _, h := range homes {
-		if h != "" && (same(dir, h) || same(dir, filepath.Dir(h))) {
+		if h != "" && (same(dir, h) || same(dir, path.Dir(h))) {
 			return fmt.Errorf("the data folder can't be a home folder or the folder holding them (%s)", dir)
 		}
 	}
 	for _, p := range []string{"/home", "/Users"} {
-		if same(filepath.Dir(dir), p) {
+		if same(path.Dir(dir), p) {
 			return fmt.Errorf("the data folder can't be a home folder (%s)", dir)
 		}
 	}
@@ -172,13 +178,34 @@ func checkDataDir(goos, dir string, homes []string) error {
 // checkConfigDir is checkDataDir for the config's folder, which may also be a
 // folder of its own directly under /etc (the packages use /etc/woodpile).
 func checkConfigDir(goos, dir string, homes []string) error {
-	if goos == "linux" && filepath.Dir(dir) == "/etc" && dir != "/etc" {
-		return checkServicePath("the config folder", dir)
+	if goos == "linux" && path.Dir(dir) == "/etc" && dir != "/etc" {
+		return checkUnixPath("the config folder", dir)
 	}
 	return checkDataDir(goos, dir, homes)
 }
 
-func checkWindowsDataDir(dir string, homes []string) error {
+// checkUnixPath is checkServicePath with Unix rules (package path).
+func checkUnixPath(what, p string) error {
+	if p == "" {
+		return fmt.Errorf("%s is empty", what)
+	}
+	for _, r := range p {
+		if unicode.IsControl(r) || r == '"' {
+			return fmt.Errorf("%s %q contains a control character or a quote", what, p)
+		}
+	}
+	if !path.IsAbs(p) {
+		return fmt.Errorf("%s %q isn't an absolute path", what, p)
+	}
+	if path.Clean(p) != p {
+		return fmt.Errorf("%s %q isn't a clean path (no .., //, or trailing slash)", what, p)
+	}
+	return nil
+}
+
+// checkWindowsDataDir checks a Windows data folder; rawOnly checks only what must
+// be checked before longPath resolves the path (control characters, quotes, ..).
+func checkWindowsDataDir(dir string, homes []string, rawOnly bool) error {
 	for _, r := range dir {
 		if r < 0x20 || r == '"' {
 			return fmt.Errorf("the data folder %q contains a control character or a quote", dir)
@@ -192,6 +219,9 @@ func checkWindowsDataDir(dir string, homes []string) error {
 	}
 	if strings.Contains(`\`+strings.ReplaceAll(dir, "/", `\`)+`\`, `\..\`) {
 		return fmt.Errorf("the data folder %q contains ..", dir)
+	}
+	if rawOnly {
+		return nil
 	}
 	if len(c) <= 2 || !strings.Contains(c[3:], `\`) && len(c) <= 3 {
 		return fmt.Errorf("the data folder can't be the root of a drive (%s)", dir)
