@@ -406,8 +406,8 @@ func TestLoadConfigDataDirNextToConfig(t *testing.T) {
 	if err != nil || !created {
 		t.Fatalf("LoadConfig: %v, created %v", err, created)
 	}
-	if c.Storage.DataDir != filepath.Dir(path) {
-		t.Errorf("data_dir = %s, want %s", c.Storage.DataDir, filepath.Dir(path))
+	if want := filepath.Join(filepath.Dir(path), "woodpile-data"); c.Storage.DataDir != want {
+		t.Errorf("data_dir = %s, want %s", c.Storage.DataDir, want)
 	}
 	if errs := c.Validate(nil); len(errs) > 0 {
 		t.Errorf("a new config doesn't validate: %v", errs)

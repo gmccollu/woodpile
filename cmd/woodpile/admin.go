@@ -36,10 +36,12 @@ Needs administrator rights (sudo, or an administrator prompt on Windows).
 This is for machines without the package. If the package already installed the
 service, install refuses, so there's never a second one.`, stderr)
 	cfg := configFlag(fs)
+	dataDir := fs.String("data-dir", config.DefaultDataDir(), "data `folder` (logs, index); the config must name the same one")
 	if code, done := parse(fs, args, stdout); done {
 		return code
 	}
-	res, err := service.Install(service.InstallOptions{ConfigPath: *cfg, Out: &headed{w: stdout, head: "Installing the Woodpile service:"}})
+	res, err := service.Install(service.InstallOptions{ConfigPath: *cfg, DataDir: *dataDir,
+		Out: &headed{w: stdout, head: "Installing the Woodpile service:"}})
 	if err != nil {
 		return fail(stderr, "install", err)
 	}
@@ -159,6 +161,9 @@ reached.`, stderr)
 			w.row(label, describeListener(l))
 		}
 		w.row("UI", uiURL(cfg))
+		if status.UICertFingerprint != "" {
+			w.row("TLS cert", "SHA-256 "+status.UICertFingerprint)
+		}
 		w.row("Data", status.DataDir)
 		for i, b := range status.Banners {
 			label := ""
@@ -169,9 +174,12 @@ reached.`, stderr)
 		}
 		return 0
 	case errors.Is(apiErr, errNeedsLogin):
-		w.row("Server", "running in LAN mode")
+		w.row("Server", "running; the UI needs a login")
 		w.row("Listeners", "log in to the UI to see them")
 		w.row("UI", uiURL(cfg))
+		if rs, err := server.ReadState(cfg.Storage.DataDir); err == nil && rs.UI.CertFingerprint != "" {
+			w.row("TLS cert", "SHA-256 "+rs.UI.CertFingerprint)
+		}
 		return 0
 	}
 
@@ -210,7 +218,7 @@ func describeListener(l api.Listener) string {
 	return s
 }
 
-var errNeedsLogin = errors.New("LAN mode: the API needs a login")
+var errNeedsLogin = errors.New("the API needs a login (LAN mode, or require_login_local)")
 
 // fetchStatus reads /api/status from the local server.
 func fetchStatus(cfg config.Config) (api.Status, error) {
@@ -404,8 +412,17 @@ way to do this over the network, by design.`, stderr)
 	wasLAN := cfg.UI.LANMode
 	if wasLAN {
 		cfg.UI.LANMode = false
+		// Run as root, Save would leave the config root-owned, and the service
+		// couldn't read it (security review L3): keep its owner and mode.
+		keep, err := fileOwnership(abs)
+		if err != nil {
+			return fail(stderr, "reset-password", err)
+		}
 		if err := config.Save(abs, cfg); err != nil {
 			return fail(stderr, "reset-password", adminErr(err))
+		}
+		if err := keep.restore(abs); err != nil {
+			return fail(stderr, "reset-password", fmt.Errorf("restore the config's owner: %w", err))
 		}
 	}
 	switch {

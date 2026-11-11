@@ -2,8 +2,6 @@ package service
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/gmccollu/woodpile/packaging"
@@ -21,6 +19,11 @@ const (
 // launchdPlist is the packaged plist (packaging/macos/com.woodpile.daemon.plist)
 // with this install's config and data paths (the same as the pkg's by default).
 func launchdPlist(cfgPath, dataDir string) (string, error) {
+	for what, v := range map[string]string{"the config path": cfgPath, "the data folder": dataDir} {
+		if err := checkServicePath(what, v); err != nil {
+			return "", err
+		}
+	}
 	p := packaging.LaunchdPlist
 	cfgLine := "<string>" + darwinPkgConfig + "</string>"
 	wdLine := "<key>WorkingDirectory</key>\n\t<string>" + darwinPkgData + "</string>"
@@ -61,21 +64,10 @@ func plistPaths(plist string) (cfgPath, dataDir string) {
 }
 
 // ensureMacAccount runs the pkg's own ensure_service_account
-// (packaging/macos/scripts/common.sh) to create _woodpile.
+// (packaging/macos/scripts/common.sh) to create _woodpile. The script goes to sh
+// on stdin, so no file in a temp folder another user could swap (review item 6).
 func ensureMacAccount(h *host) error {
-	f, err := os.CreateTemp("", "woodpile-account-*.sh")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(f.Name())
-	if _, err := f.WriteString(packaging.MacAccountScript); err != nil {
-		f.Close()
-		return err
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	out, err := h.run("/bin/sh", "-c", `. "$1" && ensure_service_account`, "sh", f.Name())
+	out, err := h.runInput(packaging.MacAccountScript+"\nensure_service_account\n", "/bin/sh", "-s")
 	if out != "" {
 		for _, l := range strings.Split(out, "\n") {
 			h.say("%s", strings.TrimPrefix(l, "woodpile: "))
@@ -89,33 +81,19 @@ func installLaunchd(h *host, o InstallOptions, dataDir string) (Result, error) {
 	if err := ensureMacAccount(h); err != nil {
 		return res, fmt.Errorf("create the %s account: %w", DarwinUser, err)
 	}
-	owner := DarwinUser + ":" + DarwinUser
-	cfgDir := filepath.Dir(o.ConfigPath)
-	for _, d := range []string{dataDir, cfgDir, darwinLogDir} {
-		if err := h.mkdirAll(d, 0o750); err != nil {
-			return res, err
-		}
-	}
-	if _, err := h.run("chown", "-R", owner, dataDir); err != nil {
+	notes, err := prepareFolders(h, "darwin", o.ConfigPath, dataDir, DarwinUser, DarwinUser)
+	res.Notes = append(res.Notes, notes...)
+	if err != nil {
 		return res, err
 	}
-	for _, d := range []string{cfgDir, darwinLogDir} {
-		if d == dataDir {
-			continue
-		}
-		if _, err := h.run("chown", owner, d); err != nil {
-			return res, err
-		}
-		if err := h.chmod(d, 0o750); err != nil {
-			return res, err
-		}
+	// The daemon's own log folder, as the pkg's postinstall sets it.
+	if err := h.mkdirAll(darwinLogDir, 0o750); err != nil {
+		return res, err
 	}
-	if cfgDir != dataDir && h.exists(o.ConfigPath) {
-		if _, err := h.run("chown", owner, o.ConfigPath); err != nil {
-			return res, err
-		}
+	if err := h.chownDir(darwinLogDir, DarwinUser, DarwinUser); err != nil {
+		return res, err
 	}
-	if err := h.chmod(dataDir, 0o750); err != nil {
+	if err := h.chmod(darwinLogDir, 0o750); err != nil {
 		return res, err
 	}
 
@@ -169,7 +147,7 @@ func uninstallLaunchd(h *host, o UninstallOptions) (Result, error) {
 		}
 		h.say("removed %s", f)
 	}
-	if err := deleteData(h, o, &res, cfgPath, dataDir); err != nil {
+	if err := deleteData(h, "darwin", o, &res, cfgPath, dataDir); err != nil {
 		return res, err
 	}
 	if o.DeleteLogs {

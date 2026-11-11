@@ -266,9 +266,12 @@ func (osProber) windowsService(name string) (bool, bool, error) { return windows
 
 // InstallOptions configures Install.
 type InstallOptions struct {
-	ConfigPath string    // the config the service runs with (default: this OS's)
-	Exe        string    // the binary to install (default: this program)
-	Out        io.Writer // progress lines (default: discarded)
+	ConfigPath string // the config the service runs with (default: this OS's)
+	// DataDir is the data folder (default: this OS's). It's never taken from the
+	// config, which the service account can write (security review M1).
+	DataDir string
+	Exe     string    // the binary to install (default: this program)
+	Out     io.Writer // progress lines (default: discarded)
 }
 
 // UninstallOptions configures Uninstall.
@@ -305,6 +308,12 @@ func Install(o InstallOptions) (Result, error) {
 	if o.ConfigPath, err = filepath.Abs(o.ConfigPath); err != nil {
 		return Result{}, err
 	}
+	if o.DataDir == "" {
+		o.DataDir = config.DefaultDataDir()
+	}
+	if o.DataDir, err = filepath.Abs(o.DataDir); err != nil {
+		return Result{}, err
+	}
 	if o.Exe == "" {
 		if o.Exe, err = os.Executable(); err != nil {
 			return Result{}, fmt.Errorf("find this program's path: %w", err)
@@ -339,24 +348,6 @@ func Uninstall(o UninstallOptions) (Result, error) {
 		return Result{}, err
 	}
 	return uninstallOS(o)
-}
-
-// dataDirFor is the data dir a service with this config uses: the config's
-// storage.data_dir if the file exists, else what the server will create it with
-// (the OS default at the default path, the config's folder anywhere else; see
-// server.LoadConfig).
-func dataDirFor(cfgPath string) (string, error) {
-	if _, err := os.Stat(cfgPath); err == nil {
-		c, err := config.Load(cfgPath)
-		if err != nil {
-			return "", err
-		}
-		return c.Storage.DataDir, nil
-	}
-	if filepath.Clean(cfgPath) == filepath.Clean(config.DefaultConfigPath()) {
-		return config.DefaultDataDir(), nil
-	}
-	return filepath.Dir(cfgPath), nil
 }
 
 // ---- status ----

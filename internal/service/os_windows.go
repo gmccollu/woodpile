@@ -5,18 +5,22 @@ package service
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+	"unsafe"
 
 	ksvc "github.com/kardianos/service"
 	"golang.org/x/sys/windows"
+	"golang.org/x/sys/windows/registry"
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/eventlog"
 	"golang.org/x/sys/windows/svc/mgr"
 
 	"github.com/gmccollu/woodpile/internal/config"
+	"github.com/gmccollu/woodpile/internal/winacl"
 	"github.com/gmccollu/woodpile/packaging"
 )
 
@@ -41,50 +45,92 @@ func windowsExe() string {
 	return filepath.Join(pf, "Woodpile", "woodpile.exe")
 }
 
-// setDataACL gives dir the MSI's protected DACL (packaging.WindowsDataSDDL).
-// Inheritable entries propagate to what's already inside.
-func setDataACL(dir string) error {
-	sd, err := windows.SecurityDescriptorFromString(packaging.WindowsDataSDDL)
-	if err != nil {
+// paramsKey holds what `woodpile install` recorded for uninstall (only
+// administrators can write it, unlike the config).
+const paramsKey = `SYSTEM\CurrentControlSet\Services\` + WindowsName + `\Parameters`
+
+// prepareWindowsDataDir checks the data folder (security review M1d, M2, M3):
+// not a system or home folder, not a reparse point, empty or Woodpile's, and if
+// it already exists, owned by SYSTEM or Administrators. Then it gets the MSI's
+// protected ACL, and everything inside loses any explicit entries (a planted
+// Everyone:F) and inherits it.
+func prepareWindowsDataDir(h *host, dir string) error {
+	if err := checkDataDir("windows", dir, homeDirs()); err != nil {
 		return err
 	}
-	dacl, _, err := sd.DACL()
-	if err != nil {
+	if err := h.checkDataDirContents(dir); err != nil {
 		return err
 	}
-	owner, _, err := sd.Owner()
-	if err != nil {
+	if _, err := os.Lstat(dir); err == nil {
+		ok, owner, err := winacl.OwnedByAdmins(dir)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return fmt.Errorf("%s already exists and is owned by %s, not SYSTEM or Administrators; "+
+				"delete it (or take ownership as an administrator) and install again", dir, owner)
+		}
+	}
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return err
 	}
-	return windows.SetNamedSecurityInfo(dir, windows.SE_FILE_OBJECT,
-		windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION,
-		owner, nil, dacl, nil)
+	if err := winacl.SetSDDL(dir, packaging.WindowsDataSDDL, true); err != nil {
+		return fmt.Errorf("set the permissions on %s: %w", dir, err)
+	}
+	return filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if p == dir {
+			return nil
+		}
+		if d.Type()&(fs.ModeSymlink|fs.ModeIrregular) != 0 {
+			return fmt.Errorf("%s is a link or junction; remove it and install again", p)
+		}
+		if err := winacl.ResetToInherited(p); err != nil {
+			return fmt.Errorf("reset the permissions on %s: %w", p, err)
+		}
+		return nil
+	})
 }
 
 func installOS(o InstallOptions) (Result, error) {
 	h := realHost(o.Out)
 	exe := windowsExe()
-	dataDir, err := dataDirFor(o.ConfigPath)
-	if err != nil {
-		return Result{}, err
-	}
+	dataDir := o.DataDir
 	res := Result{Where: `service "` + WindowsName + `"`, Exe: exe, Config: o.ConfigPath, DataDir: dataDir, Account: WindowsAccount}
+	if err := checkServicePath("the config path", o.ConfigPath); err != nil {
+		return res, err
+	}
+	if err := h.checkConfigPath(o.ConfigPath); err != nil {
+		return res, err
+	}
+	if cd := filepath.Dir(o.ConfigPath); !strings.EqualFold(cd, dataDir) {
+		return res, fmt.Errorf("on Windows the config must be in the data folder (%s)", dataDir)
+	}
+	if h.exists(o.ConfigPath) {
+		c, err := config.Load(o.ConfigPath)
+		if err != nil {
+			return res, err
+		}
+		if !strings.EqualFold(filepath.Clean(c.Storage.DataDir), dataDir) {
+			return res, fmt.Errorf("%s names data_dir %q, but the service is being installed with %s; set data_dir to %s, or pass --data-dir",
+				o.ConfigPath, c.Storage.DataDir, dataDir, dataDir)
+		}
+	}
 
 	if err := h.copyFile(o.Exe, exe, 0o755); err != nil {
 		return res, fmt.Errorf("copy the binary to %s: %w", exe, err)
 	}
 	h.say("installed %s", exe)
-
-	dirs := []string{dataDir}
-	if cd := filepath.Dir(o.ConfigPath); !strings.EqualFold(filepath.Clean(cd), filepath.Clean(dataDir)) {
-		dirs = append(dirs, cd)
+	if err := prepareWindowsDataDir(h, dataDir); err != nil {
+		return res, err
 	}
-	for _, d := range dirs {
-		if err := os.MkdirAll(d, 0o750); err != nil {
+	if !h.exists(o.ConfigPath) {
+		c := config.Default()
+		c.Storage.DataDir = dataDir
+		if err := config.Save(o.ConfigPath, c); err != nil {
 			return res, err
-		}
-		if err := setDataACL(d); err != nil {
-			return res, fmt.Errorf("set the permissions on %s: %w", d, err)
 		}
 	}
 	h.say("%s is writable only by %s, SYSTEM and Administrators", dataDir, WindowsAccount)
@@ -121,7 +167,21 @@ func installOS(o InstallOptions) (Result, error) {
 	if err := s.SetRecoveryActionsOnNonCrashFailures(true); err != nil {
 		return res, err
 	}
-	h.say("created service %s, running as %s", WindowsName, WindowsAccount)
+	// Only the privilege it needs (security review L4): a virtual account gets
+	// SeImpersonatePrivilege and others by default.
+	if err := setRequiredPrivileges(s.Handle, []string{"SeChangeNotifyPrivilege"}); err != nil {
+		return res, fmt.Errorf("limit the service's privileges: %w", err)
+	}
+	if k, _, err := registry.CreateKey(registry.LOCAL_MACHINE, paramsKey, registry.SET_VALUE); err == nil {
+		err = k.SetStringValue("DataDir", dataDir)
+		k.Close()
+		if err != nil {
+			return res, err
+		}
+	} else {
+		return res, err
+	}
+	h.say("created service %s, running as %s with only SeChangeNotifyPrivilege", WindowsName, WindowsAccount)
 
 	for _, r := range windowsFirewallRules {
 		_, _ = h.run("netsh", "advfirewall", "firewall", "delete", "rule", "name="+r.name)
@@ -156,6 +216,9 @@ func uninstallOS(o UninstallOptions) (Result, error) {
 	}
 	exe, cfgPath := parseWindowsCommand(cfg.BinaryPathName)
 	res.Exe, res.Config = exe, cfgPath
+	// The data folder recorded at install, never the config's (M1d); read before
+	// the service's registry key goes with it.
+	dataDir := recordedDataDir()
 	if st, err := s.Query(); err == nil && st.State != svc.Stopped {
 		if _, err := s.Control(svc.Stop); err == nil {
 			for i := 0; i < 60; i++ {
@@ -186,14 +249,36 @@ func uninstallOS(o UninstallOptions) (Result, error) {
 		}
 	}
 	if cfgPath == "" {
-		cfgPath = config.DefaultConfigPath()
-	}
-	dataDir, err := dataDirFor(cfgPath)
-	if err != nil {
-		dataDir = filepath.Dir(cfgPath)
+		cfgPath = filepath.Join(dataDir, config.FileName)
 	}
 	res.DataDir = dataDir
-	return res, deleteData(h, o, &res, cfgPath, dataDir)
+	return res, deleteData(h, "windows", o, &res, cfgPath, dataDir)
+}
+
+func recordedDataDir() string {
+	if k, err := registry.OpenKey(registry.LOCAL_MACHINE, paramsKey, registry.QUERY_VALUE); err == nil {
+		defer k.Close()
+		if v, _, err := k.GetStringValue("DataDir"); err == nil && v != "" {
+			return v
+		}
+	}
+	return config.DefaultDataDir()
+}
+
+// setRequiredPrivileges limits a service's token to privs
+// (SERVICE_CONFIG_REQUIRED_PRIVILEGES_INFO).
+func setRequiredPrivileges(h windows.Handle, privs []string) error {
+	var multi []uint16
+	for _, p := range privs {
+		u, err := windows.UTF16FromString(p)
+		if err != nil {
+			return err
+		}
+		multi = append(multi, u...)
+	}
+	multi = append(multi, 0)
+	info := struct{ privs *uint16 }{&multi[0]}
+	return windows.ChangeServiceConfig2(h, windows.SERVICE_CONFIG_REQUIRED_PRIVILEGES_INFO, (*byte)(unsafe.Pointer(&info)))
 }
 
 // removeExe deletes the installed binary, which may be the one running this

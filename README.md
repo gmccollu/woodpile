@@ -48,8 +48,8 @@ Run it in the foreground with its own folder. Port 514 needs administrator right
 the OS's own syslog daemon, so this example uses a high port; the default config listens on 514.
 
 ```sh
-mkdir -p ./woodpile-data
-cat > ./woodpile-data/woodpile.toml <<'EOF'
+mkdir -p ./mysyslog
+cat > ./mysyslog/woodpile.toml <<'EOF'
 [listeners.udp]
 enabled = true
 addr = "127.0.0.1"
@@ -60,21 +60,21 @@ enabled = true
 addr = "127.0.0.1"
 port = 15514
 EOF
-./dist/woodpile run --config ./woodpile-data/woodpile.toml
+./dist/woodpile run --config ./mysyslog/woodpile.toml
 ```
 
 In another terminal, send a test message and check the listeners:
 
 ```sh
 ./dist/woodpile send --port 15514 --message "hello from woodpile"
-./dist/woodpile status --config ./woodpile-data/woodpile.toml
+./dist/woodpile status --config ./mysyslog/woodpile.toml
 ```
 
 Then open <http://localhost:8514/>. The message is also on disk, in
-`./woodpile-data/logs/127.0.0.1/<date>.log` (files are named by the UTC date).
+`./mysyslog/woodpile-data/logs/127.0.0.1/<date>.log` (files are named by the UTC date).
 
 Settings missing from the file take their defaults, and a config file that doesn't exist yet is created with
-them; either way the data folder is the folder the config is in. Stop the server with Ctrl-C: it writes
+them; either way the data folder is `woodpile-data` next to the config. Stop the server with Ctrl-C: it writes
 everything to disk first.
 
 ## Commands

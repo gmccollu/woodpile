@@ -22,6 +22,7 @@ import (
 	"github.com/gmccollu/woodpile/internal/api"
 	"github.com/gmccollu/woodpile/internal/config"
 	"github.com/gmccollu/woodpile/internal/server"
+	"github.com/gmccollu/woodpile/internal/winacl"
 )
 
 // Portable mode: download, double-click, and it runs, with nothing installed. The
@@ -111,10 +112,18 @@ func realDirEnv() dirEnv {
 	}
 }
 
-// makeWritable creates dir if needed and checks a file can be written in it.
+// makeWritable creates dir if needed and checks a file can be written in it. A
+// folder it creates is, on Windows, given a protected ACL for this user, SYSTEM
+// and Administrators (security review M3), whatever the parent allows.
 func makeWritable(dir string) error {
+	_, statErr := os.Stat(dir)
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return err
+	}
+	if errors.Is(statErr, os.ErrNotExist) {
+		if err := winacl.ProtectForCurrentUser(dir); err != nil {
+			return err
+		}
 	}
 	return checkWritable(dir)
 }

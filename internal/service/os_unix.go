@@ -17,10 +17,7 @@ func requireAdmin() error {
 }
 
 func installOS(o InstallOptions) (Result, error) {
-	dataDir, err := dataDirFor(o.ConfigPath)
-	if err != nil {
-		return Result{}, err
-	}
+	dataDir := o.DataDir
 	h := realHost(o.Out)
 	switch runtime.GOOS {
 	case "linux":

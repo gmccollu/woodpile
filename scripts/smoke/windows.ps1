@@ -212,9 +212,20 @@ switch ($Mode) {
     }
     "manual" {
         $bin = (Resolve-Path $Binary).Path
+        # Review M3: an ordinary user pre-creates a child folder that everyone can write.
+        New-Item -ItemType Directory -Force -Path (Join-Path $Data "logs") | Out-Null
+        icacls (Join-Path $Data "logs") /grant "*S-1-1-0:(OI)(CI)F" | Out-Null
         Say "woodpile install (no package)"
         Native $bin @("install")
         Check-Running | Out-Null
+        $child = (Get-Acl (Join-Path $Data "logs")).Sddl
+        Write-Host "logs ACL: $child"
+        if ($child -match ";;;WD\)") { Die "the planted Everyone entry on logs survived the install" }
+        Ok "install reset the ACL of a pre-created child folder (no Everyone entry)"
+        $privs = (sc.exe qprivs Woodpile) -join " "
+        Write-Host $privs
+        if ($privs -notmatch "SeChangeNotifyPrivilege" -or $privs -match "SeImpersonatePrivilege") { Die "required privileges aren't limited" }
+        Ok "the service's required privileges are only SeChangeNotifyPrivilege"
         $r1 = New-RunId
         Send-Traffic $Exe $r1
         Check-EventLog

@@ -6,17 +6,23 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/gmccollu/woodpile/internal/config"
 
 	"github.com/gmccollu/woodpile/packaging"
 )
 
 // fakeRunner records commands; fail lists command prefixes that fail.
 type fakeRunner struct {
-	cmds []string
-	fail []string
-	outs map[string]string
+	cmds   []string
+	fail   []string
+	outs   map[string]string
+	inputs []string
+	// chowned lists the paths (relative to the fake root) given away.
+	chowned []string
 }
 
 func (f *fakeRunner) run(name string, args ...string) (string, error) {
@@ -28,6 +34,11 @@ func (f *fakeRunner) run(name string, args ...string) (string, error) {
 		}
 	}
 	return f.outs[c], nil
+}
+
+func (f *fakeRunner) runInput(input, name string, args ...string) (string, error) {
+	f.inputs = append(f.inputs, input)
+	return f.run(name, args...)
 }
 
 func (f *fakeRunner) ran(prefix string) bool {
@@ -51,6 +62,12 @@ func unixOnly(t *testing.T) {
 func fakeHost(t *testing.T, r *fakeRunner, dirs ...string) *host {
 	t.Helper()
 	h := &host{runner: r, root: t.TempDir(), out: io.Discard}
+	h.lookupIDs = func(u, g string) (int, int, error) { return 1001, 1001, nil }
+	h.chown = func(p string, uid, gid int) error {
+		rel, _ := filepath.Rel(h.root, p)
+		r.chowned = append(r.chowned, "/"+filepath.ToSlash(rel))
+		return nil
+	}
 	for _, d := range dirs {
 		if err := os.MkdirAll(h.path(d), 0o755); err != nil {
 			t.Fatal(err)
@@ -119,8 +136,6 @@ func TestInstallSystemd(t *testing.T) {
 	for _, c := range []string{
 		"groupadd --system woodpile",
 		"useradd --system --gid woodpile --home-dir /var/lib/woodpile --no-create-home --shell /usr/sbin/nologin --comment Woodpile syslog server woodpile",
-		"chown -R woodpile:woodpile /var/lib/woodpile",
-		"chown woodpile:woodpile /etc/woodpile",
 		"sysctl -q -p /etc/sysctl.d/60-woodpile.conf",
 		"systemctl daemon-reload",
 		"systemctl enable woodpile.service",
@@ -141,10 +156,17 @@ func TestInstallSystemd(t *testing.T) {
 	if fi, err := os.Stat(h.path(linuxBin)); err != nil || fi.Mode().Perm() != 0o755 {
 		t.Errorf("binary: %v %v", fi, err)
 	}
+	for _, p := range []string{"/var/lib/woodpile", "/etc/woodpile", "/etc/woodpile/woodpile.toml"} {
+		if !slices.Contains(r.chowned, p) {
+			t.Errorf("%s not given to woodpile; chowned %v", p, r.chowned)
+		}
+	}
+	if c, err := config.Load(h.path("/etc/woodpile/woodpile.toml")); err != nil || c.Storage.DataDir != "/var/lib/woodpile" {
+		t.Errorf("the new config: %+v %v", c.Storage, err)
+	}
 
 	// Uninstall keeps the data by default...
 	os.MkdirAll(h.path("/var/lib/woodpile/logs"), 0o750)
-	os.WriteFile(h.path("/etc/woodpile/woodpile.toml"), []byte("x"), 0o640)
 	r.cmds = nil
 	res, err = uninstallSystemd(h, UninstallOptions{})
 	if err != nil {
@@ -209,15 +231,21 @@ func TestInstallLaunchd(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, c := range []string{
-		"/bin/sh -c . \"$1\" && ensure_service_account sh ",
-		"chown -R _woodpile:_woodpile /Library/Application Support/Woodpile",
-		"chown _woodpile:_woodpile /Library/Logs/Woodpile",
+		"/bin/sh -s",
 		"chown root:wheel " + darwinPlist,
 		"launchctl enable system/com.woodpile.daemon",
 		"launchctl bootstrap system " + darwinPlist,
 	} {
 		if !r.ran(c) {
 			t.Errorf("didn't run %q; ran:\n%s", c, strings.Join(r.cmds, "\n"))
+		}
+	}
+	if len(r.inputs) == 0 || !strings.HasSuffix(r.inputs[0], "\nensure_service_account\n") {
+		t.Error("the account script wasn't fed to sh on stdin")
+	}
+	for _, p := range []string{darwinPkgData, darwinPkgConfig, darwinLogDir} {
+		if !slices.Contains(r.chowned, p) {
+			t.Errorf("%s not given to _woodpile; chowned %v", p, r.chowned)
 		}
 	}
 	if got, _ := h.readFile(darwinNewsyslog); got != packaging.NewsyslogConf {

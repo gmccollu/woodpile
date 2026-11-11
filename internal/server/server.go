@@ -30,6 +30,7 @@ import (
 	"github.com/gmccollu/woodpile/internal/listen"
 	"github.com/gmccollu/woodpile/internal/search"
 	"github.com/gmccollu/woodpile/internal/store"
+	"github.com/gmccollu/woodpile/internal/winacl"
 )
 
 // DefaultShutdownTimeout bounds the whole shutdown. It stays under the 20 s the
@@ -98,8 +99,16 @@ func Open(cfgPath string, opts Options) (*Server, error) {
 		return nil, fmt.Errorf("%s has invalid settings: %w", abs, errs)
 	}
 	dataDir := cfg.Storage.DataDir
+	_, statErr := os.Stat(dataDir)
 	if err := os.MkdirAll(dataDir, 0o750); err != nil {
 		return nil, fmt.Errorf("create the data folder: %w", err)
+	}
+	// A folder created here (not by an installer) gets, on Windows, a protected ACL
+	// for this account, SYSTEM and Administrators (security review M3).
+	if errors.Is(statErr, os.ErrNotExist) {
+		if err := winacl.ProtectForCurrentUser(dataDir); err != nil {
+			return nil, fmt.Errorf("protect the new data folder: %w", err)
+		}
 	}
 
 	s := &Server{opts: opts, log: log, cfgPath: abs, created: created}
@@ -175,12 +184,14 @@ func Open(cfgPath string, opts Options) (*Server, error) {
 // LoadConfig reads the config at path, creating it with defaults when it's
 // missing, and reports whether it did. A new config at the OS's default path
 // gets the OS's default data dir; one anywhere else keeps its data next to it
-// (the data dir is the config file's folder), so `woodpile run --config
+// (woodpile-data in the config file's folder), so `woodpile run --config
 // ./x/woodpile.toml` is self-contained. LoadConfig doesn't validate.
 func LoadConfig(path string) (config.Config, bool, error) {
 	def := config.Default()
 	if !samePath(path, config.DefaultConfigPath()) {
-		def.Storage.DataDir = filepath.Dir(path)
+		// woodpile-data next to the config, never the config's folder itself:
+		// `--config /etc/woodpile.toml` must not make /etc the data folder (review M2).
+		def.Storage.DataDir = filepath.Join(filepath.Dir(path), "woodpile-data")
 	}
 	c, created, err := config.LoadOrCreate(path, def)
 	if err != nil {

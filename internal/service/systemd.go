@@ -2,9 +2,11 @@ package service
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/gmccollu/woodpile/internal/config"
 	"github.com/gmccollu/woodpile/packaging"
 )
 
@@ -29,15 +31,27 @@ func systemdUnit(bin, cfgPath, dataDir string) (string, error) {
 			return "", fmt.Errorf("the packaged unit no longer has %q; update systemdUnit", want)
 		}
 	}
-	rw := []string{quoteIfSpace(dataDir)}
-	if d := filepath.Dir(cfgPath); d != dataDir {
-		rw = append(rw, quoteIfSpace(d))
+	for what, p := range map[string]string{"the binary": bin, "the config path": cfgPath, "the data folder": dataDir} {
+		if err := checkServicePath(what, p); err != nil {
+			return "", err
+		}
+		if strings.Contains(p, `\`) {
+			return "", fmt.Errorf("%s %q contains a backslash", what, p)
+		}
 	}
-	u = strings.Replace(u, linuxPkgExec, quoteIfSpace(bin)+" run --service --config "+quoteIfSpace(cfgPath), 1)
+	rw := []string{unitPath(dataDir)}
+	if d := filepath.Dir(cfgPath); d != dataDir {
+		rw = append(rw, unitPath(d))
+	}
+	u = strings.Replace(u, linuxPkgExec, unitPath(bin)+" run --service --config "+unitPath(cfgPath), 1)
 	u = strings.Replace(u, linuxPkgRW, "ReadWritePaths="+strings.Join(rw, " "), 1)
-	u = strings.Replace(u, linuxPkgWD, "WorkingDirectory="+quoteIfSpace(dataDir), 1)
+	u = strings.Replace(u, linuxPkgWD, "WorkingDirectory="+unitPath(dataDir), 1)
 	return installedByTag + "\n" + u, nil
 }
+
+// unitPath is a checked path as a unit-file value: % (a systemd specifier) is
+// doubled, and a path with spaces is quoted.
+func unitPath(p string) string { return quoteIfSpace(strings.ReplaceAll(p, "%", "%%")) }
 
 // nologinShell is the first of the shells the package's postinstall tries.
 func nologinShell(h *host) string {
@@ -69,28 +83,10 @@ func installSystemd(h *host, o InstallOptions, dataDir string) (Result, error) {
 		h.say("created user %s", LinuxUser)
 	}
 
-	// Data and config folders, owned by the service user (0750).
-	cfgDir := filepath.Dir(o.ConfigPath)
-	for _, d := range []string{dataDir, cfgDir} {
-		if err := h.mkdirAll(d, 0o750); err != nil {
-			return res, err
-		}
-	}
-	owner := LinuxUser + ":" + LinuxUser
-	if _, err := h.run("chown", "-R", owner, dataDir); err != nil {
-		return res, err
-	}
-	if cfgDir != dataDir {
-		if _, err := h.run("chown", owner, cfgDir); err != nil {
-			return res, err
-		}
-		if h.exists(o.ConfigPath) {
-			if _, err := h.run("chown", owner, o.ConfigPath); err != nil {
-				return res, err
-			}
-		}
-	}
-	if err := h.chmod(dataDir, 0o750); err != nil {
+	// Data and config folders, owned by the service user (0750), checked first.
+	notes, err := prepareFolders(h, "linux", o.ConfigPath, dataDir, LinuxUser, LinuxUser)
+	res.Notes = append(res.Notes, notes...)
+	if err != nil {
 		return res, err
 	}
 
@@ -133,7 +129,7 @@ func unitPaths(unit string) (bin, cfgPath, dataDir string) {
 	for _, line := range strings.Split(unit, "\n") {
 		switch {
 		case strings.HasPrefix(line, "ExecStart="):
-			f := splitUnitWords(strings.TrimPrefix(line, "ExecStart="))
+			f := splitUnitWords(strings.ReplaceAll(strings.TrimPrefix(line, "ExecStart="), "%%", "%"))
 			if len(f) > 0 {
 				bin = f[0]
 			}
@@ -143,7 +139,7 @@ func unitPaths(unit string) (bin, cfgPath, dataDir string) {
 				}
 			}
 		case strings.HasPrefix(line, "WorkingDirectory="):
-			if f := splitUnitWords(strings.TrimPrefix(line, "WorkingDirectory=")); len(f) > 0 {
+			if f := splitUnitWords(strings.ReplaceAll(strings.TrimPrefix(line, "WorkingDirectory="), "%%", "%")); len(f) > 0 {
 				dataDir = f[0]
 			}
 		}
@@ -207,32 +203,131 @@ func uninstallSystemd(h *host, o UninstallOptions) (Result, error) {
 		}
 		h.say("removed %s", linuxBin)
 	}
-	return res, deleteData(h, o, &res, cfgPath, dataDir)
+	return res, deleteData(h, "linux", o, &res, cfgPath, dataDir)
 }
 
 // deleteData deletes the data folder and the config with DeleteLogs, or notes
-// where they were kept.
-func deleteData(h *host, o UninstallOptions, res *Result, cfgPath, dataDir string) error {
+// where they were kept. The paths come from the installed unit, plist or
+// registry (never the config), and it refuses system and home folders, and a
+// folder that doesn't look like Woodpile's.
+func deleteData(h *host, goos string, o UninstallOptions, res *Result, cfgPath, dataDir string) error {
 	if !o.DeleteLogs {
 		if dataDir != "" {
 			res.Notes = append(res.Notes, "kept the logs, index and config in "+dataDir)
 		}
 		return nil
 	}
-	if dataDir == "" || dataDir == "/" || !filepath.IsAbs(dataDir) {
-		return fmt.Errorf("not deleting the data folder %q: it doesn't look like Woodpile's", dataDir)
+	if err := checkDataDir(goos, dataDir, homeDirs()); err != nil {
+		return fmt.Errorf("not deleting it: %w", err)
+	}
+	if err := h.checkDataDirContents(dataDir); err != nil {
+		return fmt.Errorf("not deleting it: %w", err)
 	}
 	if err := h.removeAll(dataDir); err != nil {
 		return err
 	}
 	h.say("deleted %s", dataDir)
-	if cfgPath != "" && filepath.Dir(cfgPath) != dataDir {
+	if cfgPath != "" && filepath.Dir(cfgPath) != dataDir && filepath.Base(cfgPath) == "woodpile.toml" {
+		if err := h.checkConfigPath(cfgPath); err != nil {
+			return fmt.Errorf("not deleting the config: %w", err)
+		}
 		if err := h.remove(cfgPath); err != nil {
 			return err
 		}
-		// The config folder goes too if nothing else is in it.
+		// The config folder goes too if nothing else is in it (Remove fails otherwise).
 		_ = h.remove(filepath.Dir(cfgPath))
 		h.say("deleted %s", cfgPath)
+	}
+	return nil
+}
+
+// prepareFolders checks and creates the data and config folders for a service
+// install, writes a new config naming dataDir if there's none, and gives both
+// to the service account without following links. An existing config must
+// already name dataDir: the installer never takes the data folder from it.
+func prepareFolders(h *host, goos, cfgPath, dataDir, user, group string) (notes []string, err error) {
+	homes := homeDirs()
+	if err := checkDataDir(goos, dataDir, homes); err != nil {
+		return nil, err
+	}
+	if err := h.checkDataDirContents(dataDir); err != nil {
+		return nil, err
+	}
+	if err := h.checkConfigPath(cfgPath); err != nil {
+		return nil, err
+	}
+	cfgDir := filepath.Dir(cfgPath)
+	if cfgDir != dataDir {
+		if err := checkDataDir(goos, cfgDir, homes); err != nil {
+			return nil, fmt.Errorf("the config's folder: %w", err)
+		}
+		if err := h.checkConfigDirContents(cfgDir); err != nil {
+			return nil, err
+		}
+	}
+	if h.exists(cfgPath) {
+		c, err := config.Load(h.path(cfgPath))
+		if err != nil {
+			return nil, err
+		}
+		if filepath.Clean(c.Storage.DataDir) != dataDir {
+			return nil, fmt.Errorf("%s names data_dir %q, but the service is being installed with %s; "+
+				"set data_dir to %s, or pass --data-dir %q if that folder is really meant to be the data folder",
+				cfgPath, c.Storage.DataDir, dataDir, dataDir, c.Storage.DataDir)
+		}
+	}
+	for _, d := range []string{dataDir, cfgDir} {
+		if err := h.mkdirAll(d, 0o750); err != nil {
+			return nil, err
+		}
+	}
+	if !h.exists(cfgPath) {
+		c := config.Default()
+		c.Storage.DataDir = dataDir
+		if err := config.Save(h.path(cfgPath), c); err != nil {
+			return nil, err
+		}
+		h.say("wrote %s", cfgPath)
+	}
+	skipped, err := h.chownTree(dataDir, user, group)
+	if err != nil {
+		return nil, err
+	}
+	if skipped > 0 {
+		notes = append(notes, fmt.Sprintf("left %d symlinks or hard-linked files in %s as they were", skipped, dataDir))
+	}
+	if cfgDir != dataDir {
+		if err := h.chownDir(cfgDir, user, group); err != nil {
+			return notes, err
+		}
+		if err := h.chmod(cfgDir, 0o750); err != nil {
+			return notes, err
+		}
+	}
+	if err := h.chownFile(cfgPath, user, group); err != nil {
+		return notes, err
+	}
+	return notes, h.chmod(dataDir, 0o750)
+}
+
+// checkConfigDirContents refuses a config folder (other than the data folder)
+// holding anything but Woodpile's config: an install gives that folder to the
+// service account.
+func (h *host) checkConfigDirContents(dir string) error {
+	entries, err := os.ReadDir(h.path(dir))
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		n := e.Name()
+		if n == "woodpile.toml" || (strings.HasPrefix(n, ".woodpile.toml-") && strings.HasSuffix(n, ".tmp")) {
+			continue
+		}
+		return fmt.Errorf("the config's folder %s holds other files (%s); put the config in a folder of its own, such as %s/woodpile",
+			dir, n, dir)
 	}
 	return nil
 }

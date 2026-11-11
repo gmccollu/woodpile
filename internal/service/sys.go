@@ -4,22 +4,54 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
+
+func lookupIDs(name, group string) (int, int, error) {
+	u, err := user.Lookup(name)
+	if err != nil {
+		return 0, 0, fmt.Errorf("look up the %s user: %w", name, err)
+	}
+	g, err := user.LookupGroup(group)
+	if err != nil {
+		return 0, 0, fmt.Errorf("look up the %s group: %w", group, err)
+	}
+	uid, err := strconv.Atoi(u.Uid)
+	if err != nil {
+		return 0, 0, err
+	}
+	gid, err := strconv.Atoi(g.Gid)
+	if err != nil {
+		return 0, 0, err
+	}
+	return uid, gid, nil
+}
 
 // runner runs a command and returns its combined output (faked in tests).
 type runner interface {
 	run(name string, args ...string) (string, error)
+	// runInput is run with stdin from input.
+	runInput(input, name string, args ...string) (string, error)
 }
 
 type execRunner struct{}
 
-func (execRunner) run(name string, args ...string) (string, error) {
+func (r execRunner) run(name string, args ...string) (string, error) {
+	return r.runInput("", name, args...)
+}
+
+func (execRunner) runInput(input, name string, args ...string) (string, error) {
 	var out bytes.Buffer
 	cmd := exec.Command(name, args...)
+	if input != "" {
+		cmd.Stdin = strings.NewReader(input)
+	}
 	cmd.Stdout, cmd.Stderr = &out, &out
 	err := cmd.Run()
 	s := strings.TrimSpace(out.String())
@@ -38,9 +70,88 @@ type host struct {
 	runner
 	root string // prefix for every path ("" for the real machine)
 	out  io.Writer
+	// chown changes a path's owner without following a symlink (os.Lchown on the
+	// real machine; recorded in tests).
+	chown func(path string, uid, gid int) error
+	// lookupIDs resolves a user and group name.
+	lookupIDs func(user, group string) (uid, gid int, err error)
 }
 
-func realHost(out io.Writer) *host { return &host{runner: execRunner{}, out: out} }
+func realHost(out io.Writer) *host {
+	return &host{runner: execRunner{}, out: out, chown: os.Lchown, lookupIDs: lookupIDs}
+}
+
+// chownTree gives dir and everything in it to user:group (security review M1c,
+// M1f): it never follows a symlink (they're skipped, and dir itself must not be
+// one) and skips any file with more than one link, which could be a hard link to
+// a file outside the folder. It returns how many entries it skipped.
+func (h *host) chownTree(dir, user, group string) (skipped int, err error) {
+	uid, gid, err := h.lookupIDs(user, group)
+	if err != nil {
+		return 0, err
+	}
+	root := h.path(dir)
+	fi, err := os.Lstat(root)
+	if err != nil {
+		return 0, err
+	}
+	if fi.Mode()&os.ModeSymlink != 0 || !fi.IsDir() {
+		return 0, fmt.Errorf("%s is a link or not a folder", dir)
+	}
+	err = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.Type()&fs.ModeSymlink != 0 {
+			skipped++
+			return nil
+		}
+		if !d.IsDir() {
+			info, err := d.Info()
+			if err != nil {
+				return err
+			}
+			if !info.Mode().IsRegular() || linkCount(info) > 1 {
+				skipped++
+				return nil
+			}
+		}
+		return h.chown(p, uid, gid)
+	})
+	return skipped, err
+}
+
+// chownFile gives one file (not a symlink, one link) to user:group.
+func (h *host) chownFile(path, user, group string) error {
+	uid, gid, err := h.lookupIDs(user, group)
+	if err != nil {
+		return err
+	}
+	fi, err := os.Lstat(h.path(path))
+	if err != nil {
+		return err
+	}
+	if fi.Mode()&os.ModeSymlink != 0 || !fi.Mode().IsRegular() || linkCount(fi) > 1 {
+		return fmt.Errorf("%s is a link or not a regular file; not changing its owner", path)
+	}
+	return h.chown(h.path(path), uid, gid)
+}
+
+// chownDir gives one folder (not a symlink) to user:group.
+func (h *host) chownDir(path, user, group string) error {
+	uid, gid, err := h.lookupIDs(user, group)
+	if err != nil {
+		return err
+	}
+	fi, err := os.Lstat(h.path(path))
+	if err != nil {
+		return err
+	}
+	if fi.Mode()&os.ModeSymlink != 0 || !fi.IsDir() {
+		return fmt.Errorf("%s is a link or not a folder; not changing its owner", path)
+	}
+	return h.chown(h.path(path), uid, gid)
+}
 
 func (h *host) path(p string) string {
 	if h.root == "" {
