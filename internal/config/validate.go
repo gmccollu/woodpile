@@ -49,6 +49,7 @@ func (c Config) validate(goos string, prev *Config) Errors {
 	l := c.Listeners
 	checkListener(e, goos, "listeners.udp", l.UDP)
 	checkListener(e, goos, "listeners.tcp", l.TCP)
+	checkBlocklist(e, l)
 	for i, s := range l.Allowlist {
 		if _, err := parseAllow(s); err != nil {
 			e[fmt.Sprintf("listeners.allowlist[%d]", i)] = "must be an IP address or a CIDR (e.g. 192.0.2.0/24)"

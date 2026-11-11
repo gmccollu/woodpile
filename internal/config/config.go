@@ -61,6 +61,9 @@ type Listeners struct {
 	TCP Listener `toml:"tcp" json:"tcp" comment:"Syslog over TCP (octet-counted or newline-framed, detected per message)."`
 	// Allowlist holds IPs or CIDRs; empty accepts every sender.
 	Allowlist []string `toml:"allowlist" json:"allowlist" comment:"Accept messages only from these IPs or CIDRs, e.g. [\"192.0.2.0/24\", \"2001:db8::1\"]. Empty accepts everyone."`
+	// Blocklist holds IPs or CIDRs whose messages are refused; it wins over the
+	// allowlist (blocklist.go).
+	Blocklist []string `toml:"blocklist" json:"blocklist" comment:"Refuse messages from these IPs or CIDRs, even if the allowlist accepts them."`
 	// New-sender limits (devicelimits.go).
 	MaxDevices          int `toml:"max_devices" json:"max_devices" comment:"At most this many senders active (heard in the last 10 minutes) at once; more are refused and counted as dropped."`
 	NewDeviceBurst      int `toml:"new_device_burst" json:"new_device_burst" comment:"New senders (no logs yet) allowed in a burst,"`
@@ -117,6 +120,7 @@ func Default() Config {
 			UDP:             Listener{Enabled: true, Addr: DefaultListenAddr, Port: DefaultSyslogPort},
 			TCP:             Listener{Enabled: true, Addr: DefaultListenAddr, Port: DefaultSyslogPort},
 			Allowlist:       []string{},
+			Blocklist:       []string{},
 			UDPRcvbufBytes:  DefaultUDPRcvbufBytes,
 			MaxMessageBytes: DefaultMaxMessageBytes,
 
@@ -142,6 +146,7 @@ func Default() Config {
 // Clone returns a deep copy (the allowlist is not shared).
 func (c Config) Clone() Config {
 	c.Listeners.Allowlist = append([]string{}, c.Listeners.Allowlist...)
+	c.Listeners.Blocklist = append([]string{}, c.Listeners.Blocklist...)
 	return c
 }
 
@@ -155,6 +160,7 @@ func (c *Config) Normalize() {
 		al = append(al, strings.TrimSpace(s))
 	}
 	c.Listeners.Allowlist = al
+	c.Listeners.Blocklist = trimList(c.Listeners.Blocklist)
 	if c.Listeners.UDPRcvbufBytes == 0 {
 		c.Listeners.UDPRcvbufBytes = DefaultUDPRcvbufBytes
 	}
@@ -227,6 +233,7 @@ func LoadOrCreate(path string, def Config) (Config, bool, error) {
 	}
 	c := def.Clone()
 	c.Listeners.Allowlist = nil // a file without the key gets [] from Normalize
+	c.Listeners.Blocklist = nil
 	if err := toml.Unmarshal(b, &c); err != nil {
 		var de *toml.DecodeError
 		if errors.As(err, &de) {
