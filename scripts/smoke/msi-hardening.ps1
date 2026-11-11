@@ -16,7 +16,8 @@
       SeImpersonatePrivilege), and it runs;
   then uninstalls with DELETE_LOGS=1. Then (security review N6) it plants a data folder
   owned by BUILTIN\Users and checks the install moves it aside to Woodpile.untrusted-*,
-  contents kept, and makes a fresh protected one.
+  contents kept (under a name with a random part, W3), and makes a fresh protected one;
+  and that a fresh install creates the folder already protected (W2).
 
 .EXAMPLE
   ./scripts/smoke/msi-hardening.ps1 -Msi dist/msi/woodpile_0.0.0_windows_amd64.msi
@@ -114,6 +115,8 @@ if ((Get-Acl $Data).Owner -ne "BUILTIN\Users") { Die "couldn't make BUILTIN\User
 Msiexec @("/i", "`"$Msi`"") (Join-Path $Logs "hardening-install-untrusted.log")
 $aside = @(Get-ChildItem C:\ProgramData -Directory -Filter "Woodpile.untrusted-*")
 if ($aside.Count -ne 1) { Die "expected one Woodpile.untrusted-* folder, found $($aside.Count)" }
+# W3: the name has a random part, so nobody can take it in advance to block the install.
+if ($aside[0].Name -notmatch '^Woodpile\.untrusted-\d{8}T\d{6}Z-[0-9a-f]{8}$') { Die "set-aside name $($aside[0].Name) has no random part" }
 if ((Get-Content (Join-Path $aside[0].FullName "logs\10.0.0.2\2026-11-11.log") -Raw) -notmatch "from before") { Die "the old folder's contents weren't kept" }
 if (Test-Path "$Data\logs\10.0.0.2") { Die "the new data folder still has the old contents" }
 $sd = Get-Acl $Data
@@ -124,5 +127,14 @@ Ok "user-owned folder moved aside to $($aside[0].Name) with its contents; a fres
 Msiexec @("/x", "`"$Msi`"", "DELETE_LOGS=1") (Join-Path $Logs "hardening-uninstall-untrusted.log")
 Remove-Item -Recurse -Force $aside[0].FullName
 if (Test-Path $Data) { Die "$Data is still there after DELETE_LOGS=1" }
+
+Write-Host "==> W2: with no data folder, the install creates it already protected"
+if (Test-Path $Data) { Die "$Data exists before the fresh-install check" }
+Msiexec @("/i", "`"$Msi`"") (Join-Path $Logs "hardening-install-fresh.log")
+$sd = Get-Acl $Data
+if ($sd.Owner -ne "BUILTIN\Administrators" -or (DaclOf $Data) -ne $WantDacl) { Die "fresh data folder: $($sd.Sddl)" }
+if (@(Get-ChildItem C:\ProgramData -Directory -Filter "Woodpile.untrusted-*").Count -ne 0) { Die "a fresh install set something aside" }
+Ok "fresh install: the data folder is owned by Administrators with the protected DACL, nothing set aside"
+Msiexec @("/x", "`"$Msi`"", "DELETE_LOGS=1") (Join-Path $Logs "hardening-uninstall-fresh.log")
 
 Write-Host "`n$passes checks passed"

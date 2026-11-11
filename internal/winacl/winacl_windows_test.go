@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -129,6 +130,10 @@ func TestPrepareDataDirSetsAsideUntrusted(t *testing.T) {
 	if len(moved) != 1 {
 		t.Fatalf("moved-aside folders: %v", moved)
 	}
+	// W3: a random part after the time, so the name can't be taken in advance.
+	if !regexp.MustCompile(`\.untrusted-\d{8}T\d{6}Z-[0-9a-f]{8}$`).MatchString(moved[0]) {
+		t.Errorf("set-aside name %s has no random part", moved[0])
+	}
 	if b, err := os.ReadFile(filepath.Join(moved[0], "logs", "kept.log")); err != nil || string(b) != "kept\n" {
 		t.Errorf("the old contents weren't kept in %s: %v", moved[0], err)
 	}
@@ -142,5 +147,50 @@ func TestPrepareDataDirSetsAsideUntrusted(t *testing.T) {
 	// A trusted folder (this one now) is left where it is.
 	if moved, err := SetAsideUntrusted(data, nil); err != nil || moved != "" {
 		t.Errorf("trusted folder moved: %q %v", moved, err)
+	}
+}
+
+// W2: a missing data folder is created with its final security descriptor in one step
+// (owner Administrators and the protected DACL straight away, no reset needed).
+func TestEnsureDataDirCreatesProtected(t *testing.T) {
+	if !windows.GetCurrentProcessToken().IsElevated() {
+		t.Skip("needs an elevated administrator")
+	}
+	data := filepath.Join(t.TempDir(), "Woodpile")
+	if err := EnsureDataDir(data, nil); err != nil {
+		t.Fatal(err)
+	}
+	var owner, dacl windows.SECURITY_INFORMATION = windows.OWNER_SECURITY_INFORMATION, windows.DACL_SECURITY_INFORMATION
+	got := strings.Replace(sddlOf(t, data, owner|dacl), "D:PAI(", "D:P(", 1)
+	want := strings.Replace(strings.Replace(DataSDDL, "G:SY", "", 1), "D:PAI(", "D:P(", 1)
+	if got != want {
+		t.Errorf("created with %s, want %s", got, want)
+	}
+	// An existing trusted folder is accepted as is.
+	if err := EnsureDataDir(data, nil); err != nil {
+		t.Errorf("existing trusted folder: %v", err)
+	}
+}
+
+// W2: someone who keeps re-creating the path after each set-aside is outlasted a few
+// times, then the install fails saying so (and every copy is kept, not deleted).
+func TestEnsureDataDirGivesUpOnRecreation(t *testing.T) {
+	if !windows.GetCurrentProcessToken().IsElevated() {
+		t.Skip("needs an elevated administrator")
+	}
+	data := filepath.Join(t.TempDir(), "Woodpile")
+	plant := func() {
+		os.Mkdir(data, 0o755)
+		exec.Command("icacls", data, "/setowner", "*S-1-5-32-545").Run()
+	}
+	plant()
+	testHookAfterSetAside = plant
+	defer func() { testHookAfterSetAside = nil }()
+	err := EnsureDataDir(data, nil)
+	if err == nil || !strings.Contains(err.Error(), "re-created by someone else") {
+		t.Fatalf("EnsureDataDir: %v, want the re-created error", err)
+	}
+	if moved, _ := filepath.Glob(data + ".untrusted-*"); len(moved) != ensureAttempts {
+		t.Errorf("%d folders set aside, want %d: %v", len(moved), ensureAttempts, moved)
 	}
 }

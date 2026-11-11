@@ -3,6 +3,8 @@
 package winacl
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -222,22 +224,107 @@ func enablePrivileges(names ...string) {
 }
 
 // PrepareDataDir is what the MSI runs (packaging/windows/aclfix), before the installer
-// creates the folder: SetAsideUntrusted, then create dir if needed, then ResetDataDir.
+// creates the folder: EnsureDataDir, then ResetDataDir.
 func PrepareDataDir(dir string, logf func(format string, args ...any)) error {
-	if _, err := SetAsideUntrusted(dir, logf); err != nil {
-		return err
-	}
-	if err := os.MkdirAll(dir, 0o750); err != nil {
+	if err := EnsureDataDir(dir, logf); err != nil {
 		return err
 	}
 	return ResetDataDir(dir, logf)
 }
 
+// ensureAttempts bounds EnsureDataDir's create / set-aside loop.
+const ensureAttempts = 5
+
+// testHookAfterSetAside, when set (tests only), runs after each set-aside.
+var testHookAfterSetAside func()
+
+// EnsureDataDir leaves dir as a folder owned by SYSTEM, Administrators or TrustedInstaller
+// (security review N6, W2). A missing dir is created in one step with its final security
+// descriptor (DataSDDL: owner Administrators, the protected DACL), so nobody can open it
+// between its creation and its ACL. If dir exists and is trusted, it's kept (the caller
+// resets it); if it exists and isn't, it's moved aside (SetAsideUntrusted) and creation is
+// tried again: whoever keeps re-creating the path is outlasted ensureAttempts times, then
+// it fails. The new folder's owner is checked again on a handle to it.
+func EnsureDataDir(dir string, logf func(format string, args ...any)) error {
+	if logf == nil {
+		logf = func(string, ...any) {}
+	}
+	enablePrivileges("SeBackupPrivilege", "SeRestorePrivilege", "SeTakeOwnershipPrivilege")
+	if parent := filepath.Dir(dir); parent != dir {
+		if err := os.MkdirAll(parent, 0o755); err != nil {
+			return err
+		}
+	}
+	for i := 0; i < ensureAttempts; i++ {
+		err := createProtectedDir(dir)
+		if err == nil {
+			return checkTrustedDir(dir)
+		}
+		if !errors.Is(err, windows.ERROR_ALREADY_EXISTS) {
+			return fmt.Errorf("create %s: %w", dir, err)
+		}
+		moved, err := SetAsideUntrusted(dir, logf)
+		if err != nil {
+			return err
+		}
+		if moved == "" {
+			return checkTrustedDir(dir) // it exists and is trusted
+		}
+		if testHookAfterSetAside != nil {
+			testHookAfterSetAside()
+		}
+	}
+	return fmt.Errorf("%s was re-created by someone else %d times while Woodpile replaced it; "+
+		"find what keeps creating it (another user's program), stop it and install again", dir, ensureAttempts)
+}
+
+// createProtectedDir creates dir with DataSDDL as its security descriptor, atomically;
+// ERROR_ALREADY_EXISTS if anything is at that path already.
+func createProtectedDir(dir string) error {
+	sd, err := windows.SecurityDescriptorFromString(DataSDDL)
+	if err != nil {
+		return err
+	}
+	p, err := windows.UTF16PtrFromString(dir)
+	if err != nil {
+		return err
+	}
+	sa := windows.SecurityAttributes{SecurityDescriptor: sd}
+	sa.Length = uint32(unsafe.Sizeof(sa))
+	return windows.CreateDirectory(p, &sa)
+}
+
+// checkTrustedDir opens dir itself (not a link's target) and checks it's a folder owned by
+// SYSTEM, Administrators or TrustedInstaller.
+func checkTrustedDir(dir string) error {
+	h, info, err := openNoFollow(dir)
+	if err != nil {
+		return fmt.Errorf("data folder %s: %w", dir, err)
+	}
+	defer windows.CloseHandle(h)
+	if info.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 || info.FileAttributes&windows.FILE_ATTRIBUTE_DIRECTORY == 0 {
+		return fmt.Errorf("data folder %s is a link or not a folder; remove it and install again", dir)
+	}
+	sd, err := windows.GetSecurityInfo(h, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION)
+	if err != nil {
+		return fmt.Errorf("data folder %s: %w", dir, err)
+	}
+	owner, _, err := sd.Owner()
+	if err != nil {
+		return fmt.Errorf("data folder %s: %w", dir, err)
+	}
+	if !trustedOwner(owner) {
+		return fmt.Errorf("data folder %s is owned by %s, not SYSTEM or Administrators, right after it was created; install again", dir, owner.String())
+	}
+	return nil
+}
+
 // SetAsideUntrusted moves dir out of the way if it exists and isn't owned by SYSTEM,
 // Administrators or TrustedInstaller (security review N6: a folder an ordinary user
 // created before the install, whose open handles would keep their rights through an ACL
-// reset). It's renamed, not deleted, to "<dir>.untrusted-<UTC time>", so whatever is in
-// it is kept, and the caller makes a fresh one. It returns the new name, or "" when dir
+// reset). It's renamed, not deleted, to "<dir>.untrusted-<UTC time>-<random>", so
+// whatever is in it is kept, and the caller makes a fresh one. The random part (W3) means
+// nobody can block the rename by creating the name first; a collision just tries another. It returns the new name, or "" when dir
 // doesn't exist or is trusted. A dir that is a link is refused; a rename that's blocked
 // (the folder is in use) is an error saying so.
 func SetAsideUntrusted(dir string, logf func(format string, args ...any)) (string, error) {
@@ -271,12 +358,12 @@ func SetAsideUntrusted(dir string, logf func(format string, args ...any)) (strin
 	if a, d, _, err := owner.LookupAccount(""); err == nil {
 		who = d + `\` + a
 	}
-	stamp := time.Now().UTC().Format("20060102T150405Z")
-	for i := 0; i < 100; i++ {
-		target := dir + ".untrusted-" + stamp
-		if i > 0 {
-			target += fmt.Sprintf("-%d", i)
+	for i := 0; i < 20; i++ {
+		var rnd [4]byte
+		if _, err := rand.Read(rnd[:]); err != nil {
+			return "", err
 		}
+		target := dir + ".untrusted-" + time.Now().UTC().Format("20060102T150405Z") + "-" + hex.EncodeToString(rnd[:])
 		err = renameByHandle(h, target)
 		if err == nil {
 			logf("%s was owned by %s, not SYSTEM or Administrators: moved it to %s (its contents are kept there) and made a new one", dir, who, target)

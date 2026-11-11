@@ -56,16 +56,13 @@ func prepareWindowsDataDir(h *host, dir string) error {
 	if err := checkDataDir("windows", dir, homeDirs()); err != nil {
 		return err
 	}
-	// Like the MSI (security review N6): a folder that isn't owned by SYSTEM, Administrators
-	// or TrustedInstaller is moved aside to <dir>.untrusted-<time> (contents kept) and a
-	// fresh one is made, so its creator's open handles don't reach the new one.
-	if _, err := winacl.SetAsideUntrusted(dir, h.say); err != nil {
+	// Like the MSI (security review N6, W2): a folder that isn't owned by SYSTEM,
+	// Administrators or TrustedInstaller is moved aside (contents kept), and a missing one
+	// is created in one step with the protected ACL, so nobody gets a handle to it first.
+	if err := winacl.EnsureDataDir(dir, h.say); err != nil {
 		return err
 	}
 	if err := h.checkDataDirContents(dir); err != nil {
-		return err
-	}
-	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return err
 	}
 	// The same reset the MSI runs (winacl.ResetDataDir): the protected DACL on dir; owner
