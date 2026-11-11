@@ -1,0 +1,172 @@
+# CI: test on Linux, Windows and macOS, fuzz the parser, and check that every package
+# (deb, rpm, MSI, pkg) still builds. Nothing is published.
+#
+# Uses only the standard actions/* actions and `go run` for tools, so it runs unchanged on
+# github.com and on GitHub Enterprise Server.
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GORELEASER_VERSION: v2.20.1
+  NODE_VERSION: "24"
+  WIX_VERSION: "5.0.2"
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        include:
+          - os: ubuntu-latest
+            race: -race
+          - os: macos-latest
+            race: -race
+          # -race needs cgo and a C toolchain; the Windows runners make that slow and flaky.
+          - os: windows-latest
+            race: ""
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Set up Node
+        if: hashFiles('web/package.json') != ''
+        uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build the frontend
+        if: hashFiles('web/package.json') != ''
+        working-directory: web
+        run: |
+          npm ci
+          npm run --if-present check
+          npm run build
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test
+        run: go test ${{ matrix.race }} ./...
+
+      - name: go build
+        run: |
+          short=${GITHUB_SHA::7}
+          go build -trimpath -ldflags "-X main.version=0.0.0-ci+$short -X main.commit=$short" -o dist/ ./cmd/woodpile
+          ./dist/woodpile version
+
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Fuzz every target for 30 s
+        run: scripts/fuzz.sh 30s ./internal/...
+
+  packaging:
+    name: packaging (goreleaser, deb, rpm)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Set up Node
+        if: hashFiles('web/package.json') != ''
+        uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Lint the packaging scripts
+        run: scripts/lint-packaging.sh
+
+      - name: goreleaser check
+        run: go run github.com/goreleaser/goreleaser/v2@"$GORELEASER_VERSION" check
+
+      - name: Snapshot build (nothing is published)
+        env:
+          WOODPILE_OWNER: ${{ github.repository_owner }}
+          WOODPILE_REPO: ${{ github.event.repository.name }}
+        run: go run github.com/goreleaser/goreleaser/v2@"$GORELEASER_VERSION" release --snapshot --clean --skip=publish
+
+      - name: Inspect the deb and rpm
+        run: |
+          set -x
+          deb=$(ls dist/*_amd64.deb)
+          dpkg-deb --info "$deb"
+          dpkg-deb --contents "$deb"
+          for f in /usr/bin/woodpile /usr/lib/systemd/system/woodpile.service /etc/sysctl.d/60-woodpile.conf; do
+            dpkg-deb --contents "$deb" | grep -q " \.$f\$" || { echo "missing $f in $deb"; exit 1; }
+          done
+          if command -v rpm >/dev/null; then
+            rpm -qip dist/*.x86_64.rpm
+            rpm -qlp --scripts dist/*.x86_64.rpm
+          fi
+          systemd-analyze verify packaging/linux/woodpile.service 2>&1 | grep -v "Command /usr/bin/woodpile is not executable" || true
+
+  windows-msi:
+    name: installer (windows msi)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 8.0.x
+      - name: Install WiX
+        shell: pwsh
+        run: dotnet tool install --global wix --version $env:WIX_VERSION
+      - name: Build the MSI (x64)
+        shell: pwsh
+        run: ./packaging/windows/build-msi.ps1 -Version 0.0.0 -Arch x64 -OutDir dist/msi
+      - name: List the MSI
+        shell: pwsh
+        run: Get-ChildItem dist/msi
+
+  macos-pkg:
+    name: installer (macos pkg)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Build the pkg
+        run: packaging/macos/build-pkg.sh --version 0.0.0 --out dist/macos
+      - name: List the payload and scripts
+        run: |
+          pkgutil --payload-files dist/macos/*.pkg
+          pkgutil --expand dist/macos/*.pkg "$RUNNER_TEMP/pkg"
+          ls -la "$RUNNER_TEMP/pkg/woodpile-component.pkg/Scripts"

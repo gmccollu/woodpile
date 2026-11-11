@@ -1,0 +1,290 @@
+# Release: on a v* tag, build everything and attach it to the GitHub release.
+#
+#   goreleaser   archives, checksums.txt, deb/rpm, Homebrew cask, Scoop manifest; creates the release
+#   msi          Windows MSI (x64 + arm64) with WiX v5               -> attached to the release
+#   pkg          macOS universal .pkg                                -> attached to the release
+#   checksums    adds the MSI and pkg hashes to checksums.txt
+#
+# Runs on github.com and GitHub Enterprise Server: only standard actions/* actions, tools via
+# `go run` / `dotnet tool`, uploads with the gh CLI (preinstalled on hosted runners; self-hosted
+# runners need it on PATH).
+#
+# Configuration (Settings -> Secrets and variables -> Actions). Everything is optional; with
+# nothing set, the release is built unsigned and the tap/bucket are not updated.
+#   secrets.TAP_GITHUB_TOKEN          push access to OWNER/homebrew-tap and OWNER/scoop-bucket
+#   Windows signing, Azure Trusted Signing:
+#     secrets.AZURE_TENANT_ID, secrets.AZURE_CLIENT_ID, secrets.AZURE_CLIENT_SECRET
+#     vars.AZURE_SIGNING_ENDPOINT, vars.AZURE_SIGNING_ACCOUNT, vars.AZURE_SIGNING_PROFILE
+#   Windows signing, SignPath (used if Azure isn't configured):
+#     secrets.SIGNPATH_API_TOKEN
+#     vars.SIGNPATH_ORGANIZATION_ID, vars.SIGNPATH_PROJECT_SLUG, vars.SIGNPATH_SIGNING_POLICY_SLUG
+#   macOS signing and notarization:
+#     secrets.MACOS_CERTS_P12           base64 .p12 holding the Developer ID Application and Installer certs
+#     secrets.MACOS_CERTS_PASSWORD
+#     vars.MACOS_APP_SIGN_IDENTITY      "Developer ID Application: <name> (<team>)"
+#     vars.MACOS_INSTALLER_SIGN_IDENTITY "Developer ID Installer: <name> (<team>)"
+#     secrets.APPLE_ID, secrets.APPLE_APP_PASSWORD (app-specific password), vars.APPLE_TEAM_ID
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  GORELEASER_VERSION: v2.20.1
+  NODE_VERSION: "24"
+  WIX_VERSION: "5.0.2"
+
+jobs:
+  goreleaser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Set up Node
+        if: hashFiles('web/package.json') != ''
+        uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      # The before hook in .goreleaser.yaml builds the frontend.
+      - name: GoReleaser
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          WOODPILE_OWNER: ${{ github.repository_owner }}
+          WOODPILE_REPO: ${{ github.event.repository.name }}
+          TAP_GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+        run: go run github.com/goreleaser/goreleaser/v2@"$GORELEASER_VERSION" release --clean
+
+  msi:
+    needs: goreleaser
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Set up Node
+        if: hashFiles('web/package.json') != ''
+        uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Install WiX
+        run: dotnet tool install --global wix --version "$WIX_VERSION"
+
+      - name: Build the frontend
+        if: hashFiles('web/package.json') != ''
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
+
+      - name: Build woodpile.exe (amd64, arm64)
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          commit=$(git rev-parse --short HEAD)
+          for arch in amd64 arm64; do
+            CGO_ENABLED=0 GOOS=windows GOARCH=$arch go build -trimpath \
+              -ldflags "-s -w -X main.version=$version -X main.commit=$commit" \
+              -o "dist/windows/$arch/woodpile.exe" ./cmd/woodpile
+          done
+
+      # Secrets stay out of every step except the ones that sign.
+      - name: Check for signing configuration
+        id: signing
+        env:
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+        run: |
+          if [ -n "$AZURE_CLIENT_SECRET" ]; then provider=azure
+          elif [ -n "$SIGNPATH_API_TOKEN" ]; then provider=signpath
+          else provider=none; echo "No signing secrets configured; the binaries and MSIs stay unsigned."
+          fi
+          echo "provider=$provider" >>"$GITHUB_OUTPUT"
+
+      - name: Sign woodpile.exe (optional)
+        if: steps.signing.outputs.provider != 'none'
+        shell: pwsh
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_SIGNING_ENDPOINT: ${{ vars.AZURE_SIGNING_ENDPOINT }}
+          AZURE_SIGNING_ACCOUNT: ${{ vars.AZURE_SIGNING_ACCOUNT }}
+          AZURE_SIGNING_PROFILE: ${{ vars.AZURE_SIGNING_PROFILE }}
+          SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+          SIGNPATH_ORGANIZATION_ID: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          SIGNPATH_PROJECT_SLUG: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          SIGNPATH_SIGNING_POLICY_SLUG: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+        run: >-
+          ./packaging/windows/sign.ps1 -Provider ${{ steps.signing.outputs.provider }}
+          -Files dist/windows/amd64/woodpile.exe, dist/windows/arm64/woodpile.exe
+
+      - name: Build the MSIs
+        shell: pwsh
+        run: |
+          $url = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY"
+          foreach ($a in @(@{ Arch = "x64"; Go = "amd64" }, @{ Arch = "arm64"; Go = "arm64" })) {
+            ./packaging/windows/build-msi.ps1 -Version $env:GITHUB_REF_NAME -Arch $a.Arch `
+              -Binary "dist/windows/$($a.Go)/woodpile.exe" -OutDir dist/msi -ProjectUrl $url `
+              -WixVersion $env:WIX_VERSION
+          }
+
+      - name: Sign the MSIs (optional)
+        if: steps.signing.outputs.provider != 'none'
+        shell: pwsh
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_SIGNING_ENDPOINT: ${{ vars.AZURE_SIGNING_ENDPOINT }}
+          AZURE_SIGNING_ACCOUNT: ${{ vars.AZURE_SIGNING_ACCOUNT }}
+          AZURE_SIGNING_PROFILE: ${{ vars.AZURE_SIGNING_PROFILE }}
+          SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+          SIGNPATH_ORGANIZATION_ID: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          SIGNPATH_PROJECT_SLUG: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          SIGNPATH_SIGNING_POLICY_SLUG: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+        run: >-
+          ./packaging/windows/sign.ps1 -Provider ${{ steps.signing.outputs.provider }}
+          -Files (Get-ChildItem dist/msi/*.msi).FullName
+
+      - name: Attach the MSIs to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_ENTERPRISE_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          export GH_HOST=${GITHUB_SERVER_URL#https://}
+          gh release upload "$GITHUB_REF_NAME" dist/msi/*.msi --clobber -R "$GITHUB_REPOSITORY"
+
+  pkg:
+    needs: goreleaser
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Set up Node
+        if: hashFiles('web/package.json') != ''
+        uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build the frontend
+        if: hashFiles('web/package.json') != ''
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
+
+      - name: Check for signing configuration
+        id: signing
+        env:
+          MACOS_CERTS_P12: ${{ secrets.MACOS_CERTS_P12 }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          if [ -n "$MACOS_CERTS_P12" ]; then sign=true; else sign=false; fi
+          if [ "$sign" = true ] && [ -n "$APPLE_APP_PASSWORD" ]; then notarize=true; else notarize=false; fi
+          [ "$sign" = true ] || echo "No signing secrets configured; the binary and .pkg stay unsigned."
+          echo "sign=$sign" >>"$GITHUB_OUTPUT"
+          echo "notarize=$notarize" >>"$GITHUB_OUTPUT"
+
+      - name: Import the signing certificates (optional)
+        if: steps.signing.outputs.sign == 'true'
+        env:
+          MACOS_CERTS_P12: ${{ secrets.MACOS_CERTS_P12 }}
+          MACOS_CERTS_PASSWORD: ${{ secrets.MACOS_CERTS_PASSWORD }}
+        run: |
+          keychain="$RUNNER_TEMP/woodpile-signing.keychain-db"
+          kc_pass=$(uuidgen)
+          security create-keychain -p "$kc_pass" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$kc_pass" "$keychain"
+          printf '%s' "$MACOS_CERTS_P12" | base64 --decode >"$RUNNER_TEMP/certs.p12"
+          security import "$RUNNER_TEMP/certs.p12" -k "$keychain" -P "$MACOS_CERTS_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/productbuild -T /usr/bin/productsign
+          rm -f "$RUNNER_TEMP/certs.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$kc_pass" "$keychain" >/dev/null
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          echo "MACOS_KEYCHAIN=$keychain" >>"$GITHUB_ENV"
+
+      - name: Build the .pkg
+        env:
+          MACOS_APP_SIGN_IDENTITY: ${{ steps.signing.outputs.sign == 'true' && vars.MACOS_APP_SIGN_IDENTITY || '' }}
+          MACOS_INSTALLER_SIGN_IDENTITY: ${{ steps.signing.outputs.sign == 'true' && vars.MACOS_INSTALLER_SIGN_IDENTITY || '' }}
+        run: packaging/macos/build-pkg.sh --version "$GITHUB_REF_NAME" --out dist/macos
+
+      - name: Notarize and staple (optional)
+        if: steps.signing.outputs.notarize == 'true'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+        run: |
+          pkg=$(ls dist/macos/*.pkg)
+          xcrun notarytool submit "$pkg" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_PASSWORD" --wait
+          xcrun stapler staple "$pkg"
+          spctl --assess --type install --verbose=2 "$pkg"
+
+      - name: Remove the signing keychain
+        if: always() && steps.signing.outputs.sign == 'true'
+        run: security delete-keychain "$RUNNER_TEMP/woodpile-signing.keychain-db" || true
+
+      - name: Attach the .pkg to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_ENTERPRISE_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          export GH_HOST=${GITHUB_SERVER_URL#https://}
+          gh release upload "$GITHUB_REF_NAME" dist/macos/*.pkg --clobber -R "$GITHUB_REPOSITORY"
+
+  checksums:
+    needs: [msi, pkg]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Add the installers to checksums.txt
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_ENTERPRISE_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          export GH_HOST=${GITHUB_SERVER_URL#https://}
+          mkdir release && cd release
+          gh release download "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" -p checksums.txt -p '*.msi' -p '*.pkg'
+          # Idempotent on re-runs: drop any earlier installer lines first.
+          grep -v -E '\.(msi|pkg)$' checksums.txt >checksums.new || true
+          sha256sum -- *.msi *.pkg >>checksums.new
+          mv checksums.new checksums.txt
+          cat checksums.txt
+          gh release upload "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" checksums.txt --clobber

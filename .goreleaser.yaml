@@ -1,0 +1,175 @@
+# GoReleaser (OSS, v2 schema) for Woodpile.
+#
+# Builds the binaries, archives, checksums, deb/rpm (nfpm), a Homebrew cask and a
+# Scoop manifest. The Windows MSI and macOS .pkg are built by separate jobs in
+# .github/workflows/release.yml (GoReleaser's MSI/pkg support is a paid feature).
+#
+# Where the repo lives is not decided yet. Everything that names it comes from
+# these environment variables, so nothing in this file has to change:
+#   WOODPILE_OWNER     user or org that owns the repo        (default: OWNER)
+#   WOODPILE_REPO      repo name                             (default: woodpile)
+#   GITHUB_SERVER_URL  set by Actions; https://github.com or a GitHub Enterprise Server URL
+#   TAP_GITHUB_TOKEN   token that can push to OWNER/homebrew-tap and OWNER/scoop-bucket.
+#                      While it is unset, the cask and the Scoop manifest are generated
+#                      in dist/ but not uploaded.
+#
+# Local dry run: make snapshot  (= goreleaser release --snapshot --clean --skip=publish)
+version: 2
+
+project_name: woodpile
+
+env:
+  - WOODPILE_OWNER={{ envOrDefault "WOODPILE_OWNER" "OWNER" }}
+  - WOODPILE_REPO={{ envOrDefault "WOODPILE_REPO" "woodpile" }}
+  - WOODPILE_SERVER={{ envOrDefault "GITHUB_SERVER_URL" "https://github.com" }}
+  - TAP_GITHUB_TOKEN={{ envOrDefault "TAP_GITHUB_TOKEN" "" }}
+
+before:
+  hooks:
+    # The UI is embedded by Go, so it has to be built first. Skipped until web/ has a package.json.
+    - sh -c 'if [ -f web/package.json ]; then cd web && npm ci && npm run build; else echo "web/package.json not found; skipping the frontend build"; fi'
+
+builds:
+  - id: woodpile
+    main: ./cmd/woodpile
+    binary: woodpile
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{ .Version }} -X main.commit={{ .ShortCommit }}
+    goos: [linux, windows, darwin]
+    goarch: [amd64, arm64]
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+universal_binaries:
+  # One macOS binary for arm64 + x86_64; it replaces the per-arch darwin binaries.
+  - id: woodpile-universal
+    ids: [woodpile]
+    replace: true
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - id: woodpile
+    ids: [woodpile, woodpile-universal]
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ if eq .Arch "all" }}universal{{ else }}{{ .Arch }}{{ end }}
+    files:
+      - LICENSE
+      - README.md
+      - docs/install.md
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-snapshot+{{ .ShortCommit }}"
+
+changelog:
+  use: git
+  sort: asc
+  filters:
+    exclude:
+      - "^Merge "
+
+nfpms:
+  - id: woodpile
+    ids: [woodpile]
+    package_name: woodpile
+    file_name_template: "{{ .ConventionalFileName }}"
+    formats: [deb, rpm]
+    vendor: Woodpile
+    homepage: "{{ .Env.WOODPILE_SERVER }}/{{ .Env.WOODPILE_OWNER }}/{{ .Env.WOODPILE_REPO }}"
+    maintainer: "{{ .Env.WOODPILE_OWNER }} <{{ .Env.WOODPILE_OWNER }}@users.noreply.github.com>"
+    description: |-
+      Simple, reliable syslog server with a web UI.
+      Receives syslog on UDP and TCP port 514, stores every message as plain files
+      per device per day within a disk budget, and serves a local web UI on
+      http://127.0.0.1:8514/ for live tail, search and export.
+    license: MIT
+    section: net
+    priority: optional
+    bindir: /usr/bin
+    contents:
+      - src: packaging/linux/woodpile.service
+        dst: /usr/lib/systemd/system/woodpile.service
+        file_info:
+          mode: 0644
+      # A plain package file (not a conffile), so dpkg and rpm both delete it on
+      # removal and replace it on upgrade. Admins override it with a higher-numbered drop-in.
+      - src: packaging/linux/60-woodpile.conf
+        dst: /etc/sysctl.d/60-woodpile.conf
+        file_info:
+          mode: 0644
+      - src: LICENSE
+        dst: /usr/share/doc/woodpile/LICENSE
+        file_info:
+          mode: 0644
+      - src: docs/install.md
+        dst: /usr/share/doc/woodpile/install.md
+        file_info:
+          mode: 0644
+    scripts:
+      postinstall: packaging/linux/scripts/postinstall.sh
+      preremove: packaging/linux/scripts/preremove.sh
+      postremove: packaging/linux/scripts/postremove.sh
+    overrides:
+      deb:
+        dependencies: [passwd]
+      rpm:
+        dependencies: [shadow-utils]
+
+homebrew_casks:
+  - name: woodpile
+    ids: [woodpile]
+    repository:
+      owner: "{{ .Env.WOODPILE_OWNER }}"
+      name: homebrew-tap
+      token: "{{ .Env.TAP_GITHUB_TOKEN }}"
+    homepage: "{{ .Env.WOODPILE_SERVER }}/{{ .Env.WOODPILE_OWNER }}/{{ .Env.WOODPILE_REPO }}"
+    description: Simple, reliable syslog server with a web UI
+    license: MIT
+    # Not uploaded until the tap exists and TAP_GITHUB_TOKEN is set.
+    skip_upload: '{{ if .Env.TAP_GITHUB_TOKEN }}false{{ else }}true{{ end }}'
+    caveats: |-
+      This installs the woodpile command only. To run it as a system service, use the
+      .pkg installer from the releases page, or run it in the foreground:
+        woodpile run
+      The binary is not signed yet; see docs/install.md for the Gatekeeper prompt.
+
+scoops:
+  - name: woodpile
+    ids: [woodpile]
+    repository:
+      owner: "{{ .Env.WOODPILE_OWNER }}"
+      name: scoop-bucket
+      token: "{{ .Env.TAP_GITHUB_TOKEN }}"
+    homepage: "{{ .Env.WOODPILE_SERVER }}/{{ .Env.WOODPILE_OWNER }}/{{ .Env.WOODPILE_REPO }}"
+    description: Simple, reliable syslog server with a web UI
+    license: MIT
+    # Not uploaded until the bucket exists and TAP_GITHUB_TOKEN is set.
+    skip_upload: '{{ if .Env.TAP_GITHUB_TOKEN }}false{{ else }}true{{ end }}'
+
+# Empty on github.com (GoReleaser's defaults). On GitHub Enterprise Server, Actions sets
+# GITHUB_SERVER_URL and these point GoReleaser at that server's API.
+github_urls:
+  api: '{{ if ne .Env.WOODPILE_SERVER "https://github.com" }}{{ .Env.WOODPILE_SERVER }}/api/v3/{{ end }}'
+  upload: '{{ if ne .Env.WOODPILE_SERVER "https://github.com" }}{{ .Env.WOODPILE_SERVER }}/api/uploads/{{ end }}'
+  download: "{{ .Env.WOODPILE_SERVER }}"
+
+release:
+  # Named from the env vars above, not the git remote (there may be none locally).
+  github:
+    owner: "{{ .Env.WOODPILE_OWNER }}"
+    name: "{{ .Env.WOODPILE_REPO }}"
+  prerelease: auto
+  footer: |-
+    The Windows MSI (`woodpile_*_windows_*.msi`) and macOS installer (`woodpile_*_macos_universal.pkg`)
+    are attached by separate jobs a few minutes after this release is created, and `checksums.txt`
+    is updated to include them. Installers are unsigned for now; see docs/install.md.

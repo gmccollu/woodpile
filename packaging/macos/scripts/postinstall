@@ -1,0 +1,51 @@
+#!/bin/sh
+# Woodpile pkg postinstall: runs as root after the payload is installed.
+# Creates the data and log directories, loads the launchd daemon, and (for an
+# interactive install) opens the welcome page in the console user's browser.
+set -e
+
+# shellcheck source=packaging/macos/scripts/common.sh
+. "$(dirname "$0")/common.sh"
+
+ensure_service_account
+
+# The data folder holds the config, index and logs; only the service account writes it.
+# Existing folders keep their contents; ownership is reasserted so an upgrade from a
+# broken install heals.
+mkdir -p "$DATA_DIR" "$LOG_DIR"
+chown "$SVC_USER:$SVC_GROUP" "$DATA_DIR" "$LOG_DIR"
+chmod 0750 "$DATA_DIR" "$LOG_DIR"
+
+chown root:wheel "$PLIST"
+chmod 0644 "$PLIST"
+
+# A previous `launchctl disable` would stop bootstrap from starting it.
+launchctl enable "system/$LABEL" 2>/dev/null || true
+if daemon_loaded; then
+	launchctl bootout "system/$LABEL" 2>/dev/null || true
+fi
+if ! launchctl bootstrap system "$PLIST"; then
+	log "launchctl bootstrap failed; see /Library/Logs/Woodpile/woodpile.log" >&2
+	exit 1
+fi
+log "daemon $LABEL loaded; the UI is at $UI_URL"
+
+# Installer.app sets nothing special, `installer -pkg` sets COMMAND_LINE_INSTALL=1.
+# Only open a browser for an interactive install with someone logged in at the console.
+if [ -z "${COMMAND_LINE_INSTALL:-}" ]; then
+	console_user=$(stat -f %Su /dev/console 2>/dev/null || echo root)
+	if [ -n "$console_user" ] && [ "$console_user" != root ] && [ "$console_user" != loginwindow ]; then
+		console_uid=$(id -u "$console_user")
+		# Give the UI a few seconds to come up so the first page isn't an error.
+		i=0
+		while [ "$i" -lt 20 ]; do
+			if curl -fsS -o /dev/null --max-time 1 "$UI_URL" 2>/dev/null; then
+				break
+			fi
+			sleep 0.5
+			i=$((i + 1))
+		done
+		launchctl asuser "$console_uid" sudo -u "$console_user" open "$UI_URL" >/dev/null 2>&1 || true
+	fi
+fi
+exit 0

@@ -1,0 +1,22 @@
+#!/bin/sh
+# Woodpile pkg preinstall: runs as root before the payload is laid down.
+# Creates the service account and, on upgrade, stops the running daemon so the
+# binary can be replaced. postinstall starts it again.
+set -e
+
+# shellcheck source=packaging/macos/scripts/common.sh
+. "$(dirname "$0")/common.sh"
+
+ensure_service_account
+
+if daemon_loaded; then
+	log "stopping the running daemon for the upgrade"
+	launchctl bootout "system/$LABEL" 2>/dev/null || true
+	# bootout returns before the process is gone on some releases; wait briefly.
+	i=0
+	while daemon_loaded && [ "$i" -lt 20 ]; do
+		sleep 0.5
+		i=$((i + 1))
+	done
+fi
+exit 0

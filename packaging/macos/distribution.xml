@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- productbuild distribution for the Woodpile installer. build-pkg.sh substitutes the version placeholder. -->
+<installer-gui-script minSpecVersion="2">
+    <title>Woodpile</title>
+    <license file="LICENSE.txt"/>
+    <conclusion file="conclusion.html" mime-type="text/html"/>
+    <options customize="never" require-scripts="true" rootVolumeOnly="true" hostArchitectures="arm64,x86_64"/>
+    <domains enable_anywhere="false" enable_currentUserHome="false" enable_localSystem="true"/>
+    <!-- Go 1.27 binaries need macOS 13 or later. -->
+    <volume-check>
+        <allowed-os-versions>
+            <os-version min="13.0"/>
+        </allowed-os-versions>
+    </volume-check>
+    <choices-outline>
+        <line choice="default">
+            <line choice="com.woodpile.pkg"/>
+        </line>
+    </choices-outline>
+    <choice id="default"/>
+    <choice id="com.woodpile.pkg" visible="false">
+        <pkg-ref id="com.woodpile.pkg"/>
+    </choice>
+    <pkg-ref id="com.woodpile.pkg" version="@VERSION@" onConclusion="none">woodpile-component.pkg</pkg-ref>
+</installer-gui-script>

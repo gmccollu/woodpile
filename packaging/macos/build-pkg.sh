@@ -1,0 +1,143 @@
+#!/bin/bash
+# Builds the macOS installer: a universal (arm64 + x86_64) woodpile binary, a component
+# package (pkgbuild) and the product archive (productbuild).
+#
+#   packaging/macos/build-pkg.sh [--version 1.2.3] [--commit abc1234] [--out dist/macos]
+#                                [--arm64 path/to/woodpile --amd64 path/to/woodpile]
+#
+# Without --arm64/--amd64 it builds both binaries with `go build`. Build the frontend
+# first (make web) so the real UI is embedded.
+#
+# Optional signing, used only when the variables are set:
+#   MACOS_APP_SIGN_IDENTITY        "Developer ID Application: ..."  signs the binary (hardened runtime)
+#   MACOS_INSTALLER_SIGN_IDENTITY  "Developer ID Installer: ..."    signs the .pkg
+#   MACOS_KEYCHAIN                 keychain that holds them (default: the search list)
+# Notarization happens afterwards, in the release workflow.
+#
+# Never needs sudo, and never installs anything.
+set -euo pipefail
+
+here=$(cd "$(dirname "$0")" && pwd)
+repo=$(cd "$here/../.." && pwd)
+
+version=""
+commit=""
+out="$repo/dist/macos"
+bin_arm64=""
+bin_amd64=""
+
+while [ $# -gt 0 ]; do
+	case "$1" in
+		--version) version=$2; shift 2 ;;
+		--commit) commit=$2; shift 2 ;;
+		--out) out=$2; shift 2 ;;
+		--arm64) bin_arm64=$2; shift 2 ;;
+		--amd64) bin_amd64=$2; shift 2 ;;
+		-h | --help) sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+		*) echo "build-pkg.sh: unknown option $1" >&2; exit 2 ;;
+	esac
+done
+
+if [ -z "$version" ]; then
+	version=$(git -C "$repo" describe --tags --abbrev=0 2>/dev/null || echo v0.0.0)
+fi
+version=${version#v}
+if [ -z "$commit" ]; then
+	commit=$(git -C "$repo" rev-parse --short HEAD 2>/dev/null || echo none)
+fi
+# pkg versions are dotted numbers; drop any -prerelease/+build suffix for the receipt.
+pkg_version=${version%%[-+]*}
+case "$pkg_version" in
+	"" | *[!0-9.]*) pkg_version=0.0.0 ;; # e.g. `git describe --always` on an untagged tree
+esac
+
+work=$(mktemp -d "${TMPDIR:-/tmp}/woodpile-pkg.XXXXXX")
+trap 'rm -rf "$work"' EXIT
+
+build_one() { # goarch output
+	CGO_ENABLED=0 GOOS=darwin GOARCH=$1 go -C "$repo" build -trimpath \
+		-ldflags "-s -w -X main.version=$version -X main.commit=$commit" \
+		-o "$2" ./cmd/woodpile
+}
+
+if [ -z "$bin_arm64" ] || [ -z "$bin_amd64" ]; then
+	echo "==> go build darwin/arm64 and darwin/amd64 ($version, $commit)"
+	bin_arm64="$work/woodpile-arm64"
+	bin_amd64="$work/woodpile-amd64"
+	build_one arm64 "$bin_arm64"
+	build_one amd64 "$bin_amd64"
+fi
+
+root="$work/root"
+mkdir -p "$root/usr/local/bin" \
+	"$root/usr/local/share/woodpile" \
+	"$root/Library/LaunchDaemons" \
+	"$root/private/etc/newsyslog.d"
+
+echo "==> lipo (universal binary)"
+lipo -create -output "$root/usr/local/bin/woodpile" "$bin_arm64" "$bin_amd64"
+archs=$(lipo -archs "$root/usr/local/bin/woodpile")
+case "$archs" in
+	*x86_64*arm64* | *arm64*x86_64*) echo "    archs: $archs" ;;
+	*) echo "build-pkg.sh: universal binary has archs '$archs'" >&2; exit 1 ;;
+esac
+chmod 0755 "$root/usr/local/bin/woodpile"
+
+if [ -n "${MACOS_APP_SIGN_IDENTITY:-}" ]; then
+	echo "==> codesign the binary"
+	codesign --force --options runtime --timestamp \
+		${MACOS_KEYCHAIN:+--keychain "$MACOS_KEYCHAIN"} \
+		--sign "$MACOS_APP_SIGN_IDENTITY" "$root/usr/local/bin/woodpile"
+	codesign --verify --strict --verbose=2 "$root/usr/local/bin/woodpile"
+else
+	echo "==> MACOS_APP_SIGN_IDENTITY not set; the binary stays unsigned (ad-hoc arm64 signature only)"
+fi
+
+install -m 0644 "$here/com.woodpile.daemon.plist" "$root/Library/LaunchDaemons/com.woodpile.daemon.plist"
+install -m 0644 "$here/com.woodpile.daemon.newsyslog.conf" "$root/private/etc/newsyslog.d/com.woodpile.daemon.conf"
+install -m 0755 "$here/uninstall.sh" "$root/usr/local/share/woodpile/uninstall.sh"
+plutil -lint "$root/Library/LaunchDaemons/com.woodpile.daemon.plist" >/dev/null
+
+scripts="$work/scripts"
+mkdir -p "$scripts"
+install -m 0755 "$here/scripts/preinstall" "$here/scripts/postinstall" "$scripts/"
+install -m 0644 "$here/scripts/common.sh" "$scripts/"
+
+# Drop removable xattrs. pkgbuild stores any left (macOS adds an undeletable
+# com.apple.provenance on some machines) as ._ AppleDouble entries; Installer's
+# BOMCopier merges those back into xattrs, so no ._ files land on disk.
+xattr -cr "$root" "$scripts" 2>/dev/null || true
+
+mkdir -p "$out"
+component="$work/woodpile-component.pkg"
+echo "==> pkgbuild"
+pkgbuild --root "$root" \
+	--identifier com.woodpile.pkg \
+	--version "$pkg_version" \
+	--install-location / \
+	--ownership recommended \
+	--scripts "$scripts" \
+	"$component"
+
+resources="$work/resources"
+mkdir -p "$resources"
+cp "$repo/LICENSE" "$resources/LICENSE.txt"
+cp "$here/conclusion.html" "$resources/conclusion.html"
+sed "s/@VERSION@/$pkg_version/" "$here/distribution.xml" >"$work/distribution.xml"
+
+product="$out/woodpile_${version}_macos_universal.pkg"
+echo "==> productbuild"
+sign_args=()
+if [ -n "${MACOS_INSTALLER_SIGN_IDENTITY:-}" ]; then
+	sign_args=(--sign "$MACOS_INSTALLER_SIGN_IDENTITY" --timestamp)
+	if [ -n "${MACOS_KEYCHAIN:-}" ]; then sign_args+=(--keychain "$MACOS_KEYCHAIN"); fi
+else
+	echo "    MACOS_INSTALLER_SIGN_IDENTITY not set; the .pkg stays unsigned"
+fi
+productbuild --distribution "$work/distribution.xml" \
+	--package-path "$work" \
+	--resources "$resources" \
+	${sign_args[@]+"${sign_args[@]}"} \
+	"$product"
+
+echo "==> $product"
