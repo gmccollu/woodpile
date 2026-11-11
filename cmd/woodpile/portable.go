@@ -280,7 +280,7 @@ func runPortable(o portableOpts, stdout, stderr io.Writer) (code int) {
 
 	srv, err := server.Open(cfgPath, server.Options{
 		Version: version, Commit: commit, ReleasesURL: releasesURL,
-		Logger: log, ShutdownTimeout: portableShutdownTimeout,
+		Logger: log, ShutdownTimeout: portableShutdownTimeout, FindPeer: findPeer,
 	})
 	if errors.Is(err, server.ErrLocked) {
 		return failf("%s", alreadyRunning(dir))

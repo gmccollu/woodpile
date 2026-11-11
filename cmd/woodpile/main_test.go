@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -17,10 +18,31 @@ import (
 	"github.com/gmccollu/woodpile/internal/api"
 	"github.com/gmccollu/woodpile/internal/config"
 	"github.com/gmccollu/woodpile/internal/index"
+	"github.com/gmccollu/woodpile/internal/peer"
 	"github.com/gmccollu/woodpile/internal/server"
+	"github.com/gmccollu/woodpile/internal/service"
 	"github.com/gmccollu/woodpile/internal/store"
 	"github.com/gmccollu/woodpile/internal/store/logfile"
 )
+
+// TestMain keeps every test away from the real service manager: on a machine
+// with Woodpile installed, reset-password would otherwise restart (or fail to
+// restart) the real service, and status would report it.
+func TestMain(m *testing.M) {
+	noService()
+	os.Exit(m.Run())
+}
+
+var errNoServiceManager = errors.New("test: no service manager")
+
+// noService puts the service hooks back to "not installed" fakes.
+func noService() {
+	serviceStatus = func() (service.State, error) { return service.StateNotInstalled, nil }
+	serviceRestart = func() error { return errNoServiceManager }
+	serviceInstall = func(service.InstallOptions) (service.Result, error) { return service.Result{}, errNoServiceManager }
+	serviceUninstall = func(service.UninstallOptions) (service.Result, error) { return service.Result{}, errNoServiceManager }
+	findPeer = func(context.Context, peer.Options) (peer.Info, bool) { return peer.Info{}, false }
+}
 
 func runCLI(args ...string) (code int, stdout, stderr string) {
 	var o, e bytes.Buffer
@@ -245,6 +267,38 @@ func TestResetPasswordWhileRunningInForeground(t *testing.T) {
 	code, out, errOut := runCLI("reset-password", "--config", cfgPath)
 	if code != 0 || !strings.Contains(out, "stop it (Ctrl-C) and start it again") {
 		t.Errorf("%d %q %q", code, out, errOut)
+	}
+}
+
+func TestResetPasswordRestartsTheService(t *testing.T) {
+	defer noService()
+	restarts := 0
+	serviceStatus = func() (service.State, error) { return service.StateRunning, nil }
+	serviceRestart = func() error { restarts++; return nil }
+	cfgPath, dataDir := testConfig(t, func(c *config.Config) { c.UI.LANMode = true })
+	lock, err := server.LockDataDir(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Unlock()
+	code, out, errOut := runCLI("reset-password", "--config", cfgPath)
+	if code != 0 || restarts != 1 || !strings.Contains(out, "Restarted the service") {
+		t.Errorf("%d restarts=%d %q %q", code, restarts, out, errOut)
+	}
+
+	// A restart the service manager refuses is reported, not hidden.
+	c, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.UI.LANMode = true
+	if err := config.Save(cfgPath, c); err != nil {
+		t.Fatal(err)
+	}
+	serviceRestart = func() error { return errNoServiceManager }
+	code, _, errOut = runCLI("reset-password", "--config", cfgPath)
+	if code != 1 || !strings.Contains(errOut, "couldn't restart the service") {
+		t.Errorf("refused restart: %d %q", code, errOut)
 	}
 }
 

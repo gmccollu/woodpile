@@ -62,6 +62,7 @@ func serve(ctx context.Context, cfgPath string, log *slog.Logger, hello io.Write
 		ReleasesURL:        releasesURL,
 		Logger:             log,
 		Service:            so.service,
+		FindPeer:           findPeer,
 		AllowSharedDataDir: so.allowShared,
 	})
 	if err != nil {

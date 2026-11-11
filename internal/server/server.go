@@ -28,6 +28,7 @@ import (
 	"github.com/gmccollu/woodpile/internal/hub"
 	"github.com/gmccollu/woodpile/internal/index"
 	"github.com/gmccollu/woodpile/internal/listen"
+	"github.com/gmccollu/woodpile/internal/peer"
 	"github.com/gmccollu/woodpile/internal/search"
 	"github.com/gmccollu/woodpile/internal/store"
 )
@@ -50,6 +51,10 @@ type Options struct {
 	// (re-test N2), unless AllowSharedDataDir is set.
 	Service            bool
 	AllowSharedDataDir bool
+
+	// FindPeer looks for another running Woodpile (default peer.Find, which asks
+	// the OS service manager). Tests replace it.
+	FindPeer func(context.Context, peer.Options) (peer.Info, bool)
 }
 
 // Server is an opened Woodpile service. Call Run once.
@@ -182,6 +187,7 @@ func Open(cfgPath string, opts Options) (*Server, error) {
 		search:  s.search,
 		exports: s.exports,
 	})
+	s.be.peers.find = opts.FindPeer
 	if sharedBanner != nil {
 		s.be.startupBanners = append(s.be.startupBanners, *sharedBanner)
 		s.be.serviceEvent(index.LevelError, index.KindError, sharedBanner.Text)

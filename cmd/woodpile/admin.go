@@ -19,8 +19,19 @@ import (
 	"github.com/gmccollu/woodpile/internal/api"
 	"github.com/gmccollu/woodpile/internal/config"
 	"github.com/gmccollu/woodpile/internal/index"
+	"github.com/gmccollu/woodpile/internal/peer"
 	"github.com/gmccollu/woodpile/internal/server"
 	"github.com/gmccollu/woodpile/internal/service"
+)
+
+// The service manager, through these so tests never reach the real one
+// (launchctl, systemctl, the SCM). TestMain replaces them.
+var (
+	serviceInstall   = service.Install
+	serviceUninstall = service.Uninstall
+	serviceStatus    = service.Status
+	serviceRestart   = service.Restart
+	findPeer         = peer.Find // passed to server.Open: the server's own lookup of the service
 )
 
 // ---- install / uninstall ----
@@ -40,7 +51,7 @@ service, install refuses, so there's never a second one.`, stderr)
 	if code, done := parse(fs, args, stdout); done {
 		return code
 	}
-	res, err := service.Install(service.InstallOptions{ConfigPath: *cfg, DataDir: *dataDir,
+	res, err := serviceInstall(service.InstallOptions{ConfigPath: *cfg, DataDir: *dataDir,
 		Out: &headed{w: stdout, head: "Installing the Woodpile service:"}})
 	if err != nil {
 		return fail(stderr, "install", err)
@@ -99,7 +110,7 @@ instead (the error says how).`, stderr)
 	if code, done := parse(fs, args, stdout); done {
 		return code
 	}
-	res, err := service.Uninstall(service.UninstallOptions{DeleteLogs: *deleteLogs, Out: &headed{w: stdout, head: "Removing the Woodpile service:"}})
+	res, err := serviceUninstall(service.UninstallOptions{DeleteLogs: *deleteLogs, Out: &headed{w: stdout, head: "Removing the Woodpile service:"}})
 	if err != nil {
 		return fail(stderr, "uninstall", err)
 	}
@@ -133,7 +144,7 @@ reached.`, stderr)
 	}
 
 	w := &tabw{w: stdout}
-	st, stErr := service.Status()
+	st, stErr := serviceStatus()
 	svc := string(st)
 	if stErr != nil {
 		svc += " (" + stErr.Error() + ")"
@@ -453,8 +464,8 @@ way to do this over the network, by design.`, stderr)
 		return 0
 	}
 	// The running server still has the old password and mode in memory.
-	if st, _ := service.Status(); st == service.StateRunning {
-		if err := service.Restart(); err != nil {
+	if st, _ := serviceStatus(); st == service.StateRunning {
+		if err := serviceRestart(); err != nil {
 			fmt.Fprintf(stderr, "woodpile reset-password: couldn't restart the service: %v\nRestart it yourself to apply the change.\n", err)
 			return 1
 		}
