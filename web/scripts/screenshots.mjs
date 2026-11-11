@@ -406,6 +406,87 @@ const SHOTS = [
       && l.every((x) => x.textContent.includes('\\\\u202e') && !x.textContent.includes('\u202e')); })()`,
   },
 
+  // ---- Recovering from a bad save; dismissing banners; another Woodpile on the port ----
+  {
+    name: 'settings-undo-after-bad-save-light',
+    mode: 'light',
+    url: '/?mock_panel=0&mock_service_514=1#/settings',
+    act: `const ports = [...document.querySelectorAll('fieldset input[type=number]')];
+      if (ports[0].value !== '15514' || ports[1].value !== '15514') throw new Error('expected 15514 to start with');
+      if (!__btn('Discard changes').disabled) throw new Error('Discard changes enabled with no edits');
+      __set(ports[0], '514'); __set(ports[1], '514'); await __tick();
+      if (__btn('Discard changes').disabled) throw new Error('Discard changes disabled after an edit');
+      __btn('Save').click();
+      await new Promise((r) => setTimeout(r, 2500));
+      if (!document.body.innerText.includes('Your last save stopped a listener')) throw new Error('no undo notice');`,
+    after: 300,
+    check: `[...document.querySelectorAll('button')].filter((b) => b.textContent.trim() === 'Undo last save').length === 2`,
+  },
+  {
+    name: 'undo-last-save-restores-ports',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0&mock_service_514=1#/settings',
+    act: `const ports = [...document.querySelectorAll('fieldset input[type=number]')];
+      __set(ports[0], '514'); __set(ports[1], '514'); await __tick(); __btn('Save').click();
+      await new Promise((r) => setTimeout(r, 2500));
+      document.querySelector('.banner .pill-btn').click();`,
+    after: 2000,
+    check: `(() => { const ports = [...document.querySelectorAll('fieldset input[type=number]')];
+      return ports[0].value === '15514' && ports[1].value === '15514' && !document.body.innerText.includes('in use by another Woodpile')
+        && !document.body.innerText.includes('Your last save stopped a listener') && !sessionStorage.getItem('woodpile.undo'); })()`,
+  },
+  {
+    name: 'banner-woodpile-service-light',
+    mode: 'light',
+    url: '/?mock_panel=0&mock_service_514=1&mock_listen_514=1#/dashboard',
+    check: `(() => { const h = [...document.querySelectorAll('[data-holder]')];
+      return h.length === 1 && h[0].textContent.trim().startsWith("Another copy of Woodpile is using port 514: the installed service. This copy can't receive logs; stop it, or use the service's page.")
+        && h[0].querySelector('a')?.getAttribute('href') === 'http://localhost:8514/'; })()`,
+  },
+  {
+    name: 'banner-ui-port-busy',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0&mock_ui_port_busy=1#/dashboard',
+    check: `(() => { const b = [...document.querySelectorAll('.banner.warn')].find((x) => x.textContent.includes("can't open its web page"));
+      return !!b && !!b.querySelector('[aria-label="Hide this alert"]'); })()`,
+  },
+  {
+    name: 'dismissed-banner-stays-hidden-then-returns-on-change',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0&mock_device_limit=1#/dashboard',
+    act: `const b = [...document.querySelectorAll('.banner')].find((x) => x.textContent.includes('New senders are being refused'));
+      b.querySelector('[aria-label="Hide this alert"]').click(); await __tick();
+      if (document.body.innerText.includes('New senders are being refused')) throw new Error('not hidden');
+      if (!__btn('1 hidden alert')) throw new Error('no hidden-alert pill');
+      location.hash = '#/devices'; await new Promise((r) => setTimeout(r, 1500));
+      if (document.body.innerText.includes('New senders are being refused')) throw new Error('back after navigation');
+      window.__woodpileMock.bannerNote = ' Updated.';
+      await new Promise((r) => setTimeout(r, 6000));`,
+    after: 200,
+    check: `document.body.innerText.includes('Their messages count as dropped. Updated.') && !__btn('1 hidden alert')`,
+  },
+  {
+    name: 'hidden-alert-pill-brings-it-back',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0&mock_device_limit=1#/dashboard',
+    act: `document.querySelector('.banner [aria-label="Hide this alert"]').click(); await __tick(); __btn('1 hidden alert').click();`,
+    after: 300,
+    check: `document.body.innerText.includes('New senders are being refused') && !__btn('1 hidden alert')`,
+  },
+  {
+    name: 'dismissed-error-not-kept-past-reload',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0&mock_clash=1#/dashboard',
+    act: `document.querySelector('.banner.error [aria-label="Hide this alert"]').click(); await __tick();`,
+    after: 300,
+    check: `!document.body.innerText.includes('TCP 514 is in use') && !(sessionStorage.getItem('woodpile.dismissed') ?? '').includes('listener_bind')`,
+  },
+
   // ---- Search ----
   ...both({
     name: 'search-results',

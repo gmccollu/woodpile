@@ -13,6 +13,7 @@
   import { deviceName, live, refreshStatus } from '../lib/status.svelte';
   import { auth, loadSession } from '../lib/session.svelte';
   import { router } from '../lib/router.svelte';
+  import { failingNow, noteSave, undo, undoLastSave } from '../lib/undo.svelte';
   import PasswordForm from '../components/PasswordForm.svelte';
   import CopyButton from '../components/CopyButton.svelte';
 
@@ -163,6 +164,15 @@
   }
   load();
 
+  // "Undo last save" (here or on the banner) put the old settings back: show them.
+  let undoSeen = undo.version;
+  $effect(() => {
+    if (undo.version !== undoSeen) {
+      undoSeen = undo.version;
+      load();
+    }
+  });
+
   // The device_limit banner links to #/settings?section=limits.
   let scrolled = false;
   $effect(() => {
@@ -230,6 +240,8 @@
     const body = fromForm(form);
     sentAllowlist = body.listeners.allowlist;
     const before = saved?.ui;
+    const prevSettings = saved ? $state.snapshot(saved) : null;
+    const failingBefore = failingNow();
     try {
       saved = await putSettings(body);
       form = toForm(saved);
@@ -243,9 +255,11 @@
       savedAt = Date.now();
       setTimeout(() => (savedAt = 0), 2500);
       if (!auth.movedTo) {
-        refreshStatus();
         loadRejected();
         loadSession();
+        // A save that breaks a listener (a port that's taken) offers "Undo last save".
+        if (prevSettings) noteSave(prevSettings as Settings, failingBefore);
+        else refreshStatus();
       }
     } catch (x) {
       if (x instanceof ApiError && Object.keys(x.fields).length) {
@@ -309,10 +323,20 @@
         <span class="text-[14px]" aria-live="polite">
           {#if savedAt}<span class="text-ok-fg">Saved.</span>{:else if dirty}<span class="text-muted">Unsaved changes</span>{/if}
         </span>
-        <button type="button" class="ghost-btn" onclick={revert} disabled={!dirty || busy}>Revert</button>
+        <button type="button" class="ghost-btn" onclick={revert} disabled={!dirty || busy} title="Throw away the edits you haven't saved">Discard changes</button>
         <button type="submit" class="pill-btn" disabled={busy}>{busy ? 'Saving…' : 'Save'}</button>
       </div>
     </div>
+
+    {#if undo.saved}
+      <div class="undo" role="alert">
+        <span>
+          Your last save stopped a listener ({undo.saved.broke}): Woodpile can't receive logs there.
+          {#if undo.error}<b>{undo.error}</b>{/if}
+        </span>
+        <button type="button" class="pill-btn" onclick={undoLastSave} disabled={undo.busy}>{undo.busy ? 'Undoing…' : 'Undo last save'}</button>
+      </div>
+    {/if}
 
     {#if formError}
       <div class="rounded-2xl border border-[var(--error-border)] bg-[var(--error-bg)] px-4 py-3 text-[14px]" role="alert">
@@ -636,6 +660,18 @@
 {/if}
 
 <style>
+  .undo {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 12px 16px;
+    border-radius: 18px;
+    border: 1px solid var(--error-border);
+    background: var(--error-bg);
+    font-size: 14px;
+  }
   .savebar {
     position: sticky;
     top: 8px;

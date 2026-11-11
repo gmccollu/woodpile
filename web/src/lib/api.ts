@@ -16,6 +16,15 @@ export interface Listener {
   error: string;
   /** Process holding the port, when the OS lets the server find out. */
   holder?: string;
+  /**
+   * docs/api.md (0d039ea): the holder is another Woodpile, the installed service or another
+   * running copy; omitted (or "") otherwise. When the holder can't be seen (another user's
+   * process), a running service is reported as the likely holder.
+   */
+  holder_kind?: 'woodpile_service' | 'woodpile' | '' | (string & {});
+  holder_pid?: number;
+  /** That Woodpile's UI address, when known. */
+  holder_ui_url?: string;
 }
 
 export type BannerLevel = 'error' | 'warn' | 'info';

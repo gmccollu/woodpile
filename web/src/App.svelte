@@ -3,6 +3,7 @@
   import { theme, setTheme } from './lib/theme.svelte';
   import { live, startPolling } from './lib/status.svelte';
   import { auth, loadSession, logout } from './lib/session.svelte';
+  import { isDismissed, restoreAll } from './lib/alerts.svelte';
   import Login from './pages/Login.svelte';
   import { ui } from './lib/ui.svelte';
   import Icon, { type IconName } from './components/Icon.svelte';
@@ -29,6 +30,7 @@
     }
   }
   const showLogin = $derived(auth.needLogin);
+  const hiddenAlerts = $derived((live.status?.banners ?? []).filter(isDismissed).length);
   const canLogout = $derived(!auth.needLogin && !!auth.session && auth.session.auth_required && auth.session.authenticated);
 
   const NAV: { r: Route; label: string; icon: IconName }[] = [
@@ -101,6 +103,11 @@
         <button aria-pressed={theme.mode === 'light'} onclick={() => setTheme('light')}><Icon name="sun" size={15} />Light</button>
         <button aria-pressed={theme.mode === 'dark'} onclick={() => setTheme('dark')}><Icon name="moon" size={15} />Dark</button>
       </div>
+      {#if hiddenAlerts && !showLogin}
+        <button class="hidden-pill glass" onclick={restoreAll} title="Show the hidden alerts again">
+          <Icon name="alert" size={14} />{hiddenAlerts} hidden alert{hiddenAlerts === 1 ? '' : 's'}
+        </button>
+      {/if}
       {#if canLogout}
         <button class="logout glass" onclick={doLogout} disabled={loggingOut}><Icon name="logout" size={15} />Log out</button>
       {/if}
@@ -197,6 +204,18 @@
   }
   .search input:focus-visible {
     outline: none;
+  }
+  .hidden-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 14px;
+    border-radius: 999px;
+    color: var(--fg);
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+    backdrop-filter: none;
   }
   .logout {
     display: inline-flex;

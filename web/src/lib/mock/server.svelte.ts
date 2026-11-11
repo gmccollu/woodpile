@@ -23,6 +23,9 @@
 //   mock_export_secs=N seconds an export takes to build (default 8)
 //   mock_devices=N    add N generated devices (up to 10,000) to the fleet
 //   mock_device_limit=1 new senders are being refused (device_limit banner)
+//   mock_service_514=1 the installed Woodpile service holds UDP and TCP 514; this copy starts on 15514
+//   mock_listen_514=1  with mock_service_514: start on 514 (so the clash shows straight away)
+//   mock_ui_port_busy=1 the installed service can't open its UI because this copy holds the UI port
 
 import type {
   Device,
@@ -68,6 +71,8 @@ export const mock = $state({
   deviceLimit: P.get('mock_device_limit') === '1',
   /** Generated devices added to the fleet. */
   fleetExtra: 0,
+  /** Another Woodpile (the installed service) holds port 514 on UDP and TCP. */
+  service514: P.get('mock_service_514') === '1',
 });
 
 export const MOCK_PASSWORD = 'woodpile-demo';
@@ -99,6 +104,8 @@ const probe = {
   downloads: [] as { id: string; ticket: boolean; status: number }[],
   lastDownloadStatus: 0,
   lastTicketUrl: '',
+  /** Appended to the device_limit banner text, so a smoke check can change a banner's content. */
+  bannerNote: '',
   /** Fetches a URL like a browser navigation would (no session header); returns the status. */
   async navigateStatus(path: string): Promise<number> {
     return (await mockTransport.fetch(path, { headers: {} })).status;
@@ -318,10 +325,13 @@ function devicesRoute(u: URLSearchParams, now: number): Response {
 
 // ---------- Settings ----------
 
+// A demo copy beside an installed service starts on 15514, as in the owner's test.
+const SYSLOG_PORT = P.get('mock_service_514') === '1' && P.get('mock_listen_514') !== '1' ? 15514 : 514;
+
 let settings: Settings = {
   listeners: {
-    udp: { enabled: true, addr: '0.0.0.0', port: 514 },
-    tcp: { enabled: true, addr: '0.0.0.0', port: 514 },
+    udp: { enabled: true, addr: '0.0.0.0', port: SYSLOG_PORT },
+    tcp: { enabled: true, addr: '0.0.0.0', port: SYSLOG_PORT },
     // Non-empty so the rejected-senders list has something to show.
     allowlist: ['10.0.0.0/8', '192.0.2.44/32', 'fd00:1::/64'],
     max_devices: 10_000,
@@ -724,35 +734,50 @@ function deviceJSON(d: Dev, now: number): Device {
   };
 }
 
+/** Who holds a port this copy wants, if anyone (mock only). */
+function holderOf(proto: 'udp' | 'tcp', port: number): Partial<Status['listeners'][number]> | null {
+  if (mock.service514 && port === 514)
+    return { holder: 'woodpile (pid 4242)', holder_kind: 'woodpile_service', holder_pid: 4242, holder_ui_url: 'http://localhost:8514/' };
+  if (mock.clash && proto === 'tcp' && port === 514) return { holder: 'syslogd (pid 312)' };
+  return null;
+}
+
 function statusJSON(): Status {
   const l = settings.listeners;
   const listeners: Status['listeners'] = [];
-  if (l.udp.enabled) listeners.push({ proto: 'udp', addr: l.udp.addr, port: l.udp.port, ok: true, error: '' });
-  if (l.tcp.enabled) {
-    const clash = mock.clash && l.tcp.port === 514;
-    listeners.push({
-      proto: 'tcp',
-      addr: l.tcp.addr,
-      port: l.tcp.port,
-      ok: !clash,
-      error: clash ? 'bind: address already in use' : '',
-      ...(clash ? { holder: 'syslogd (pid 312)' } : {}),
-    });
+  for (const proto of ['udp', 'tcp'] as const) {
+    const c = l[proto];
+    if (!c.enabled) continue;
+    const h = holderOf(proto, c.port);
+    listeners.push({ proto, addr: c.addr, port: c.port, ok: !h, error: h ? 'bind: address already in use' : '', ...(h ?? {}) });
   }
   const banners: Status['banners'] = [];
-  if (listeners.some((x) => !x.ok))
+  const down = listeners.filter((x) => !x.ok);
+  if (down.length) {
+    const ports = down.map((x) => `${x.proto.toUpperCase()} ${x.port}`).join(' and ');
+    const woodpile = down.some((x) => x.holder_kind === 'woodpile_service');
     banners.push({
       kind: 'listener_bind',
       action: 'retry_listeners',
       level: 'error',
-      text: 'TCP 514 is in use by syslogd (pid 312). Woodpile is still receiving on UDP 514. Stop the other syslog service, or move the TCP listener to another port in Settings, then press Retry.',
+      text: woodpile
+        ? `${ports} ${down.length > 1 ? 'are' : 'is'} in use by another Woodpile (the installed service).`
+        : `${ports} is in use by syslogd (pid 312). Stop the other syslog service, or move the listener to another port in Settings, then press Retry.`,
+    });
+  }
+  if (P.get('mock_ui_port_busy') === '1')
+    banners.push({
+      kind: 'ui_port_busy',
+      action: '',
+      level: 'warn',
+      text: "The installed Woodpile service is running but can't open its web page, because this copy is using port 8514. Stop this copy to use the service.",
     });
   if (mock.deviceLimit || activeDevices(Date.now()) >= settings.listeners.max_devices)
     banners.push({
       kind: 'device_limit',
       action: '',
       level: 'warn',
-      text: `New senders are being refused: ${activeDevices(Date.now()).toLocaleString()} devices sent in the last 10 minutes and the limit is ${settings.listeners.max_devices.toLocaleString()}. Their messages count as dropped.`,
+      text: `New senders are being refused: ${activeDevices(Date.now()).toLocaleString()} devices sent in the last 10 minutes and the limit is ${settings.listeners.max_devices.toLocaleString()}. Their messages count as dropped.${probe.bannerNote}`,
     });
   if (mock.paused)
     banners.push({
