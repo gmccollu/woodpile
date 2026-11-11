@@ -65,7 +65,7 @@ Hidden devices are included, with `"hidden": true`.
 
 ## Live tail
 
-`GET /api/live?devices=10.1.0.1,10.1.0.2&group=HQ&ungrouped=true&min_severity=4&q=text` → `text/event-stream`.
+`GET /api/live?devices=10.1.0.1,10.1.0.2&group=HQ&ungrouped=true&severities=3,4,unknown&q=text` → `text/event-stream`.
 - `event: message` `data: {"received": "...", "device_id": "10.1.0.1", "severity": 6, "raw": "<134>..."}`
 - `event: sampled` `data: {"rate": 1284.2, "shown": 50}`: sent once a second while the server is sampling.
 - `group` and `ungrouped=true` are alternatives; `ungrouped=true` matches devices with no group.
@@ -74,20 +74,75 @@ Hidden devices are included, with `"hidden": true`.
   are always included.
 - On connect, the server first sends up to the last 200 matching messages from the ring buffer.
 
-## Search (M3)
+## Severity filters (live tail and search)
 
-`GET /api/search?q=text&regex=false&devices=a,b&group=HQ&from=...&to=...&min_severity=7&limit=500&cursor=...`
+Both `/api/live` and `/api/search` take either:
+- `severities=0,3,7,unknown`: any set of syslog severities (0 emerg … 7 debug) plus `unknown` (no parseable PRI).
+  Only those are returned. An empty or missing value means all.
+- `min_severity=N`: the older ceiling form (0…N, plus unknown). If both are given, `severities` wins.
+
+An invalid value (not 0–7 or `unknown`) is a `400 {"error": ...}`.
+
+## Search
+
+`GET /api/search?q=text&regex=false&case=false&devices=a,b&group=HQ&ungrouped=true&from=...&to=...&severities=...&order=desc&limit=500&cursor=...`
 ```json
 {"results": [{"received": "...", "device_id": "10.1.0.1", "severity": 6, "raw": "...", "ref": "opaque"}],
- "next_cursor": "opaque-or-empty", "scanned_bytes": 123456, "truncated": false}
+ "next_cursor": "opaque-or-empty", "scanned_bytes": 123456, "scanned_files": 12, "elapsed_ms": 840,
+ "partial": false}
 ```
+- `q`: substring by default (case-insensitive unless `case=true`). With `regex=true` it's an RE2 regular expression;
+  an invalid one is a `400` with the parse error. Empty `q` matches every line, so it's a filtered browse.
+- `q` is matched against the raw message as received (unescaped), not the stored line prefix.
+- `from` / `to`: RFC 3339. Default `to` = now and `from` = to − 24 h. `from` must be before `to`.
+- `devices`, `group` / `ungrouped`: as for `/api/live`. Hidden devices are searched only when named in `devices`.
+- `order`: `desc` (newest first, the default) or `asc`.
+- `limit`: default 500, max 5,000.
+- `cursor`: from the previous page's `next_cursor`; the other parameters must be the same as on the first page, or
+  the server returns `400`.
+- Each request has a time budget of 10 s. If the budget runs out before `limit` results, the response has what it
+  found, `partial: true` and a `next_cursor` that resumes where the scan stopped. The UI keeps asking while
+  `partial` is true and the user hasn't cancelled.
+- `next_cursor` is empty when the range is exhausted.
+- `ref` identifies one line for `/api/context`. It stays valid until the file is deleted by retention.
+
 `GET /api/context?ref=opaque&before=50&after=50` → `{"lines": [...same shape as results...], "hit_index": 50}`
+- Lines come from the same device, in file order, and can cross into the neighbouring part or day file.
+- `before` / `after` max 500 each. A `ref` whose file is gone is a `404`.
 
-## Exports (M3)
+## Exports
 
-`POST /api/exports` body `{"devices": ["10.1.0.1"], "from": "...", "to": "..."}` → `{"id": "exp_..."}`
-`GET /api/exports` → `[{"id", "created", "devices", "from", "to", "state": "building|ready|failed", "size_bytes", "error"}]`
-`GET /api/exports/{id}/download` → the zip.
+`POST /api/exports` body `{"devices": ["10.1.0.1"], "from": "...", "to": "...", "severities": [0, 1, "unknown"], "q": ""}`
+→ `202 {"id": "exp_..."}`
+- `devices` is required (at least one). `severities` and `q` are optional filters with the same meaning as search;
+  without them every line in range is exported.
+- One export builds at a time; a second `POST` while one is building is queued.
+
+`POST /api/exports/estimate` (same body) → `{"lines": 123456, "bytes": 45678901, "files": 12}`: an upper bound
+from the index, without scanning, so the UI can show the size before building.
+
+`GET /api/exports` → `[{"id", "created", "devices", "from", "to", "state": "queued|building|ready|failed|expired",
+"progress": 0.42, "lines": 0, "size_bytes": 0, "error": ""}]`, newest first.
+
+`GET /api/exports/{id}` → one entry, same shape.
+
+`GET /api/exports/{id}/download` → the zip (`Content-Disposition: attachment; filename="woodpile-<from>-<to>.zip"`).
+`409` if it isn't ready, `404` if unknown or expired.
+
+`DELETE /api/exports/{id}` → `204`. It cancels a building export or deletes a ready one.
+
+Exports are deleted 24 h after they're ready. Their size counts against free disk (the low-disk guard can delete
+them first), but not against the log retention cap.
+
+**Zip contents** (SPEC §4.1):
+- `logs/<device-id>/<YYYY-MM-DD>.log`: the matching lines, unescaped, one message per line, in received order. Each
+  line keeps the stored prefix (`<received> <sender> `) so it's self-describing.
+- `manifest.json`: Woodpile version, export time, the request (devices with names and groups, range, filters), and
+  per-file line count and SHA-256. Also `gaps`: periods inside the range when Woodpile wasn't running or a listener
+  was down, from the event log.
+- `woodpile-events.log`: the service's own events in the range (start, stop, bind errors, rotations, deletions,
+  drops, pauses).
+- `README.txt`: a short note on what each file is.
 
 ## Settings
 
