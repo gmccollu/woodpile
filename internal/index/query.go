@@ -1,0 +1,337 @@
+package index
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"time"
+)
+
+const deviceCols = `d.id, d.ip, d.name, d.grp, d.hidden, d.first_seen, d.last_heard, d.total_msgs, d.total_bytes,
+	COALESCE((SELECT sum(f.size) FROM files f WHERE f.device_id = d.id), 0)`
+
+func scanDevice(r interface{ Scan(...any) error }) (Device, error) {
+	var dv Device
+	var hidden int
+	var first, last int64
+	err := r.Scan(&dv.ID, &dv.IP, &dv.Name, &dv.Group, &hidden, &first, &last, &dv.TotalMsgs, &dv.TotalBytes, &dv.BytesOnDisk)
+	dv.Hidden = hidden != 0
+	dv.FirstSeen, dv.LastHeard = tm(first), tm(last)
+	return dv, err
+}
+
+// ListDevices returns every device (hidden ones included), ordered by ID.
+func (d *DB) ListDevices(ctx context.Context) ([]Device, error) {
+	rows, err := d.db.QueryContext(ctx, `SELECT `+deviceCols+` FROM devices d ORDER BY d.id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Device
+	for rows.Next() {
+		dv, err := scanDevice(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, dv)
+	}
+	return out, rows.Err()
+}
+
+// Device returns one device, or ErrNotFound.
+func (d *DB) Device(ctx context.Context, id string) (Device, error) {
+	dv, err := scanDevice(d.db.QueryRowContext(ctx, `SELECT `+deviceCols+` FROM devices d WHERE d.id = ?`, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Device{}, ErrNotFound
+	}
+	return dv, err
+}
+
+// DeviceCounts returns each device's counts summed over the minutes in [from, to).
+// Devices with no activity in the range are absent.
+func (d *DB) DeviceCounts(ctx context.Context, from, to time.Time) (map[string]Counts, error) {
+	rows, err := d.db.QueryContext(ctx, `SELECT device_id, sum(msgs), sum(bytes), sum(truncated), sum(dropped)
+		FROM stats WHERE minute >= ? AND minute < ? GROUP BY device_id`,
+		ms(from.Truncate(time.Minute)), ms(to))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]Counts{}
+	for rows.Next() {
+		var id string
+		var c Counts
+		if err := rows.Scan(&id, &c.Msgs, &c.Bytes, &c.Truncated, &c.Dropped); err != nil {
+			return nil, err
+		}
+		out[id] = c
+	}
+	return out, rows.Err()
+}
+
+// TotalCounts returns the counts of all devices summed over the minutes in [from, to)
+// (for example dropped_24h and truncated_24h).
+func (d *DB) TotalCounts(ctx context.Context, from, to time.Time) (Counts, error) {
+	var c Counts
+	err := d.db.QueryRowContext(ctx, `SELECT COALESCE(sum(msgs),0), COALESCE(sum(bytes),0),
+		COALESCE(sum(truncated),0), COALESCE(sum(dropped),0) FROM stats WHERE minute >= ? AND minute < ?`,
+		ms(from.Truncate(time.Minute)), ms(to)).Scan(&c.Msgs, &c.Bytes, &c.Truncated, &c.Dropped)
+	return c, err
+}
+
+// MinuteSeries returns one entry per minute in [from, to), oldest first, with missing
+// minutes as zeros, summed over deviceIDs (nil means all devices). from is truncated
+// to the minute. For the dashboard sparkline, use from = now-60m, to = now truncated
+// to the minute, and divide Msgs by 60 for msgs/s.
+func (d *DB) MinuteSeries(ctx context.Context, deviceIDs []string, from, to time.Time) ([]MinuteCounts, error) {
+	from = from.Truncate(time.Minute).UTC()
+	if !to.After(from) {
+		return nil, nil
+	}
+	q := `SELECT minute, sum(msgs), sum(bytes), sum(truncated), sum(dropped) FROM stats WHERE minute >= ? AND minute < ?`
+	args := []any{ms(from), ms(to)}
+	if deviceIDs != nil {
+		if len(deviceIDs) == 0 {
+			deviceIDs = []string{""}
+		}
+		in, inArgs := inList(deviceIDs)
+		q += ` AND device_id IN ` + in
+		args = append(args, inArgs...)
+	}
+	q += ` GROUP BY minute`
+	rows, err := d.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	n := int((to.Sub(from) + time.Minute - 1) / time.Minute)
+	out := make([]MinuteCounts, n)
+	for i := range out {
+		out[i].Minute = from.Add(time.Duration(i) * time.Minute)
+	}
+	for rows.Next() {
+		var m int64
+		var c Counts
+		if err := rows.Scan(&m, &c.Msgs, &c.Bytes, &c.Truncated, &c.Dropped); err != nil {
+			return nil, err
+		}
+		if i := int(tm(m).Sub(from) / time.Minute); i >= 0 && i < n {
+			out[i].Counts = c
+		}
+	}
+	return out, rows.Err()
+}
+
+const fileCols = `id, device_id, path, day, part, first_received, last_received, size, raw_size, lines, compressed`
+
+func scanFile(r interface{ Scan(...any) error }) (File, error) {
+	var f File
+	var first, last int64
+	var comp int
+	err := r.Scan(&f.ID, &f.DeviceID, &f.Path, &f.Day, &f.Part, &first, &last, &f.Size, &f.RawSize, &f.Lines, &comp)
+	f.FirstReceived, f.LastReceived, f.Compressed = tm(first), tm(last), comp != 0
+	return f, err
+}
+
+func (d *DB) queryFiles(ctx context.Context, q string, args ...any) ([]File, error) {
+	rows, err := d.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []File
+	for rows.Next() {
+		f, err := scanFile(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, f)
+	}
+	return out, rows.Err()
+}
+
+// File returns a file by ID, or ErrNotFound.
+func (d *DB) File(ctx context.Context, id int64) (File, error) {
+	f, err := scanFile(d.db.QueryRowContext(ctx, `SELECT `+fileCols+` FROM files WHERE id = ?`, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return File{}, ErrNotFound
+	}
+	return f, err
+}
+
+// FileByPath returns a file by its data-dir-relative path, or ErrNotFound.
+func (d *DB) FileByPath(ctx context.Context, path string) (File, error) {
+	f, err := scanFile(d.db.QueryRowContext(ctx, `SELECT `+fileCols+` FROM files WHERE path = ?`, path))
+	if errors.Is(err, sql.ErrNoRows) {
+		return File{}, ErrNotFound
+	}
+	return f, err
+}
+
+// Files returns a device's files ("" for all devices), ordered by device and
+// FirstReceived.
+func (d *DB) Files(ctx context.Context, deviceID string) ([]File, error) {
+	if deviceID == "" {
+		return d.queryFiles(ctx, `SELECT `+fileCols+` FROM files ORDER BY device_id, first_received, id`)
+	}
+	return d.queryFiles(ctx, `SELECT `+fileCols+` FROM files WHERE device_id = ? ORDER BY first_received, id`, deviceID)
+}
+
+// FilesInRange returns the files of deviceIDs (nil means all) holding any line
+// received in [from, to] (a zero from or to is unbounded), ordered by device and
+// FirstReceived, each with the checkpoint to start reading at for from. Lines
+// before Start are all older than from; lines after it still need filtering.
+func (d *DB) FilesInRange(ctx context.Context, deviceIDs []string, from, to time.Time) ([]FileSpan, error) {
+	q := `SELECT ` + fileCols + ` FROM files WHERE 1=1`
+	var args []any
+	if !to.IsZero() {
+		q += ` AND first_received <= ?`
+		args = append(args, ms(to))
+	}
+	if !from.IsZero() {
+		q += ` AND last_received >= ?`
+		args = append(args, ms(from))
+	}
+	if deviceIDs != nil {
+		if len(deviceIDs) == 0 {
+			return nil, nil
+		}
+		in, inArgs := inList(deviceIDs)
+		q += ` AND device_id IN ` + in
+		args = append(args, inArgs...)
+	}
+	q += ` ORDER BY device_id, first_received, id`
+	files, err := d.queryFiles(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]FileSpan, len(files))
+	for i, f := range files {
+		out[i].File = f
+		if !from.IsZero() && f.FirstReceived.Before(from) {
+			cp, err := d.SeekCheckpoint(ctx, f.ID, from)
+			if err != nil {
+				return nil, err
+			}
+			out[i].Start = cp
+		}
+	}
+	return out, nil
+}
+
+// Checkpoints returns a file's checkpoints in offset order.
+func (d *DB) Checkpoints(ctx context.Context, fileID int64) ([]Checkpoint, error) {
+	rows, err := d.db.QueryContext(ctx, `SELECT offset, line, received FROM checkpoints WHERE file_id = ? ORDER BY offset`, fileID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Checkpoint
+	for rows.Next() {
+		var c Checkpoint
+		var r int64
+		if err := rows.Scan(&c.Offset, &c.Line, &r); err != nil {
+			return nil, err
+		}
+		c.Received = tm(r)
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// SeekCheckpoint returns the last checkpoint of a file whose Received is before t, so
+// that every line before it is older than t. With none, it returns offset 0.
+func (d *DB) SeekCheckpoint(ctx context.Context, fileID int64, t time.Time) (Checkpoint, error) {
+	var c Checkpoint
+	var r int64
+	err := d.db.QueryRowContext(ctx, `SELECT offset, line, received FROM checkpoints
+		WHERE file_id = ? AND received < ? ORDER BY offset DESC LIMIT 1`, fileID, ms(t)).Scan(&c.Offset, &c.Line, &r)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Checkpoint{}, nil
+	}
+	c.Received = tm(r)
+	return c, err
+}
+
+// LastCheckpoint returns a file's newest checkpoint, and false if it has none.
+func (d *DB) LastCheckpoint(ctx context.Context, fileID int64) (Checkpoint, bool, error) {
+	var c Checkpoint
+	var r int64
+	err := d.db.QueryRowContext(ctx, `SELECT offset, line, received FROM checkpoints
+		WHERE file_id = ? ORDER BY offset DESC LIMIT 1`, fileID).Scan(&c.Offset, &c.Line, &r)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Checkpoint{}, false, nil
+	}
+	c.Received = tm(r)
+	return c, err == nil, err
+}
+
+// Events returns events with from <= Time < to (zero times are unbounded), oldest
+// first, at most limit (0 means no limit).
+func (d *DB) Events(ctx context.Context, from, to time.Time, limit int) ([]Event, error) {
+	q, args := rangeWhere(`SELECT id, time, level, kind, device_id, text FROM events`, "time", from, to)
+	q += ` ORDER BY time, id`
+	if limit > 0 {
+		q += ` LIMIT ?`
+		args = append(args, limit)
+	}
+	rows, err := d.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Event
+	for rows.Next() {
+		var e Event
+		var t int64
+		var level, kind string
+		if err := rows.Scan(&e.ID, &t, &level, &kind, &e.DeviceID, &e.Text); err != nil {
+			return nil, err
+		}
+		e.Time, e.Level, e.Kind = tm(t), Level(level), Kind(kind)
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// Deletions returns the storage history with from <= Time < to (zero times are
+// unbounded), newest first, at most limit (0 means no limit).
+func (d *DB) Deletions(ctx context.Context, from, to time.Time, limit int) ([]Deletion, error) {
+	q, args := rangeWhere(`SELECT id, time, file, device_id, bytes, reason FROM deletions`, "time", from, to)
+	q += ` ORDER BY time DESC, id DESC`
+	if limit > 0 {
+		q += ` LIMIT ?`
+		args = append(args, limit)
+	}
+	rows, err := d.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Deletion
+	for rows.Next() {
+		var x Deletion
+		var t int64
+		var reason string
+		if err := rows.Scan(&x.ID, &t, &x.File, &x.DeviceID, &x.Bytes, &reason); err != nil {
+			return nil, err
+		}
+		x.Time, x.Reason = tm(t), Reason(reason)
+		out = append(out, x)
+	}
+	return out, rows.Err()
+}
+
+func rangeWhere(q, col string, from, to time.Time) (string, []any) {
+	var args []any
+	q += ` WHERE 1=1`
+	if !from.IsZero() {
+		q += ` AND ` + col + ` >= ?`
+		args = append(args, ms(from))
+	}
+	if !to.IsZero() {
+		q += ` AND ` + col + ` < ?`
+		args = append(args, ms(to))
+	}
+	return q, args
+}

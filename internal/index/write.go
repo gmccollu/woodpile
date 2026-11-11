@@ -1,0 +1,286 @@
+package index
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"time"
+)
+
+const upsertFileSQL = `
+INSERT INTO files (device_id, path, day, part, first_received, last_received, size, raw_size, lines, compressed)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (path) DO UPDATE SET
+	device_id = excluded.device_id, day = excluded.day, part = excluded.part,
+	first_received = excluded.first_received, last_received = excluded.last_received,
+	size = excluded.size, raw_size = excluded.raw_size, lines = excluded.lines,
+	compressed = excluded.compressed
+RETURNING id`
+
+const insertCheckpointSQL = `INSERT OR IGNORE INTO checkpoints (file_id, offset, line, received) VALUES (?, ?, ?, ?)`
+
+const upsertStatsSQL = `
+INSERT INTO stats (device_id, minute, msgs, bytes, truncated, dropped) VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT (device_id, minute) DO UPDATE SET
+	msgs = msgs + excluded.msgs, bytes = bytes + excluded.bytes,
+	truncated = truncated + excluded.truncated, dropped = dropped + excluded.dropped`
+
+const upsertDeviceActivitySQL = `
+INSERT INTO devices (id, ip, first_seen, last_heard, total_msgs, total_bytes) VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT (id) DO UPDATE SET
+	first_seen = min(first_seen, excluded.first_seen),
+	last_heard = max(last_heard, excluded.last_heard),
+	total_msgs = total_msgs + excluded.total_msgs,
+	total_bytes = total_bytes + excluded.total_bytes`
+
+const insertEventSQL = `INSERT INTO events (time, level, kind, device_id, text) VALUES (?, ?, ?, ?, ?)`
+
+const insertDeletionSQL = `INSERT INTO deletions (time, file, device_id, bytes, reason) VALUES (?, ?, ?, ?, ?)`
+
+// Apply applies a batch in one transaction.
+func (d *DB) Apply(ctx context.Context, b Batch) error {
+	if b.Empty() {
+		return nil
+	}
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	st := &stmts{tx: tx, ctx: ctx}
+	defer st.close()
+	for i := range b.Files {
+		if err := st.fileOp(&b.Files[i]); err != nil {
+			return err
+		}
+	}
+	for _, a := range b.Activity {
+		if err := st.activity(a); err != nil {
+			return err
+		}
+	}
+	for _, e := range b.Events {
+		if err := st.event(e); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// stmts lazily prepares statements within one transaction.
+type stmts struct {
+	tx  *sql.Tx
+	ctx context.Context
+	m   map[string]*sql.Stmt
+}
+
+func (s *stmts) get(q string) (*sql.Stmt, error) {
+	if st, ok := s.m[q]; ok {
+		return st, nil
+	}
+	st, err := s.tx.PrepareContext(s.ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	if s.m == nil {
+		s.m = map[string]*sql.Stmt{}
+	}
+	s.m[q] = st
+	return st, nil
+}
+
+func (s *stmts) exec(q string, args ...any) (sql.Result, error) {
+	st, err := s.get(q)
+	if err != nil {
+		return nil, err
+	}
+	return st.ExecContext(s.ctx, args...)
+}
+
+func (s *stmts) close() {
+	for _, st := range s.m {
+		st.Close()
+	}
+}
+
+func (s *stmts) upsertFile(f File) (int64, error) {
+	st, err := s.get(upsertFileSQL)
+	if err != nil {
+		return 0, err
+	}
+	var id int64
+	err = st.QueryRowContext(s.ctx, f.DeviceID, f.Path, f.Day, f.Part, ms(f.FirstReceived), ms(f.LastReceived),
+		f.Size, f.RawSize, f.Lines, b2i(f.Compressed)).Scan(&id)
+	return id, err
+}
+
+func (s *stmts) checkpoints(fileID int64, cps []Checkpoint) error {
+	for _, c := range cps {
+		if _, err := s.exec(insertCheckpointSQL, fileID, c.Offset, c.Line, ms(c.Received)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *stmts) fileOp(op *FileOp) error {
+	f := op.File
+	switch op.Kind {
+	case OpUpsert:
+		id, err := s.upsertFile(f)
+		if err != nil {
+			return fmt.Errorf("index: upsert %s: %w", f.Path, err)
+		}
+		if op.ResetCheckpoints {
+			if _, err := s.exec(`DELETE FROM checkpoints WHERE file_id = ?`, id); err != nil {
+				return err
+			}
+		}
+		return s.checkpoints(id, op.Checkpoints)
+	case OpRename:
+		if op.OldPath != f.Path {
+			if _, err := s.exec(`DELETE FROM files WHERE path = ?`, f.Path); err != nil {
+				return err
+			}
+		}
+		res, err := s.exec(`UPDATE files SET path = ?, device_id = ?, day = ?, part = ?, first_received = ?,
+			last_received = ?, size = ?, raw_size = ?, lines = ?, compressed = ? WHERE path = ?`,
+			f.Path, f.DeviceID, f.Day, f.Part, ms(f.FirstReceived), ms(f.LastReceived), f.Size, f.RawSize,
+			f.Lines, b2i(f.Compressed), op.OldPath)
+		if err != nil {
+			return fmt.Errorf("index: rename %s: %w", op.OldPath, err)
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			// The old row never made it in (for example after a failed apply); create it.
+			id, err := s.upsertFile(f)
+			if err != nil {
+				return err
+			}
+			return s.checkpoints(id, op.Checkpoints)
+		}
+		if len(op.Checkpoints) > 0 {
+			var id int64
+			st, err := s.get(`SELECT id FROM files WHERE path = ?`)
+			if err != nil {
+				return err
+			}
+			if err := st.QueryRowContext(s.ctx, f.Path).Scan(&id); err != nil {
+				return err
+			}
+			return s.checkpoints(id, op.Checkpoints)
+		}
+		return nil
+	case OpDelete:
+		if _, err := s.exec(`DELETE FROM files WHERE path = ?`, f.Path); err != nil {
+			return err
+		}
+		if del := op.Deletion; del != nil {
+			if _, err := s.exec(insertDeletionSQL, ms(del.Time), del.File, del.DeviceID, del.Bytes, string(del.Reason)); err != nil {
+				return fmt.Errorf("index: record deletion: %w", err)
+			}
+			text := fmt.Sprintf("deleted %s (%s, %d bytes)", del.File, reasonText(del.Reason), del.Bytes)
+			return s.event(Event{Time: del.Time, Level: LevelInfo, Kind: KindDelete, DeviceID: del.DeviceID, Text: text})
+		}
+		return nil
+	default:
+		return fmt.Errorf("index: unknown file op %d", op.Kind)
+	}
+}
+
+func reasonText(r Reason) string {
+	switch r {
+	case ReasonAge:
+		return "older than the retention period"
+	case ReasonCap:
+		return "over the storage cap"
+	case ReasonLowDisk:
+		return "low disk space"
+	}
+	return string(r)
+}
+
+func (s *stmts) activity(a Activity) error {
+	minute := a.Minute.Truncate(time.Minute)
+	if _, err := s.exec(upsertStatsSQL, a.DeviceID, ms(minute), a.Msgs, a.Bytes, a.Truncated, a.Dropped); err != nil {
+		return err
+	}
+	first, last := a.FirstHeard, a.LastHeard
+	if first.IsZero() {
+		first = minute
+	}
+	if last.IsZero() {
+		last = first
+	}
+	_, err := s.exec(upsertDeviceActivitySQL, a.DeviceID, a.IP, ms(first), ms(last), a.Msgs, a.Bytes)
+	return err
+}
+
+func (s *stmts) event(e Event) error {
+	if e.Time.IsZero() {
+		e.Time = time.Now()
+	}
+	if e.Level == "" {
+		e.Level = LevelInfo
+	}
+	_, err := s.exec(insertEventSQL, ms(e.Time), string(e.Level), string(e.Kind), e.DeviceID, e.Text)
+	return err
+}
+
+// AddEvent records one event (a zero Time means now).
+func (d *DB) AddEvent(ctx context.Context, e Event) error {
+	return d.Apply(ctx, Batch{Events: []Event{e}})
+}
+
+// UpdateDevice changes a device's user-set fields and returns the updated device.
+func (d *DB) UpdateDevice(ctx context.Context, id string, u DeviceUpdate) (Device, error) {
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Device{}, err
+	}
+	defer tx.Rollback()
+	var n int
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM devices WHERE id = ?`, id).Scan(&n); err != nil {
+		return Device{}, err
+	}
+	if n == 0 {
+		return Device{}, ErrNotFound
+	}
+	if u.Name != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE devices SET name = ? WHERE id = ?`, *u.Name, id); err != nil {
+			return Device{}, err
+		}
+	}
+	if u.Group != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE devices SET grp = ? WHERE id = ?`, *u.Group, id); err != nil {
+			return Device{}, err
+		}
+	}
+	if u.Hidden != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE devices SET hidden = ? WHERE id = ?`, b2i(*u.Hidden), id); err != nil {
+			return Device{}, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return Device{}, err
+	}
+	return d.Device(ctx, id)
+}
+
+// Prune deletes stats buckets older than statsBefore and events and deletions older
+// than historyBefore (a zero time skips that part).
+func (d *DB) Prune(ctx context.Context, statsBefore, historyBefore time.Time) error {
+	if !statsBefore.IsZero() {
+		if _, err := d.db.ExecContext(ctx, `DELETE FROM stats WHERE minute < ?`, ms(statsBefore)); err != nil {
+			return err
+		}
+	}
+	if !historyBefore.IsZero() {
+		if _, err := d.db.ExecContext(ctx, `DELETE FROM events WHERE time < ?`, ms(historyBefore)); err != nil {
+			return err
+		}
+		if _, err := d.db.ExecContext(ctx, `DELETE FROM deletions WHERE time < ?`, ms(historyBefore)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
