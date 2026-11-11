@@ -141,10 +141,11 @@ pkg_for() {
 cmd_fetch() {
 	local tag=${1:?tag} repo=${LAB_GH_REPO:?LAB_GH_REPO}
 	mkdir -p "$LAB_ASSETS"
-	if command -v gh >/dev/null 2>&1; then
+	# gh only when it's logged in to that host (unauthenticated gh refuses even public downloads); else the public URLs
+	if command -v gh >/dev/null 2>&1 && gh auth status --hostname "${LAB_GH_HOST:-github.com}" >/dev/null 2>&1; then
 		GH_HOST=${LAB_GH_HOST:-github.com} gh release download "$tag" -R "$repo" -D "$LAB_ASSETS" --clobber \
 			-p 'checksums.txt' -p '*_amd64.deb' -p '*.x86_64.rpm' -p '*_windows_amd64.msi' -p '*_linux_amd64.tar.gz' -p '*_windows_amd64.zip'
-	else # no gh here: the public release URLs, names taken from checksums.txt
+	else # no (logged-in) gh: the public release URLs, names taken from checksums.txt
 		local base="https://${LAB_GH_HOST:-github.com}/$repo/releases/download/$tag" f
 		curl -fsSL --retry 2 -o "$LAB_ASSETS/checksums.txt" "$base/checksums.txt"
 		for f in $(awk '{print $2}' "$LAB_ASSETS/checksums.txt" | grep -E '(_amd64\.deb|\.x86_64\.rpm|_windows_amd64\.msi|_linux_amd64\.tar\.gz|_windows_amd64\.zip)$'); do
