@@ -71,7 +71,9 @@ type Options struct {
 
 	// MaxConns caps open TCP connections (default 1000). When they're all open, a
 	// newcomer evicts the connection idle longest if that one has been idle more
-	// than EvictIdle (default 30 s); otherwise the newcomer is refused.
+	// than EvictIdle (default 30 s); otherwise the oldest connection of the source
+	// (IPv4 address or IPv6 /64) holding the most, unless that's the newcomer's own
+	// source, which is then refused.
 	MaxConns  int
 	EvictIdle time.Duration
 	// IdleTimeout closes a TCP connection that hasn't completed a message for this
@@ -112,9 +114,9 @@ type Status struct {
 	Rejected  int64 // refused by the allowlist or the per-source limit since Start (a refused TCP connection counts once)
 
 	TCPConns                 int   // open TCP connections
-	TCPConnsRefused          int64 // closed at once because MaxConns were open and none was idle enough to evict
-	TCPConnsEvicted          int64 // closed to make room for a newcomer (idle longest)
-	TCPConnsPerSourceRefused int64 // refused because their source had tcp_max_conns_per_source open
+	TCPConnsRefused          int64 // closed at once because MaxConns were open and the newcomer's own source held the most
+	TCPConnsEvicted          int64 // closed to make room for a newcomer (idle longest, or the oldest of the biggest source)
+	TCPConnsPerSourceRefused int64 // refused at the per-address or per-/64 limit
 	TCPFrameTimeouts         int64 // closed because a message didn't complete within tcp_frame_timeout
 }
 
@@ -133,7 +135,8 @@ type Server struct {
 
 	allow        atomic.Pointer[allowlist]
 	maxSize      atomic.Int64
-	perSource    atomic.Int64 // TCP connections allowed per source
+	perSource    atomic.Int64 // TCP connections allowed per sender address
+	perPrefix    atomic.Int64 // and per IPv6 /64
 	frameTimeout atomic.Int64 // time.Duration a TCP frame may take
 
 	received, truncated, connsRefused    atomic.Int64
@@ -353,7 +356,7 @@ type RejectedSender struct {
 // Rejection reasons.
 const (
 	RejectAllowlist = "allowlist"  // the sender isn't on the allowlist
-	RejectPerSource = "per_source" // the sender (IPv4 address or IPv6 /64) has tcp_max_conns_per_source open
+	RejectPerSource = "per_source" // the sender's address has tcp_max_conns_per_source open, or its IPv6 /64 tcp_max_conns_per_prefix
 )
 
 // MaxRejectedList is the most entries Rejected returns (docs/api.md).
@@ -576,7 +579,12 @@ func (s *Server) setTCPLimits(l config.Listeners) {
 	if d <= 0 {
 		d = time.Duration(config.DefaultTCPFrameTimeout)
 	}
+	p := l.TCPMaxConnsPerPrefix
+	if p <= 0 {
+		p = config.DefaultTCPMaxConnsPerPrefix
+	}
 	s.perSource.Store(int64(n))
+	s.perPrefix.Store(int64(p))
 	s.frameTimeout.Store(int64(d))
 }
 

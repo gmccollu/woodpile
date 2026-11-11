@@ -8,6 +8,7 @@ import (
 // TCP abuse limits (file-only, see Listeners).
 const (
 	DefaultTCPMaxConnsPerSource = 32
+	DefaultTCPMaxConnsPerPrefix = 256 // per IPv6 /64
 	DefaultTCPFrameTimeout      = Duration(60 * time.Second)
 
 	MaxTCPMaxConnsPerSource = 100000
@@ -36,6 +37,9 @@ func normalizeTCPLimits(l *Listeners) {
 	if l.TCPMaxConnsPerSource == 0 {
 		l.TCPMaxConnsPerSource = DefaultTCPMaxConnsPerSource
 	}
+	if l.TCPMaxConnsPerPrefix == 0 {
+		l.TCPMaxConnsPerPrefix = DefaultTCPMaxConnsPerPrefix
+	}
 	if l.TCPFrameTimeout == 0 {
 		l.TCPFrameTimeout = DefaultTCPFrameTimeout
 	}
@@ -44,6 +48,9 @@ func normalizeTCPLimits(l *Listeners) {
 func checkTCPLimits(e Errors, l Listeners) {
 	if n := l.TCPMaxConnsPerSource; n != 0 && (n < 1 || n > MaxTCPMaxConnsPerSource) {
 		e["listeners.tcp_max_conns_per_source"] = fmt.Sprintf("must be between 1 and %d", MaxTCPMaxConnsPerSource)
+	}
+	if n := l.TCPMaxConnsPerPrefix; n != 0 && (n < 1 || n > MaxTCPMaxConnsPerSource) {
+		e["listeners.tcp_max_conns_per_prefix"] = fmt.Sprintf("must be between 1 and %d", MaxTCPMaxConnsPerSource)
 	}
 	if d := l.TCPFrameTimeout; d != 0 && (d < MinTCPFrameTimeout || d > MaxTCPFrameTimeout) {
 		e["listeners.tcp_frame_timeout"] = "must be between 1s and 1h"

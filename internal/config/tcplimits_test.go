@@ -10,7 +10,7 @@ import (
 
 func TestTCPLimits(t *testing.T) {
 	c := testConfig(t)
-	if c.Listeners.TCPMaxConnsPerSource != 32 || time.Duration(c.Listeners.TCPFrameTimeout) != time.Minute {
+	if c.Listeners.TCPMaxConnsPerSource != 32 || c.Listeners.TCPMaxConnsPerPrefix != 256 || time.Duration(c.Listeners.TCPFrameTimeout) != time.Minute {
 		t.Errorf("defaults %+v", c.Listeners)
 	}
 	path := filepath.Join(t.TempDir(), FileName)
@@ -18,7 +18,7 @@ func TestTCPLimits(t *testing.T) {
 		t.Fatal(err)
 	}
 	b, _ := os.ReadFile(path)
-	if !strings.Contains(string(b), "tcp_max_conns_per_source = 32") || !strings.Contains(string(b), "tcp_frame_timeout = '1m0s'") {
+	if !strings.Contains(string(b), "tcp_max_conns_per_source = 32") || !strings.Contains(string(b), "tcp_max_conns_per_prefix = 256") || !strings.Contains(string(b), "tcp_frame_timeout = '1m0s'") {
 		t.Errorf("file:\n%s", b)
 	}
 	os.WriteFile(path, []byte("[listeners]\ntcp_frame_timeout = \"90s\"\ntcp_max_conns_per_source = 4\n"), 0o640)
@@ -34,9 +34,10 @@ func TestTCPLimits(t *testing.T) {
 		t.Errorf("bad duration: %v", err)
 	}
 	c.Listeners.TCPMaxConnsPerSource = -1
+	c.Listeners.TCPMaxConnsPerPrefix = -1
 	c.Listeners.TCPFrameTimeout = Duration(time.Millisecond)
 	errs := c.validate("linux", nil)
-	if !strings.Contains(errs["listeners.tcp_max_conns_per_source"], "between") || !strings.Contains(errs["listeners.tcp_frame_timeout"], "between") {
+	if !strings.Contains(errs["listeners.tcp_max_conns_per_source"], "between") || !strings.Contains(errs["listeners.tcp_max_conns_per_prefix"], "between") || !strings.Contains(errs["listeners.tcp_frame_timeout"], "between") {
 		t.Errorf("errors %v", errs)
 	}
 }

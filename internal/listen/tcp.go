@@ -16,14 +16,17 @@ import (
 // TCP abuse limits (security review M6). One host must not be able to take every
 // connection slot by opening many connections and dribbling a byte now and then:
 //
-//   - at most tcp_max_conns_per_source connections per source (an IPv4 address,
-//     or an IPv6 /64);
+//   - at most tcp_max_conns_per_source connections per sender address, and at most
+//     tcp_max_conns_per_prefix per IPv6 /64 (one host can pick from a whole /64,
+//     but a server VLAN shares one too);
 //   - once a message starts, all of it must arrive within tcp_frame_timeout, or
 //     the connection is closed and the part that arrived is stored, marked
 //     truncated;
 //   - between messages, the idle timeout is renewed only by complete messages;
 //   - when MaxConns are open, a newcomer evicts the connection idle longest (no
-//     complete message for more than EvictIdle) instead of being refused.
+//     complete message for more than EvictIdle); if none is, the oldest connection
+//     of the biggest source (IPv4 address or IPv6 /64), so busy sources can't
+//     pin every slot. A newcomer whose own source is the biggest is refused.
 
 type tcpListener struct {
 	srv   *Server
@@ -31,20 +34,23 @@ type tcpListener struct {
 	addr  string // as configured
 	bound netip.AddrPort
 
-	mu        sync.Mutex
-	conns     map[*tconn]struct{}
-	perSource map[netip.Prefix]int
-	closing   bool
-	wg        sync.WaitGroup // the accept loop and every connection
+	mu       sync.Mutex
+	conns    map[*tconn]struct{}
+	perAddr  map[netip.Addr]int   // open connections per sender address
+	perGroup map[netip.Prefix]int // per source group: the IPv4 address, or the IPv6 /64
+	closing  bool
+	wg       sync.WaitGroup // the accept loop and every connection
 }
 
 // tconn is one open connection.
 type tconn struct {
-	c    net.Conn
-	from netip.Addr
-	key  netip.Prefix
-	last atomic.Int64 // UnixNano of the connect or the last complete message
-	cut  atomic.Bool  // we closed it (eviction or shutdown): a partial message is truncated
+	c      net.Conn
+	from   netip.Addr
+	addr   netip.Addr   // from without a zone, for the per-address count
+	group  netip.Prefix // sourceKey(from)
+	connAt time.Time
+	last   atomic.Int64 // UnixNano of the connect or the last complete message
+	cut    atomic.Bool  // we closed it (eviction or shutdown): a partial message is truncated
 }
 
 func listenTCP(s *Server, ln config.Listener) (*tcpListener, error) {
@@ -57,12 +63,13 @@ func listenTCP(s *Server, ln config.Listener) (*tcpListener, error) {
 		return nil, err
 	}
 	t := &tcpListener{
-		srv:       s,
-		ln:        l,
-		addr:      ln.Addr,
-		bound:     l.Addr().(*net.TCPAddr).AddrPort(),
-		conns:     map[*tconn]struct{}{},
-		perSource: map[netip.Prefix]int{},
+		srv:      s,
+		ln:       l,
+		addr:     ln.Addr,
+		bound:    l.Addr().(*net.TCPAddr).AddrPort(),
+		conns:    map[*tconn]struct{}{},
+		perAddr:  map[netip.Addr]int{},
+		perGroup: map[netip.Prefix]int{},
 	}
 	t.wg.Add(1)
 	go t.accept()
@@ -73,8 +80,7 @@ func (t *tcpListener) status() ListenerStatus {
 	return ListenerStatus{Proto: "tcp", Addr: t.addr, Port: int(t.bound.Port()), OK: true}
 }
 
-// sourceKey is what the per-source limit counts by: the IPv4 address, or the
-// IPv6 /64 (one host usually has a whole /64 to pick addresses from).
+// sourceKey is a connection's source group: the IPv4 address, or the IPv6 /64.
 func sourceKey(a netip.Addr) netip.Prefix {
 	a = a.Unmap().WithZone("")
 	if a.Is4() {
@@ -115,8 +121,7 @@ func (t *tcpListener) accept() {
 			c.Close()
 			continue
 		}
-		tc := &tconn{c: c, from: from, key: sourceKey(from)}
-		tc.last.Store(time.Now().UnixNano())
+		tc := newTconn(c, from, time.Now())
 		if !t.track(tc) {
 			c.Close()
 			continue
@@ -125,9 +130,15 @@ func (t *tcpListener) accept() {
 	}
 }
 
+func newTconn(c net.Conn, from netip.Addr, now time.Time) *tconn {
+	tc := &tconn{c: c, from: from, addr: from.Unmap().WithZone(""), group: sourceKey(from), connAt: now}
+	tc.last.Store(now.UnixNano())
+	return tc
+}
+
 // track registers a connection. It reports false (and counts why) if the listener
-// is closing, the source is at its limit, or every slot is taken by a connection
-// that isn't idle enough to evict.
+// is closing, the sender's address or IPv6 /64 is at its limit, or the table is
+// full and the newcomer's own source holds the most connections.
 func (t *tcpListener) track(tc *tconn) bool {
 	s := t.srv
 	t.mu.Lock()
@@ -135,19 +146,25 @@ func (t *tcpListener) track(tc *tconn) bool {
 	if t.closing {
 		return false
 	}
-	if t.perSource[tc.key] >= int(s.perSource.Load()) {
+	overAddr := t.perAddr[tc.addr] >= int(s.perSource.Load())
+	overPrefix := tc.addr.Is6() && t.perGroup[tc.group] >= int(s.perPrefix.Load())
+	if overAddr || overPrefix {
 		s.rejects.add(tc.from, s.opts.Clock().UTC(), 1, RejectPerSource)
 		if s.perSourceRefused.Add(1)%1000 == 1 {
-			s.log.Warn("listen: TCP connections per source limit reached; refusing", "limit", s.perSource.Load(),
-				"source", tc.key.String())
+			s.log.Warn("listen: TCP connections per source limit reached; refusing", "from", tc.from.String(),
+				"per_address", s.perSource.Load(), "per_ipv6_64", s.perPrefix.Load())
 		}
 		return false
 	}
 	if len(t.conns) >= s.opts.MaxConns {
-		victim := t.longestIdle(time.Now())
+		now := time.Now()
+		victim, why := t.longestIdle(now), "idle longest"
+		if victim == nil {
+			victim, why = t.oldestOfBiggest(tc.group), "oldest of the biggest source"
+		}
 		if victim == nil {
 			if s.connsRefused.Add(1)%1000 == 1 {
-				s.log.Warn("listen: TCP connection limit reached and none idle; refusing connections",
+				s.log.Warn("listen: TCP connection limit reached and the newcomer's source holds the most; refusing",
 					"limit", s.opts.MaxConns, "from", tc.from.String())
 			}
 			return false
@@ -156,15 +173,39 @@ func (t *tcpListener) track(tc *tconn) bool {
 		victim.c.Close()
 		t.removeLocked(victim) // free the slot now; its goroutine finishes on its own
 		if s.evicted.Add(1)%1000 == 1 {
-			s.log.Warn("listen: TCP connection limit reached; closing the connection idle longest",
-				"limit", s.opts.MaxConns, "evicted", victim.from.String())
+			s.log.Warn("listen: TCP connection limit reached; closing a connection", "limit", s.opts.MaxConns,
+				"evicted", victim.from.String(), "why", why)
 		}
 	}
 	t.conns[tc] = struct{}{}
-	t.perSource[tc.key]++
+	t.perAddr[tc.addr]++
+	t.perGroup[tc.group]++
 	s.conns.Add(1)
 	t.wg.Add(1)
 	return true
+}
+
+// oldestOfBiggest returns the oldest connection of the source group holding the
+// most connections, or nil if the newcomer's group holds at least as many as any
+// other (t.mu held).
+func (t *tcpListener) oldestOfBiggest(newcomer netip.Prefix) *tconn {
+	var big netip.Prefix
+	most := 0
+	for g, n := range t.perGroup {
+		if g != newcomer && (n > most || (n == most && g.Addr().Less(big.Addr()))) {
+			big, most = g, n
+		}
+	}
+	if most == 0 || t.perGroup[newcomer] >= most {
+		return nil
+	}
+	var oldest *tconn
+	for c := range t.conns {
+		if c.group == big && (oldest == nil || c.connAt.Before(oldest.connAt)) {
+			oldest = c
+		}
+	}
+	return oldest
 }
 
 // longestIdle returns the connection with the oldest complete message (or connect),
@@ -188,8 +229,11 @@ func (t *tcpListener) removeLocked(tc *tconn) {
 		return
 	}
 	delete(t.conns, tc)
-	if t.perSource[tc.key]--; t.perSource[tc.key] <= 0 {
-		delete(t.perSource, tc.key)
+	if t.perAddr[tc.addr]--; t.perAddr[tc.addr] <= 0 {
+		delete(t.perAddr, tc.addr)
+	}
+	if t.perGroup[tc.group]--; t.perGroup[tc.group] <= 0 {
+		delete(t.perGroup, tc.group)
 	}
 	t.srv.conns.Add(-1)
 }

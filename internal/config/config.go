@@ -70,7 +70,8 @@ type Listeners struct {
 	UDPRcvbufBytes  int `toml:"udp_rcvbuf_bytes" json:"-" comment:"UDP socket receive buffer to request, in bytes. The OS may grant less; the About page shows what it granted."`
 	MaxMessageBytes int `toml:"max_message_bytes" json:"-" comment:"Longer messages are truncated (and counted), never dropped."`
 	// TCP abuse limits (tcplimits.go).
-	TCPMaxConnsPerSource int      `toml:"tcp_max_conns_per_source" json:"-" comment:"Open TCP connections allowed per sender (per IPv4 address, per IPv6 /64)."`
+	TCPMaxConnsPerSource int      `toml:"tcp_max_conns_per_source" json:"-" comment:"Open TCP connections allowed per sender address."`
+	TCPMaxConnsPerPrefix int      `toml:"tcp_max_conns_per_prefix" json:"-" comment:"Open TCP connections allowed per IPv6 /64 (all its addresses together)."`
 	TCPFrameTimeout      Duration `toml:"tcp_frame_timeout" json:"-" comment:"Once a TCP message starts, all of it must arrive within this (e.g. 60s); then the connection is closed and the part kept, marked truncated."`
 }
 
@@ -121,6 +122,7 @@ func Default() Config {
 
 			TCPMaxConnsPerSource: DefaultTCPMaxConnsPerSource,
 			TCPFrameTimeout:      DefaultTCPFrameTimeout,
+			TCPMaxConnsPerPrefix: DefaultTCPMaxConnsPerPrefix,
 
 			MaxDevices:          DefaultMaxDevices,
 			NewDeviceBurst:      DefaultNewDeviceBurst,

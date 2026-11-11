@@ -1,7 +1,9 @@
 package listen
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/netip"
 	"strings"
@@ -323,4 +325,192 @@ func TestJunkBetweenFramesKept(t *testing.T) {
 	if st := s.Status(); st.TCPFrameTimeouts != 0 || st.TCPConns != 1 {
 		t.Errorf("status %+v", st)
 	}
+}
+
+// trackTable is a tcpListener with no socket, for driving track with pipe
+// connections from any source address.
+func trackTable(maxConns, perAddr, perPrefix int) *tcpListener {
+	s := &Server{
+		opts:    Options{MaxConns: maxConns, EvictIdle: time.Hour, Clock: func() time.Time { return fixedNow }, Logger: quiet},
+		log:     quiet,
+		rejects: newRejects(maxRejectedIPs),
+	}
+	s.perSource.Store(int64(perAddr))
+	s.perPrefix.Store(int64(perPrefix))
+	return &tcpListener{srv: s, conns: map[*tconn]struct{}{}, perAddr: map[netip.Addr]int{}, perGroup: map[netip.Prefix]int{}}
+}
+
+var pipeEpoch = time.Now()
+
+// add tracks a pipe connection from ip, connected at pipeEpoch+seq ms, and
+// returns the far end (it reads EOF once the server side is closed).
+func (t *tcpListener) addPipe(ip string, seq int) (far net.Conn, ok bool) {
+	near, far := net.Pipe()
+	tc := newTconn(near, netip.MustParseAddr(ip), pipeEpoch.Add(time.Duration(seq)*time.Millisecond))
+	ok = t.track(tc)
+	return far, ok
+}
+
+func pipeClosed(c net.Conn) bool {
+	c.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+	_, err := c.Read(make([]byte, 1))
+	return err == io.EOF || errors.Is(err, io.ErrClosedPipe)
+}
+
+func TestPerAddressAndPrefixLimits(t *testing.T) {
+	tl := trackTable(10000, 32, 80)
+	seq := 0
+	add := func(ip string) bool { seq++; _, ok := tl.addPipe(ip, seq); return ok }
+	// One IPv6 address: 32, then refused.
+	for i := 0; i < 32; i++ {
+		if !add("2001:db8:1:2::1") {
+			t.Fatalf("conn %d refused", i)
+		}
+	}
+	if add("2001:db8:1:2::1") {
+		t.Error("33rd connection from one address accepted")
+	}
+	// Other hosts on the same /64 (a server VLAN) still get in, up to the /64 cap.
+	for i := 0; i < 48; i++ {
+		if !add(fmt.Sprintf("2001:db8:1:2::%x", 0x100+i)) {
+			t.Fatalf("host %d on the /64 refused at %d connections", i, tl.perGroup[sourceKey(netip.MustParseAddr("2001:db8:1:2::1"))])
+		}
+	}
+	if add("2001:db8:1:2::ffff") {
+		t.Error("81st connection on the /64 accepted (cap 80)")
+	}
+	if !add("2001:db8:1:3::1") {
+		t.Error("another /64 refused")
+	}
+	// IPv4 has no prefix cap: 100 hosts in one /24.
+	for i := 0; i < 100; i++ {
+		if !add(fmt.Sprintf("192.0.2.%d", i+1)) {
+			t.Fatalf("IPv4 host %d refused", i)
+		}
+	}
+	if n := tl.srv.perSourceRefused.Load(); n != 2 {
+		t.Errorf("per-source refusals %d", n)
+	}
+	rej := tl.srv.rejects.list(fixedNow, 0)
+	if len(rej) != 2 || rej[0].Reason != RejectPerSource || rej[1].Reason != RejectPerSource {
+		t.Errorf("rejected %+v", rej)
+	}
+}
+
+// When the table is full of busy connections (none idle enough to evict), a
+// newcomer evicts the oldest connection of the biggest source instead of being
+// refused, unless its own source is the biggest.
+func TestEvictFromBiggestSource(t *testing.T) {
+	tl := trackTable(10, 32, 256)
+	var aFar []net.Conn
+	seq := 0
+	for i := 0; i < 5; i++ { // A: 5 connections, oldest first
+		seq++
+		far, ok := tl.addPipe("192.0.2.1", seq)
+		if !ok {
+			t.Fatal("A refused")
+		}
+		aFar = append(aFar, far)
+	}
+	for i := 0; i < 3; i++ { // V6: one /64, 3 addresses (one group of 3)
+		seq++
+		if _, ok := tl.addPipe(fmt.Sprintf("2001:db8::%d", i+1), seq); !ok {
+			t.Fatal("v6 refused")
+		}
+	}
+	for i := 0; i < 2; i++ { // B: 2
+		seq++
+		if _, ok := tl.addPipe("198.51.100.1", seq); !ok {
+			t.Fatal("B refused")
+		}
+	}
+	// Full (10). A newcomer from a new source evicts A's oldest.
+	seq++
+	if _, ok := tl.addPipe("203.0.113.9", seq); !ok {
+		t.Fatal("newcomer refused")
+	}
+	if !pipeClosed(aFar[0]) || pipeClosed(aFar[1]) {
+		t.Error("didn't evict exactly A's oldest connection")
+	}
+	if len(tl.conns) != 10 || tl.perAddr[netip.MustParseAddr("192.0.2.1")] != 4 || tl.srv.evicted.Load() != 1 {
+		t.Errorf("conns %d, A %d, evicted %d", len(tl.conns), tl.perAddr[netip.MustParseAddr("192.0.2.1")], tl.srv.evicted.Load())
+	}
+	// A newcomer from A, still the biggest source, is refused.
+	seq++
+	if _, ok := tl.addPipe("192.0.2.1", seq); ok {
+		t.Error("the biggest source evicted its own connection to get in")
+	}
+	if tl.srv.connsRefused.Load() != 1 {
+		t.Errorf("refused %d", tl.srv.connsRefused.Load())
+	}
+	// From the v6 /64 (3, behind A's 4): A's next oldest goes.
+	seq++
+	if _, ok := tl.addPipe("2001:db8::99", seq); !ok {
+		t.Fatal("v6 newcomer refused")
+	}
+	if !pipeClosed(aFar[1]) {
+		t.Error("A's second-oldest wasn't evicted")
+	}
+	// Now the /64 holds the most (4, A 3): its next newcomer is refused.
+	seq++
+	if _, ok := tl.addPipe("2001:db8::100", seq); ok {
+		t.Error("the /64, now the biggest source, got in by evicting A")
+	}
+	// Idle eviction still comes first.
+	tl.srv.opts.EvictIdle = time.Nanosecond
+	var idlest *tconn
+	for c := range tl.conns {
+		if idlest == nil || c.last.Load() < idlest.last.Load() {
+			idlest = c
+		}
+	}
+	seq++
+	if _, ok := tl.addPipe("2001:db8::101", seq); !ok {
+		t.Fatal("refused with an idle connection to evict")
+	}
+	if _, still := tl.conns[idlest]; still {
+		t.Error("the longest-idle connection wasn't the one evicted")
+	}
+}
+
+// The same over real sockets: a busy source can't pin the table.
+func TestBusyTableEvictsBiggestSource(t *testing.T) {
+	cfg := config.Listeners{TCP: config.Listener{Enabled: true, Addr: "::", Port: 0}}
+	s, c, _ := start(t, cfg, func(o *Options) { o.MaxConns = 4 }) // EvictIdle stays 30 s: nobody is idle
+	ap, _ := s.TCPAddr()
+	v4, v6 := fmt.Sprintf("127.0.0.1:%d", ap.Port()), fmt.Sprintf("[::1]:%d", ap.Port())
+	dial := func(addr string, n int) net.Conn {
+		cn, err := net.Dial("tcp", addr)
+		if err != nil {
+			t.Skipf("dial %s: %v", addr, err)
+		}
+		t.Cleanup(func() { cn.Close() })
+		fmt.Fprintf(cn, "<13>m%d\n", n)
+		c.wait(t, n)
+		return cn
+	}
+	old := dial(v4, 1)
+	dial(v4, 2)
+	dial(v4, 3)
+	dial(v6, 4)
+	fresh := dial(v6, 5) // the table was full: 127.0.0.1's oldest goes
+	if !closedByServer(old, 5*time.Second) {
+		t.Fatal("the oldest connection of the biggest source wasn't evicted")
+	}
+	if closedByServer(fresh, 50*time.Millisecond) {
+		t.Fatal("the newcomer was closed")
+	}
+	if st := s.Status(); st.TCPConnsEvicted != 1 || st.TCPConns != 4 {
+		t.Errorf("status %+v", st)
+	}
+	// 2 and 2 now: a newcomer from either source is refused.
+	extra, err := net.Dial("tcp", v4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer extra.Close()
+	if !closedByServer(extra, 5*time.Second) {
+		t.Error("newcomer from a source holding as many as any other was accepted")
+	}
+	waitFor(t, "the refusal", func() bool { return s.Status().TCPConnsRefused == 1 })
 }
