@@ -41,6 +41,16 @@ export function deviceName(id: string): string {
   return d?.name || id;
 }
 
+/** How often /api/devices is polled. */
+export const DEVICE_POLL_MS = 5000;
+/** last_heard is live when fetched, so anything within one poll (plus a margin) reads as "now". */
+export const NOW_WITHIN_S = DEVICE_POLL_MS / 1000 + 2;
+
+/** The device heard from first (earliest first_seen), for the Welcome page. */
+export function firstDevice(): Device | undefined {
+  return [...(live.devices ?? [])].sort((a, b) => Date.parse(a.first_seen) - Date.parse(b.first_seen))[0];
+}
+
 let started = false;
 export function startPolling(): void {
   if (started) return;
@@ -48,6 +58,6 @@ export function startPolling(): void {
   refreshStatus();
   refreshDevices();
   setInterval(refreshStatus, 5000);
-  setInterval(refreshDevices, 5000);
+  setInterval(refreshDevices, DEVICE_POLL_MS);
   setInterval(() => (live.now = Date.now()), 1000);
 }

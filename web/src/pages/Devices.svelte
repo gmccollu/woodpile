@@ -2,7 +2,7 @@
   import { tick } from 'svelte';
   import { patchDevice, type Device, type DevicePatch } from '../lib/api';
   import { ago, bytes, date, dateTime, num, rate } from '../lib/format';
-  import { live, replaceDevice } from '../lib/status.svelte';
+  import { live, NOW_WITHIN_S, replaceDevice } from '../lib/status.svelte';
   import { ui } from '../lib/ui.svelte';
   import Icon from '../components/Icon.svelte';
   import StatusDot from '../components/StatusDot.svelte';
@@ -184,7 +184,7 @@
               {/if}
             </td>
             <td class="whitespace-nowrap" title={dateTime(d.first_seen)}>{date(d.first_seen)}</td>
-            <td class="whitespace-nowrap" title={dateTime(d.last_heard)}>{ago(d.last_heard, live.now)}</td>
+            <td class="whitespace-nowrap" title={dateTime(d.last_heard)}>{ago(d.last_heard, live.now, NOW_WITHIN_S)}</td>
             <td class="text-right whitespace-nowrap tabular-nums">{rate(d.msgs_per_min)}</td>
             <td class="text-right whitespace-nowrap tabular-nums">{num(d.total_msgs)}</td>
             <td class="text-right whitespace-nowrap tabular-nums">{bytes(d.bytes_on_disk)}</td>

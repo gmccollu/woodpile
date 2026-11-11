@@ -10,6 +10,8 @@
   let lockedUntil = $state(0);
   let now = $state(Date.now());
   let input: HTMLInputElement | undefined = $state();
+  // /api/status needs a login, so use the port this page came from (reset-password keeps ui.port).
+  const port = location.port || (location.protocol === 'https:' ? '443' : '80');
 
   $effect(() => {
     const t = setInterval(() => (now = Date.now()), 1000);
@@ -81,5 +83,12 @@
     <button type="submit" class="pill-btn w-full justify-center py-2.5" disabled={busy || !password || wait > 0}>
       {busy ? 'Checking…' : 'Log in'}
     </button>
+    <details class="text-[13px]">
+      <summary class="cursor-pointer text-muted">Forgot the password?</summary>
+      <p class="mt-2 mb-0 leading-relaxed">
+        On the Woodpile machine, run <code class="font-mono">woodpile reset-password</code> as an administrator. It turns LAN mode off
+        so the UI is back on <code class="font-mono whitespace-nowrap">http://localhost:{port}/</code>.
+      </p>
+    </details>
   </form>
 </div>

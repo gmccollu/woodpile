@@ -142,7 +142,8 @@ interface Dev {
 
 const devs = new Map<string, Dev>();
 
-function addFleet(now: number) {
+/** joinedNow: the fleet starts sending now (after a first-run test message), so first_seen is now. */
+function addFleet(now: number, joinedNow = false) {
   for (const def of FLEET) {
     if (devs.has(def.ip)) continue;
     const silentFor = def.name === 'branch-fw-07' ? 6 * MIN + 12_000 : def.name === 'dmz-fw-01' ? 2 * 60 * MIN : 0;
@@ -151,7 +152,7 @@ function addFleet(now: number) {
       name: def.name,
       group: def.group,
       hidden: !!def.hidden,
-      firstSeen: now - (30 + Math.random() * 10) * 24 * 60 * MIN,
+      firstSeen: joinedNow ? now + Math.random() * 1000 : now - (30 + Math.random() * 10) * 24 * 60 * MIN,
       lastHeard: now - silentFor,
       total: Math.round(def.weight * 3e5 + Math.random() * 5e4),
       bytes: Math.round(def.weight * 4.2e7 + Math.random() * 1e6),
@@ -351,7 +352,7 @@ export function sendFirstMessage() {
   mock.firstRun = false;
   emit(testLine(new Date(now)));
   // The rest of the fleet "joins" a few seconds later so the dashboard has something to show.
-  setTimeout(() => addFleet(Date.now()), 5000);
+  setTimeout(() => addFleet(Date.now(), true), 5000);
 }
 
 export function restartFirstRun() {

@@ -1,7 +1,7 @@
 <script lang="ts">
-  import { openLive, type Listener, type LogLine } from '../lib/api';
-  import { clock, dateTime } from '../lib/format';
-  import { deviceName, live, refreshDevices, refreshStatus } from '../lib/status.svelte';
+  import { openLive, type Listener } from '../lib/api';
+  import { dateTime } from '../lib/format';
+  import { firstDevice, live, refreshDevices, refreshStatus } from '../lib/status.svelte';
   import CopyButton from '../components/CopyButton.svelte';
   import Icon from '../components/Icon.svelte';
 
@@ -36,7 +36,11 @@
   }
   const shell: Record<OS, string> = { macos: 'Terminal', linux: 'a terminal', windows: 'PowerShell' };
 
-  let first = $state<LogLine | null>(null);
+  // A live message only means "check now": the stream shows the latest messages, not the
+  // first, so the time comes from first_message_at and the name from the earliest first_seen.
+  let heard = $state(false);
+  const received = $derived(!!st?.first_message_at);
+  const fromDevice = $derived(received ? firstDevice() : undefined);
 
   // /api/status.first_message_at is the authority. The live stream is watched too, so the
   // page reacts at once and can show the line itself (the replay on connect also counts).
@@ -44,9 +48,9 @@
     const close = openLive(
       {},
       {
-        onMessage(l) {
-          if (!first) {
-            first = l;
+        onMessage() {
+          if (!heard) {
+            heard = true;
             refreshDevices();
             refreshStatus();
           }
@@ -129,17 +133,16 @@
   </section>
 
   <section class="card" aria-live="polite">
-    {#if first || st?.first_message_at}
+    {#if received}
       <div class="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 class="m-0 flex items-center gap-2 text-lg font-bold"><span class="text-ok-fg"><Icon name="check" size={20} /></span>First message received</h2>
           <p class="mt-1 mb-0 text-[14px] text-muted">
-            {#if first}From {deviceName(first.device_id)} at {clock(first.received)}.{:else if st?.first_message_at}At {dateTime(st.first_message_at)}.{/if}
+            {#if fromDevice}From {fromDevice.name || fromDevice.ip}{fromDevice.name ? ` (${fromDevice.ip})` : ''} at {dateTime(st!.first_message_at!)}.{:else}At {dateTime(st!.first_message_at!)}.{/if}
           </p>
         </div>
         <a class="pill-btn no-underline" href="#/dashboard">Open the dashboard <Icon name="arrow" size={15} /></a>
       </div>
-      {#if first}<div class="log-panel mt-3 rounded-2xl px-4 py-3 text-[12.5px] break-all">{first.raw}</div>{/if}
     {:else}
       <div class="flex items-center gap-3">
         <span class="wait" aria-hidden="true"></span>

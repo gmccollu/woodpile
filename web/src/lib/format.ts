@@ -22,12 +22,15 @@ export function bytes(n: number): string {
 export const GiB = 1024 ** 3;
 export const MiB = 1024 ** 2;
 
-/** "now", "12 s ago", "6 min ago", "2 h ago", "3 d ago". */
-export function ago(iso: string, now = Date.now()): string {
+/**
+ * "now", "12 s ago", "6 min ago", "2 h ago", "3 d ago". `nowWithin` (seconds) widens "now":
+ * a value refreshed by polling is up to one poll interval old by the time it's shown.
+ */
+export function ago(iso: string, now = Date.now(), nowWithin = 2): string {
   const t = Date.parse(iso);
   if (Number.isNaN(t)) return '—';
   const s = Math.max(0, Math.round((now - t) / 1000));
-  if (s < 2) return 'now';
+  if (s < nowWithin) return 'now';
   if (s < 60) return `${s} s ago`;
   const m = Math.floor(s / 60);
   if (m < 60) return `${m} min ago`;

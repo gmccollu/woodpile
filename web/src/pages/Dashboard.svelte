@@ -1,7 +1,7 @@
 <script lang="ts">
   import { getStats, type Device, type Stats } from '../lib/api';
   import { ago, bytes, num, rate } from '../lib/format';
-  import { live } from '../lib/status.svelte';
+  import { live, NOW_WITHIN_S } from '../lib/status.svelte';
   import { ui } from '../lib/ui.svelte';
   import LiveTail from '../components/LiveTail.svelte';
   import Sparkline from '../components/Sparkline.svelte';
@@ -163,7 +163,7 @@
         <span class="mt-2.5 flex items-center justify-between gap-2 text-xs">
           <span class="flex min-w-0 items-center gap-1.5">
             <StatusDot status={d.status} />
-            <span class="truncate">{ago(d.last_heard, live.now)}</span>
+            <span class="truncate">{ago(d.last_heard, live.now, NOW_WITHIN_S)}</span>
           </span>
           <span class="text-muted">{rate(d.msgs_per_min)}</span>
         </span>

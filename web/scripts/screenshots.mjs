@@ -47,7 +47,24 @@ const SHOTS = [
     mode: 'light',
     url: '/?mock_panel=0&mock_firstrun=1&mock_firstmsg=1#/welcome',
     wait: 3500,
-    check: `document.body.innerText.includes('First message received') && !!document.querySelector('a[href="#/dashboard"].pill-btn')`,
+    check: `document.body.innerText.includes('First message received') && document.body.innerText.includes('From 127.0.0.1 at')
+      && !!document.querySelector('a[href="#/dashboard"].pill-btn')`,
+  },
+  {
+    name: 'welcome-names-first-not-latest',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0&mock_firstrun=1&mock_firstmsg=1#/welcome',
+    wait: 12000,
+    check: `document.body.innerText.includes('From 127.0.0.1 at')`,
+  },
+  {
+    name: 'last-heard-reads-now',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/dashboard',
+    wait: 4500,
+    check: `[...document.querySelectorAll('.dev')].find((t) => t.textContent.includes('edge-fw-01'))?.textContent.includes('now')`,
   },
   { name: 'first-run-redirect', noshot: true, mode: 'light', url: '/?mock_panel=0&mock_firstrun=1&mock_firstmsg=0', check: `location.hash === '#/welcome'` },
   ...both({ name: 'dashboard', url: '/?mock_panel=0#/dashboard', wait: 3000, check: `document.querySelectorAll('[role=log] .line').length > 50 && document.body.innerText.includes(' rejected')` }),
@@ -172,8 +189,16 @@ const SHOTS = [
   ...both({
     name: 'login',
     url: '/?mock_panel=0&mock_auth=1#/devices',
-    check: `!!__field('Password') && !document.querySelector('nav') && !document.querySelector('input[type=search]')`,
+    check: `!!__field('Password') && !document.querySelector('nav') && !document.querySelector('input[type=search]')
+      && document.body.innerText.includes('Forgot the password?')`,
   }),
+  {
+    name: 'login-forgot-password-light',
+    mode: 'light',
+    url: '/?mock_panel=0&mock_auth=1#/devices',
+    act: `document.querySelector('details summary').click();`,
+    check: `document.body.innerText.includes('woodpile reset-password') && document.body.innerText.includes('http://localhost:5173/')`,
+  },
   {
     name: 'login-wrong-password-light',
     mode: 'light',
