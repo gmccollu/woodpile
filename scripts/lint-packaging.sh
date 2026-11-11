@@ -18,6 +18,8 @@ bash_scripts=(
 	packaging/macos/build-pkg.sh
 	scripts/fuzz.sh
 	scripts/lint-packaging.sh
+	scripts/soak.sh
+	scripts/smoke/unix.sh
 )
 
 status=0

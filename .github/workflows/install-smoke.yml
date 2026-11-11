@@ -1,0 +1,218 @@
+# Install smoke tests (SPEC §7): install every package for real on a fresh runner, check
+# the service (account, ports, UI, 10,000 messages on disk), restart, upgrade, uninstall
+# keeping the data and delete it on request; then the same with `woodpile install` (no
+# package). The checks live in scripts/smoke/.
+#
+# macOS and Windows minutes are expensive, so this runs only:
+#   - on a push to ci/install-smoke: the Linux jobs, plus Windows and macOS when the head
+#     commit's message has [smoke all], [smoke windows] or [smoke macos];
+#   - by hand (workflow_dispatch), choosing the OSes.
+name: Install smoke
+
+on:
+  push:
+    branches: ["ci/install-smoke"]
+  workflow_dispatch:
+    inputs:
+      os:
+        description: "Which OSes: all, linux, windows or macos"
+        default: all
+
+permissions:
+  contents: read
+
+concurrency:
+  group: install-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GORELEASER_VERSION: v2.20.1
+  NODE_VERSION: "24"
+  WIX_VERSION: "5.0.2"
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      windows: ${{ steps.p.outputs.windows }}
+      macos: ${{ steps.p.outputs.macos }}
+    steps:
+      - id: p
+        env:
+          MSG: ${{ github.event.head_commit.message }}
+          OS: ${{ inputs.os }}
+        run: |
+          w=false; m=false
+          case "$OS" in all) w=true; m=true ;; windows) w=true ;; macos) m=true ;; esac
+          case "$MSG" in *"[smoke all]"*) w=true; m=true ;; esac
+          case "$MSG" in *"[smoke windows]"*) w=true ;; esac
+          case "$MSG" in *"[smoke macos]"*) m=true ;; esac
+          echo "windows=$w" >>"$GITHUB_OUTPUT"
+          echo "macos=$m" >>"$GITHUB_OUTPUT"
+          echo "windows=$w macos=$m"
+
+  linux-packages:
+    name: build deb and rpm
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Snapshot build (the before hook builds the UI)
+        env:
+          WOODPILE_OWNER: ${{ github.repository_owner }}
+          WOODPILE_REPO: ${{ github.event.repository.name }}
+        run: go run github.com/goreleaser/goreleaser/v2@"$GORELEASER_VERSION" release --snapshot --clean --skip=publish
+      - name: Collect
+        run: |
+          mkdir -p out
+          cp dist/*_amd64.deb dist/*.x86_64.rpm out/
+          cp "$(ls -d dist/woodpile_linux_amd64*/ | head -1)woodpile" out/woodpile
+          go build -o out/verifyseq ./scripts/verifyseq
+          ls -la out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-packages
+          path: out/
+          retention-days: 3
+
+  deb:
+    name: deb on ubuntu (apt), then woodpile install
+    needs: linux-packages
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-packages
+          path: dist
+      - run: chmod +x dist/woodpile dist/verifyseq
+      - name: deb (apt install, restart, remove, purge)
+        env:
+          VERIFYSEQ: dist/verifyseq
+          SMOKE_LOGS: ${{ runner.temp }}/smoke-logs
+        run: scripts/smoke/unix.sh deb dist/*_amd64.deb
+      - name: woodpile install / uninstall (no package)
+        env:
+          VERIFYSEQ: dist/verifyseq
+          SMOKE_LOGS: ${{ runner.temp }}/smoke-logs
+        run: scripts/smoke/unix.sh manual dist/woodpile
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: logs-deb
+          path: ${{ runner.temp }}/smoke-logs
+
+  rpm:
+    name: rpm in a Fedora container with systemd
+    needs: linux-packages
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-packages
+          path: dist
+      - run: chmod +x dist/woodpile dist/verifyseq
+      - name: Start Fedora with systemd as PID 1
+        run: |
+          cat >"$RUNNER_TEMP/Dockerfile" <<'EOF'
+          FROM registry.fedoraproject.org/fedora:41
+          RUN dnf -y install systemd procps-ng iproute python3 openssl curl findutils && dnf clean all
+          CMD ["/usr/sbin/init"]
+          EOF
+          docker build -t woodpile-fedora-systemd "$RUNNER_TEMP"
+          docker run -d --name fedora --privileged --cgroupns=host -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
+            -v "$PWD":/src -w /src --tmpfs /run --tmpfs /tmp woodpile-fedora-systemd
+          for i in $(seq 30); do
+            state=$(docker exec fedora systemctl is-system-running 2>/dev/null || true)
+            echo "systemd: $state"
+            case "$state" in running|degraded) break ;; esac
+            sleep 1
+          done
+          docker exec fedora test -d /run/systemd/system
+      - name: rpm (dnf install, restart, remove)
+        run: docker exec -e VERIFYSEQ=dist/verifyseq -e SMOKE_LOGS=/src/smoke-logs fedora scripts/smoke/unix.sh rpm "$(ls dist/*.x86_64.rpm)"
+      - name: woodpile install / uninstall (no package)
+        run: docker exec -e VERIFYSEQ=dist/verifyseq -e SMOKE_LOGS=/src/smoke-logs fedora scripts/smoke/unix.sh manual dist/woodpile
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: logs-rpm
+          path: smoke-logs
+
+  windows:
+    name: msi on windows, then woodpile install
+    needs: plan
+    if: needs.plan.outputs.windows == 'true'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 8.0.x
+      - name: Install WiX
+        shell: pwsh
+        run: dotnet tool install --global wix --version $env:WIX_VERSION
+      - name: Build v0.0.1 and v0.0.2 MSIs, the binary and verifyseq
+        shell: pwsh
+        run: |
+          ./packaging/windows/build-msi.ps1 -Version 0.0.1 -Arch x64 -OutDir dist/v1
+          ./packaging/windows/build-msi.ps1 -Version 0.0.2 -Arch x64 -OutDir dist/v2
+          go build -o dist/woodpile.exe ./cmd/woodpile
+          go build -o dist/verifyseq.exe ./scripts/verifyseq
+          Get-ChildItem -Recurse dist
+      - name: msi (install, upgrade, uninstall, DELETE_LOGS)
+        shell: pwsh
+        run: ./scripts/smoke/windows.ps1 -Mode msi -Msi (Resolve-Path dist/v1/*.msi) -UpgradeMsi (Resolve-Path dist/v2/*.msi) -Logs "$env:RUNNER_TEMP/smoke-logs"
+      - name: woodpile install / uninstall (no package)
+        shell: pwsh
+        run: ./scripts/smoke/windows.ps1 -Mode manual -Binary dist/woodpile.exe -Logs "$env:RUNNER_TEMP/smoke-logs"
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: logs-windows
+          path: ${{ runner.temp }}/smoke-logs
+
+  macos:
+    name: pkg on macos, then woodpile install
+    needs: plan
+    if: needs.plan.outputs.macos == 'true'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Build the pkg, the binary and verifyseq
+        run: |
+          packaging/macos/build-pkg.sh --version 0.0.1 --out dist/macos
+          go build -o dist/woodpile ./cmd/woodpile
+          go build -o dist/verifyseq ./scripts/verifyseq
+          ls -la dist dist/macos
+      - name: pkg (installer, restart, uninstall.sh, --delete-logs)
+        env:
+          VERIFYSEQ: dist/verifyseq
+          SMOKE_LOGS: ${{ runner.temp }}/smoke-logs
+        run: scripts/smoke/unix.sh pkg dist/macos/*.pkg
+      - name: woodpile install / uninstall (no package)
+        env:
+          VERIFYSEQ: dist/verifyseq
+          SMOKE_LOGS: ${{ runner.temp }}/smoke-logs
+        run: scripts/smoke/unix.sh manual dist/woodpile
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: logs-macos
+          path: ${{ runner.temp }}/smoke-logs

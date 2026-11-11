@@ -7,7 +7,9 @@ name: CI
 
 on:
   push:
-    branches: ["**"]
+    # ci/install-smoke has its own workflow (install-smoke.yml); don't spend the
+    # macOS and Windows minutes twice on every push there.
+    branches: ["**", "!ci/install-smoke"]
   pull_request:
   workflow_dispatch:
 
