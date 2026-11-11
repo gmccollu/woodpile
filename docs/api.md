@@ -66,10 +66,10 @@ as dropped. Senders that already have logs on disk are exempt from the rate. All
 
 ## Devices
 
-`GET /api/devices?limit=200&offset=0&sort=rate|name|last_heard|first_seen&q=text&group=HQ&ungrouped=true&hidden=include|only|exclude`
+`GET /api/devices?limit=200&offset=0&sort=rate|name|last_heard|first_seen&q=text&group=HQ&ungrouped=true&hidden=include|only|exclude&blocked=include|only|exclude`
 → `{"devices": [...], "total": 1234}`. Default `limit` 200, max 1,000; default `sort=rate`. Directions are fixed:
 `rate` busiest first, `name` A–Z (devices without a name sort by IP), `last_heard` and `first_seen` newest first. `q` matches
-id, IP or name (case-insensitive substring); `hidden` defaults to `include`. Each device:
+id, IP or name (case-insensitive substring); `hidden` and `blocked` default to `include`. Each device:
 ```json
 [{"id": "10.1.0.1", "ip": "10.1.0.1", "name": "edge-fw-01", "group": "HQ", "hidden": false,
   "first_seen": "...", "last_heard": "...", "status": "online", "blocked": false,   // status: online | quiet | offline | blocked
