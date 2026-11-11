@@ -412,6 +412,7 @@ jobs:
       contents: write
       id-token: write # build provenance
       attestations: write
+      actions: write # dispatch the Pages workflow
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
@@ -471,3 +472,10 @@ jobs:
           esac
           gh release view "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" --json url,isDraft,isPrerelease,assets \
             -q '"\(.url) draft=\(.isDraft) prerelease=\(.isPrerelease) assets=\(.assets | length)"'
+
+      # A release published with this run's GITHUB_TOKEN doesn't trigger other workflows
+      # (pages.yml's `release: published`), but a workflow_dispatch from it does.
+      - name: Update the website's download links
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run pages.yml --ref main -R "$GITHUB_REPOSITORY"
