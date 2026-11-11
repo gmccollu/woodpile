@@ -205,8 +205,14 @@ woodpile uninstall [--delete-logs]
 | Data folder | `/var/lib/woodpile`, owned by `woodpile`, mode 0750 | `/Library/Application Support/Woodpile`, owned by `_woodpile`, mode 0750 | `C:\ProgramData\Woodpile` with the MSI's ACL (below) |
 | Also | `/etc/sysctl.d/60-woodpile.conf` (32 MiB UDP buffer) | `/etc/newsyslog.d/com.woodpile.daemon.conf` | the `Woodpile` event source; firewall rules for UDP and TCP 514 |
 
-`--config FILE` points the service at another config; its data folder is the config's `storage.data_dir` (or, for a
-new config, the config's own folder).
+`--config FILE` points the service at another config, and `--data-dir FOLDER` picks the data folder (default: the
+one in the table). The data folder never comes from the config, which the service account can write: an existing
+config must already name the same folder, and a new one is written with it. The installer refuses system and home
+folders (`/`, `/etc`, `/var`, `/Library`, `C:\Windows`, Program Files, `C:\Users\<name>`...), a folder that isn't empty
+and isn't a Woodpile data folder, a config that is a link, and (on Windows) a data folder not owned by SYSTEM or
+Administrators. It gives the folder to the service account without following symlinks or hard links. `uninstall`
+reads the folders back from the unit, the plist or the service's registry key, not the config, and
+`--delete-logs` applies the same checks before deleting anything.
 
 `install` refuses when the package already installed the service (the unit in `/usr/lib/systemd/system`, the pkg
 receipt, or the MSI's `HKLM\Software\Woodpile` key), and `uninstall` refuses to remove a package's service: use the
