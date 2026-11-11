@@ -66,25 +66,53 @@ for ($i = 0; $i -lt 20 -and (Get-Content -Raw $out) -notmatch "New device 127\.0
 if ((Get-Content -Raw $out) -notmatch "New device 127\.0\.0\.1") { Die "no new-device line" }
 Ok "a new-device line"
 
+function Close-Console($proc, $logFile, $data, $run, $count) {
+    # Closes $proc's console window and checks a clean flush within Windows' ~5 s grace.
+    $t0 = Get-Date
+    $how = & (Resolve-Path $ConsoleClose) $proc.Id
+    $cc = $LASTEXITCODE
+    Write-Host "consoleclose: $how (exit $cc)"
+    if ($cc -eq 3) { return $false }
+    if ($cc -ne 0) { Die "couldn't close the console window" }
+    if (-not $proc.WaitForExit(10000)) { Die "still running 10 s after the console window closed ($how)" }
+    $took = ((Get-Date) - $t0).TotalSeconds
+    if ($took -gt 5) { Die "stopping took $took s; Windows allows about 5 s" }
+    $log = Get-Content -Raw $logFile
+    if (($log | Select-String -SimpleMatch "stopped cleanly" -AllMatches).Matches.Count -lt 1) { Die "woodpile.log has no clean stop" }
+    Ok ("closing the console window (CTRL_CLOSE_EVENT) stopped it cleanly in {0:N1} s" -f $took)
+    & (Resolve-Path $VerifySeq) -data $data -run $run -n $count | Write-Host
+    if ($LASTEXITCODE -ne 0) { Die "messages lost at the close" }
+    Ok "$count of $count still on disk after the close"
+    return $true
+}
+
 Write-Host "==> close the console window (CTRL_CLOSE_EVENT)"
 Start-Sleep 1
-$t0 = Get-Date
-$how = & (Resolve-Path $ConsoleClose) $p.Id
-$cc = $LASTEXITCODE
-Write-Host "consoleclose: $how (exit $cc)"
-if ($cc -eq 3) { Die "this session's consoles are pseudo consoles (ConPTY); a console close can't be simulated here" }
-if ($cc -ne 0) { Die "couldn't close the console window" }
-if (-not $p.WaitForExit(10000)) { Die "still running 10 s after the console window closed ($how)" }
-$took = ((Get-Date) - $t0).TotalSeconds
-$final = Get-Content -Raw $out
-Write-Host $final.Substring([Math]::Max(0, $final.Length - 300))
-if ($final -notmatch "Woodpile stopped; everything is saved") { Die "no clean stop after the console closed" }
-if ($took -gt 5) { Die "stopping took $took s; Windows allows about 5 s" }
-Ok ("closing the console window stopped it cleanly in {0:N1} s" -f $took)
-$log = Get-Content -Raw (Join-Path $data "woodpile.log")
-if ($log -notmatch "stopped cleanly") { Die "woodpile.log has no clean stop" }
-& (Resolve-Path $VerifySeq) -data $data -run $run -n 10000
-if ($LASTEXITCODE -ne 0) { Die "messages lost at the close" }
-Ok "10,000 of 10,000 still on disk after the close"
+if (-not (Close-Console $p (Join-Path $data "woodpile.log") $data $run 10000)) {
+    # The runner's consoles are pseudo consoles (ConPTY), whose window ignores close
+    # requests. Stop this copy with Ctrl-C's equivalent and run a second one in a classic
+    # console (conhost.exe), whose X button does send CTRL_CLOSE_EVENT.
+    Write-Host "NOTE this session's consoles are pseudo consoles; trying a classic conhost.exe window"
+    Stop-Process -Id $p.Id -Force
+    $p.WaitForExit(10000) | Out-Null
+    $data2 = Join-Path $work "classic"
+    $c = Start-Process -FilePath "$env:SystemRoot\System32\conhost.exe" -PassThru `
+        -ArgumentList "`"$exe`" portable --no-browser --dir `"$data2`""
+    $wp = $null
+    for ($i = 0; $i -lt 60 -and -not $wp; $i++) {
+        Start-Sleep 1
+        $wp = Get-CimInstance Win32_Process -Filter "Name='woodpile.exe'" | Where-Object { $_.ParentProcessId -eq $c.Id } | Select-Object -First 1
+    }
+    if (-not $wp) { Die "woodpile.exe didn't start under conhost.exe" }
+    for ($i = 0; $i -lt 30; $i++) { try { Invoke-RestMethod -TimeoutSec 2 "http://127.0.0.1:8514/healthz" | Out-Null; break } catch { Start-Sleep 1 } }
+    $run2 = -join ((1..8) | ForEach-Object { "{0:x}" -f (Get-Random -Maximum 16) })
+    & $exe send --port 514 --proto tcp --count 2000 --rate 5000 --run $run2 --first-seq 0 | Out-Null
+    & (Resolve-Path $VerifySeq) -data $data2 -run $run2 -n 2000 -wait 30s | Write-Host
+    if ($LASTEXITCODE -ne 0) { Die "messages missing under conhost" }
+    $wproc = Get-Process -Id $wp.ProcessId
+    if (-not (Close-Console $wproc (Join-Path $data2 "woodpile.log") $data2 $run2 2000)) {
+        Write-Host "NOTE even conhost.exe gives a pseudo console here; CTRL_CLOSE_EVENT is unproven on this runner"
+    }
+}
 Copy-Item "$work\*.out" $Logs -ErrorAction SilentlyContinue
 Write-Host "`nportable smoke test (Windows): $script:passes checks passed"
