@@ -12,6 +12,7 @@
 //   mock_os=linux     server OS (darwin, linux, windows); changes kernel-drop visibility and the buffer size
 //   mock_cycle=0      stop branch-ap-08 cycling online -> quiet -> offline -> online every 30 s
 //   mock_latency=N    simulated response time in ms (default 120)
+//   mock_releases=URL releases_url in /api/status (default empty: no public releases page yet)
 //   mock_panel=0      hide the mock control panel (for screenshots)
 
 import type {
@@ -19,6 +20,7 @@ import type {
   EventStream,
   ExportInfo,
   LiveFilters,
+  RejectedSender,
   Settings,
   Stats,
   Status,
@@ -95,7 +97,8 @@ let settings: Settings = {
   listeners: {
     udp: { enabled: true, addr: '0.0.0.0', port: 514 },
     tcp: { enabled: true, addr: '0.0.0.0', port: 514 },
-    allowlist: [],
+    // Non-empty so the rejected-senders list has something to show.
+    allowlist: ['10.0.0.0/8', '192.0.2.44/32', 'fd00:1::/64'],
   },
   storage: {
     data_dir: OS.startsWith('windows')
@@ -132,14 +135,15 @@ function validate(s: Settings): Record<string, string> {
   }
   if (!s.listeners.udp.enabled && !s.listeners.tcp.enabled)
     e['listeners.udp.enabled'] = 'Keep at least one listener on, or Woodpile receives nothing.';
-  const bad = s.listeners.allowlist.filter((c) => {
+  s.listeners.allowlist.forEach((c, i) => {
     const [ip, bits, extra] = c.split('/');
-    if (extra !== undefined || !isIP(ip)) return true;
-    if (bits === undefined) return false;
-    const b = Number(bits);
-    return !Number.isInteger(b) || b < 0 || b > (isIPv4(ip) ? 32 : 128);
+    let bad = extra !== undefined || !isIP(ip);
+    if (!bad && bits !== undefined) {
+      const b = Number(bits);
+      bad = bits === '' || !Number.isInteger(b) || b < 0 || b > (isIPv4(ip) ? 32 : 128);
+    }
+    if (bad) e[`listeners.allowlist[${i}]`] = 'Not an IP address or CIDR.';
   });
-  if (bad.length) e['listeners.allowlist'] = `Not a valid CIDR: ${bad.join(', ')}`;
   const st = s.storage;
   if (!Number.isInteger(st.retention_days) || st.retention_days < 1 || st.retention_days > 3650)
     e['storage.retention_days'] = 'Keep logs for 1 to 3650 days.';
@@ -169,7 +173,8 @@ let trueThisSecond = 0;
 const spark: number[] = Array.from({ length: 60 }, (_, i) => Math.max(0, mock.rate * (0.8 + 0.25 * Math.sin(i / 6)) + (Math.random() - 0.5) * mock.rate * 0.15));
 let sparkMinute = Math.floor(Date.now() / MIN);
 let droppedByGuard = 0;
-let firstMessageAt = 0;
+// A fleet that's been running started when its oldest device was first seen.
+let firstMessageAt = devs.size ? Math.min(...[...devs.values()].map((d) => d.firstSeen)) : 0;
 const subs = new Set<MockEventSource>();
 
 function status(d: Dev, now: number): Device['status'] {
@@ -300,9 +305,9 @@ setInterval(secondTick, 1000);
 
 function matches(l: GenLine, f: LiveFilters): boolean {
   if (f.devices?.length && !f.devices.includes(l.device_id)) return false;
-  if (f.group) {
-    const d = devs.get(l.device_id);
-    if ((d?.group ?? '') !== f.group) return false;
+  if (f.group || f.ungrouped) {
+    const g = devs.get(l.device_id)?.group ?? '';
+    if (f.ungrouped ? g !== '' : g !== f.group) return false;
   }
   if (f.min_severity !== undefined && isKnown(l.severity) && l.severity > f.min_severity) return false;
   if (f.q && !l.raw.toLowerCase().includes(f.q.toLowerCase())) return false;
@@ -326,6 +331,7 @@ class MockEventSource implements EventStream {
     this.filters = {
       devices: u.searchParams.get('devices')?.split(',').filter(Boolean),
       group: u.searchParams.get('group') ?? undefined,
+      ungrouped: u.searchParams.get('ungrouped') === 'true',
       min_severity: sev === null ? undefined : Number(sev),
       q: u.searchParams.get('q') ?? undefined,
     };
@@ -407,11 +413,15 @@ function statusJSON(): Status {
   const banners: Status['banners'] = [];
   if (listeners.some((x) => !x.ok))
     banners.push({
+      kind: 'listener_bind',
+      action: 'retry_listeners',
       level: 'error',
       text: 'TCP 514 is in use by syslogd (pid 312). Woodpile is still receiving on UDP 514. Stop the other syslog service, or move the TCP listener to another port in Settings, then press Retry.',
     });
   if (mock.paused)
     banners.push({
+      kind: 'writes_paused',
+      action: '',
       level: 'error',
       text: `Writes are paused: the data volume has 0.8 GiB free and there are no old logs left to delete. ${droppedByGuard.toLocaleString()} messages dropped so far. Free some disk space and writing resumes on its own.`,
     });
@@ -421,7 +431,10 @@ function statusJSON(): Status {
     os: OS,
     data_dir: settings.storage.data_dir,
     started_at: new Date(START - 3 * 3600_000 - 17 * MIN).toISOString(),
+    first_message_at: firstMessageAt ? new Date(firstMessageAt).toISOString() : null,
     udp_rcvbuf_bytes: OS.startsWith('darwin') ? 7_454_720 : 33_554_432,
+    udp_rcvbuf_requested_bytes: 32 * MiB,
+    releases_url: P.get('mock_releases') ?? '',
     kernel_drops_visible: OS.startsWith('linux'),
     listeners,
     host_ips: ['10.1.0.50', '192.168.64.1', 'fd00::50'],
@@ -451,7 +464,42 @@ function statsJSON(now: number): Stats {
     dropped_24h: droppedByGuard,
     kernel_dropped_24h: OS.startsWith('linux') ? 12 : null,
     truncated_24h: devs.size > 1 ? 3 : 0,
+    rejected_24h: rejected(now).reduce((n, r) => n + r.count_24h, 0),
   };
+}
+
+// Senders outside the allowlist (IPv4 only in the mock). Counts grow while the mock runs.
+const OUTSIDERS = [
+  { ip: '198.51.100.7', base: 118, per_min: 6 },
+  { ip: '203.0.113.50', base: 41, per_min: 2 },
+  { ip: '192.0.2.200', base: 6, per_min: 0.2 },
+];
+
+function v4(ip: string): number | null {
+  if (!isIPv4(ip)) return null;
+  return ip.split('.').reduce((n, p) => n * 256 + Number(p), 0);
+}
+
+function allowed(ip: string): boolean {
+  const n = v4(ip);
+  return settings.listeners.allowlist.some((c) => {
+    const [net, bits = '32'] = c.split('/');
+    const base = v4(net);
+    if (base === null || n === null) return false;
+    const b = Number(bits);
+    const mask = b === 0 ? 0 : (0xffffffff << (32 - b)) >>> 0;
+    return ((n & mask) >>> 0) === ((base & mask) >>> 0);
+  });
+}
+
+function rejected(now: number): RejectedSender[] {
+  if (!settings.listeners.allowlist.length || mock.firstRun) return [];
+  const mins = (now - START) / MIN;
+  return OUTSIDERS.filter((o) => !allowed(o.ip)).map((o, i) => ({
+    ip: o.ip,
+    count_24h: Math.round(o.base + o.per_min * mins),
+    last_seen: new Date(now - (i * 47 + 3) * 1000).toISOString(),
+  }));
 }
 
 const exportsList: ExportInfo[] = [
@@ -522,6 +570,7 @@ async function route(method: string, url: URL, body: unknown): Promise<Response>
     return json(settings);
   }
   if (method === 'GET' && p === '/api/storage/history') return json(history());
+  if (method === 'GET' && p === '/api/rejected') return json(rejected(now));
   if (method === 'GET' && p === '/api/search') {
     const q = url.searchParams;
     let re: RegExp | null = null;

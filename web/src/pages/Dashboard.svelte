@@ -46,10 +46,9 @@
       .sort((a, b) => label(a).localeCompare(label(b), undefined, { numeric: true })),
   );
 
-  // Live tail scope: one picked device, else the tab. "Ungrouped" has no API filter, so send its device ids.
-  const tailDevices = $derived(
-    picked ? [picked] : tab === UNGROUPED ? visible.filter((d) => !d.group).map((d) => d.id) : [],
-  );
+  // Live tail scope: one picked device, else the tab.
+  const tailDevices = $derived(picked ? [picked] : []);
+  const tailUngrouped = $derived(!picked && tab === UNGROUPED);
   const tailGroup = $derived(picked || tab === ALL || tab === UNGROUPED ? '' : tab);
   const pickedDevice = $derived(visible.find((d) => d.id === picked));
   const scope = $derived(
@@ -121,7 +120,13 @@
         {:else}
           Kernel: {num(stats.kernel_dropped_24h)} dropped
         {/if}
-        {#if stats.truncated_24h}· {num(stats.truncated_24h)} truncated{/if}
+        {#if stats.truncated_24h || stats.rejected_24h > 0}
+          <span class="block">
+            {#if stats.truncated_24h}<span class="whitespace-nowrap">{num(stats.truncated_24h)} truncated</span>{/if}
+            {#if stats.truncated_24h && stats.rejected_24h > 0}·{/if}
+            {#if stats.rejected_24h > 0}<a class="whitespace-nowrap text-link underline" href="#/settings" title="Senders outside the allowlist">{num(stats.rejected_24h)} rejected</a>{/if}
+          </span>
+        {/if}
       </p>
     {/if}
   </div>
@@ -168,6 +173,7 @@
 
   <LiveTail
     group={tailGroup}
+    ungrouped={tailUngrouped}
     devices={tailDevices}
     q={ui.filter}
     {scope}

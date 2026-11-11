@@ -1,6 +1,15 @@
 <script lang="ts">
-  import { ApiError, getSettings, getStorageHistory, putSettings, type Settings, type StorageHistoryEntry } from '../lib/api';
-  import { bytes, dateTime, GiB, MiB } from '../lib/format';
+  import {
+    ApiError,
+    getRejected,
+    getSettings,
+    getStorageHistory,
+    putSettings,
+    type RejectedSender,
+    type Settings,
+    type StorageHistoryEntry,
+  } from '../lib/api';
+  import { ago, bytes, dateTime, GiB, MiB, num } from '../lib/format';
   import { deviceName, live, refreshStatus } from '../lib/status.svelte';
 
   // The form edits friendlier units (GiB, MiB, minutes, one CIDR per line) and converts on save.
@@ -30,6 +39,9 @@
   let busy = $state(false);
   let savedAt = $state(0);
   let history = $state<StorageHistoryEntry[] | null>(null);
+  let rejected = $state<RejectedSender[] | null>(null);
+  /** The allowlist as last sent, so "listeners.allowlist[2]" errors can name the entry. */
+  let sentAllowlist = $state<string[]>([]);
 
   const round = (n: number, d = 2) => Math.round(n * 10 ** d) / 10 ** d;
 
@@ -61,10 +73,7 @@
       listeners: {
         udp: { enabled: f.udpEnabled, addr: f.udpAddr.trim(), port: n(f.udpPort) },
         tcp: { enabled: f.tcpEnabled, addr: f.tcpAddr.trim(), port: n(f.tcpPort) },
-        allowlist: f.allowlist
-          .split(/[\s,]+/)
-          .map((x) => x.trim())
-          .filter(Boolean),
+        allowlist: parseAllowlist(f.allowlist),
       },
       storage: {
         data_dir: f.dataDir,
@@ -78,6 +87,36 @@
         offline_after_seconds: Math.round(n(f.offlineMin) * 60),
       },
     };
+  }
+
+  function parseAllowlist(text: string): string[] {
+    return text
+      .split(/[\s,]+/)
+      .map((x) => x.trim())
+      .filter(Boolean);
+  }
+
+  async function loadRejected() {
+    try {
+      rejected = await getRejected();
+    } catch {
+      rejected = rejected ?? [];
+    }
+  }
+
+  $effect(() => {
+    loadRejected();
+    const t = setInterval(loadRejected, 15000);
+    return () => clearInterval(t);
+  });
+
+  const hostCidr = (ip: string) => `${ip}/${ip.includes(':') ? 128 : 32}`;
+  const inDraft = (ip: string) => !!form && parseAllowlist(form.allowlist).some((c) => c === ip || c === hostCidr(ip));
+
+  function allow(ip: string) {
+    if (!form || inDraft(ip)) return;
+    const cur = form.allowlist.replace(/\s+$/, '');
+    form.allowlist = cur ? `${cur}\n${hostCidr(ip)}` : hostCidr(ip);
   }
 
   async function load() {
@@ -117,11 +156,25 @@
     'quiet.offline_after_seconds',
   ];
 
-  /** The message for a field, also matching sub-paths such as "listeners.allowlist.2" or "listeners.allowlist[2]". */
+  /**
+   * The message(s) for a field. Error keys are dotted paths with [i] for list items
+   * (docs/api.md), so "listeners.allowlist[2]" belongs to the allowlist field and is
+   * shown as "Entry 3 (value): message".
+   */
   function err(path: string): string {
-    if (errors[path]) return errors[path];
-    const sub = Object.keys(errors).filter((k) => k.startsWith(`${path}.`) || k.startsWith(`${path}[`));
-    return sub.map((k) => errors[k]).join(' ');
+    const out: string[] = [];
+    if (errors[path]) out.push(errors[path]);
+    for (const k of Object.keys(errors)) {
+      const m = k.startsWith(`${path}[`) ? /^\[(\d+)\]$/.exec(k.slice(path.length)) : null;
+      if (m) {
+        const i = Number(m[1]);
+        const v = path === 'listeners.allowlist' ? sentAllowlist[i] : undefined;
+        out.push(`Entry ${i + 1}${v ? ` (${v})` : ''}: ${errors[k]}`);
+      } else if (k.startsWith(`${path}.`) || (k.startsWith(`${path}[`) && k !== path)) {
+        out.push(errors[k]);
+      }
+    }
+    return out.join('\n');
   }
   const owned = (k: string) => FIELDS.some((f) => k === f || k.startsWith(`${f}.`) || k.startsWith(`${f}[`));
   const otherErrors = $derived(Object.entries(errors).filter(([k]) => !owned(k)));
@@ -132,12 +185,15 @@
     busy = true;
     errors = {};
     formError = '';
+    const body = fromForm(form);
+    sentAllowlist = body.listeners.allowlist;
     try {
-      saved = await putSettings(fromForm(form));
+      saved = await putSettings(body);
       form = toForm(saved);
       savedAt = Date.now();
       setTimeout(() => (savedAt = 0), 2500);
       refreshStatus();
+      loadRejected();
     } catch (x) {
       if (x instanceof ApiError && Object.keys(x.fields).length) {
         errors = x.fields;
@@ -245,7 +301,42 @@
           spellcheck="false"
         ></textarea>
         {@render fieldError('listeners.allowlist')}
+        <span class="hint">Empty means every sender is accepted. Changes apply when you save.</span>
       </label>
+
+      <h3 class="mt-4 mb-2 text-[14px] font-semibold">Refused senders, last 24 h</h3>
+      {#if rejected === null}
+        <p class="hint">Loading…</p>
+      {:else if !rejected.length}
+        <p class="hint">None. {saved?.listeners.allowlist.length ? 'Every sender is inside the allowlist.' : 'The allowlist is empty, so nothing is refused.'}</p>
+      {:else}
+        <div class="overflow-auto rounded-xl border border-[var(--divider)]">
+          <table class="w-full border-collapse text-[13px]">
+            <thead>
+              <tr>
+                <th scope="col">Sender</th>
+                <th scope="col" class="text-right">Messages</th>
+                <th scope="col">Last seen</th>
+                <th scope="col"><span class="sr-only">Actions</span></th>
+              </tr>
+            </thead>
+            <tbody>
+              {#each rejected as r (r.ip)}
+                <tr>
+                  <td class="font-mono">{r.ip}</td>
+                  <td class="text-right tabular-nums">{num(r.count_24h)}</td>
+                  <td title={dateTime(r.last_seen)}>{ago(r.last_seen, live.now)}</td>
+                  <td class="text-right">
+                    <button type="button" class="ghost-btn whitespace-nowrap" onclick={() => allow(r.ip)} disabled={inDraft(r.ip)} aria-label="Allow {r.ip}">
+                      {inDraft(r.ip) ? 'Added, save to apply' : 'Allow'}
+                    </button>
+                  </td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
+      {/if}
     </section>
 
     <section class="card">
@@ -403,6 +494,7 @@
     min-width: 200px;
   }
   .ferr {
+    white-space: pre-line;
     margin: 2px 0 0;
     font-size: 13px;
     font-weight: 500;

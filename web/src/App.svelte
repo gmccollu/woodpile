@@ -36,12 +36,12 @@
     about: 'About',
   };
 
-  // First run: with no address in the URL and no devices yet, open on the welcome page.
+  // First run: with no page in the URL and no message received yet, open on the welcome page.
   let decided = false;
   $effect(() => {
-    if (decided || live.devices === null) return;
+    if (decided || !live.status) return;
     decided = true;
-    if (!router.explicit && live.devices.length === 0) location.replace('#/welcome');
+    if (!router.explicit && live.status.first_message_at === null) location.replace('#/welcome');
   });
 
   $effect(() => {

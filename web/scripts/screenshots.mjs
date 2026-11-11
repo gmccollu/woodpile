@@ -49,7 +49,7 @@ const SHOTS = [
     check: `document.body.innerText.includes('First message received') && !!document.querySelector('a[href="#/dashboard"].pill-btn')`,
   },
   { name: 'first-run-redirect', noshot: true, mode: 'light', url: '/?mock_panel=0&mock_firstrun=1&mock_firstmsg=0', check: `location.hash === '#/welcome'` },
-  ...both({ name: 'dashboard', url: '/?mock_panel=0#/dashboard', wait: 3000, check: `document.querySelectorAll('[role=log] .line').length > 50` }),
+  ...both({ name: 'dashboard', url: '/?mock_panel=0#/dashboard', wait: 3000, check: `document.querySelectorAll('[role=log] .line').length > 50 && document.body.innerText.includes(' rejected')` }),
   {
     name: 'dashboard-sampled-portclash-dark',
     mode: 'dark',
@@ -99,6 +99,24 @@ const SHOTS = [
     act: `__set(document.querySelector('input[type=search]'), 'deny');`,
     after: 3000,
     check: `(() => { const l = [...document.querySelectorAll('[role=log] .line')]; return l.length > 0 && l.every((x) => x.textContent.includes('deny')); })()`,
+  },
+  {
+    name: 'allow-refused-sender',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/settings',
+    act: `document.querySelector('[aria-label="Allow 198.51.100.7"]').click();`,
+    after: 300,
+    check: `document.querySelector('textarea').value.split('\\n').includes('198.51.100.7/32') && __btn('Added, save to apply')?.disabled`,
+  },
+  {
+    name: 'ungrouped-tab-filters-tail',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0&mock_rate=200#/dashboard',
+    act: `__btn('Ungrouped').click();`,
+    after: 3000,
+    check: `(() => { const h = [...document.querySelectorAll('[role=log] .line .c.h')]; return h.length > 0 && h.every((x) => x.textContent === '192.0.2.44'); })()`,
   },
   {
     name: 'rename-saves',

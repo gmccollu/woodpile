@@ -1,7 +1,7 @@
 <script lang="ts">
   import { openLive, type Listener, type LogLine } from '../lib/api';
-  import { clock } from '../lib/format';
-  import { deviceName, live, refreshDevices } from '../lib/status.svelte';
+  import { clock, dateTime } from '../lib/format';
+  import { deviceName, live, refreshDevices, refreshStatus } from '../lib/status.svelte';
   import CopyButton from '../components/CopyButton.svelte';
   import Icon from '../components/Icon.svelte';
 
@@ -38,7 +38,8 @@
 
   let first = $state<LogLine | null>(null);
 
-  // Watch the live stream for the first message. The replay on connect also counts.
+  // /api/status.first_message_at is the authority. The live stream is watched too, so the
+  // page reacts at once and can show the line itself (the replay on connect also counts).
   $effect(() => {
     const close = openLive(
       {},
@@ -47,6 +48,7 @@
           if (!first) {
             first = l;
             refreshDevices();
+            refreshStatus();
           }
         },
       },
@@ -127,15 +129,17 @@
   </section>
 
   <section class="card" aria-live="polite">
-    {#if first}
+    {#if first || st?.first_message_at}
       <div class="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 class="m-0 flex items-center gap-2 text-lg font-bold"><span class="text-ok-fg"><Icon name="check" size={20} /></span>First message received</h2>
-          <p class="mt-1 mb-0 text-[14px] text-muted">From {deviceName(first.device_id)} at {clock(first.received)}.</p>
+          <p class="mt-1 mb-0 text-[14px] text-muted">
+            {#if first}From {deviceName(first.device_id)} at {clock(first.received)}.{:else if st?.first_message_at}At {dateTime(st.first_message_at)}.{/if}
+          </p>
         </div>
         <a class="pill-btn no-underline" href="#/dashboard">Open the dashboard <Icon name="arrow" size={15} /></a>
       </div>
-      <div class="log-panel mt-3 rounded-2xl px-4 py-3 text-[12.5px] break-all">{first.raw}</div>
+      {#if first}<div class="log-panel mt-3 rounded-2xl px-4 py-3 text-[12.5px] break-all">{first.raw}</div>{/if}
     {:else}
       <div class="flex items-center gap-3">
         <span class="wait" aria-hidden="true"></span>

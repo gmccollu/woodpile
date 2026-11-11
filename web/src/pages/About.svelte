@@ -1,17 +1,13 @@
 <script lang="ts">
-  import { bytes, dateTime, duration, MiB } from '../lib/format';
+  import { bytes, dateTime, duration } from '../lib/format';
   import { live } from '../lib/status.svelte';
   import CopyButton from '../components/CopyButton.svelte';
-
-  // The repo's home isn't settled yet (SPEC §10.1). Set this once it is; until then no link is shown.
-  const RELEASES_URL = '';
-  const REQUESTED_RCVBUF = 32 * MiB;
 
   const st = $derived(live.status);
   const osName = $derived(
     st?.os.startsWith('darwin') ? 'macOS' : st?.os.startsWith('windows') ? 'Windows' : st?.os.startsWith('linux') ? 'Linux' : (st?.os ?? ''),
   );
-  const shortBuf = $derived(!!st && st.udp_rcvbuf_bytes < REQUESTED_RCVBUF);
+  const shortBuf = $derived(!!st && st.udp_rcvbuf_bytes < st.udp_rcvbuf_requested_bytes);
   const bufHint = $derived(
     st?.os.startsWith('linux')
       ? 'The kernel caps it at net.core.rmem_max. The deb and rpm packages raise that to 32 MiB; if you installed from the tarball, set it yourself in /etc/sysctl.d/.'
@@ -42,17 +38,17 @@
         <dt>UDP receive buffer</dt>
         <dd>
           <b>{bytes(st.udp_rcvbuf_bytes)}</b>
-          <span class="text-muted">(asked for {bytes(REQUESTED_RCVBUF)})</span>
+          <span class="text-muted">(asked for {bytes(st.udp_rcvbuf_requested_bytes)})</span>
           {#if shortBuf}
             <p class="mt-1 mb-0 text-[13px] text-warn-fg">Smaller than requested, so a burst is more likely to overflow it. {bufHint}</p>
           {/if}
         </dd>
         <dt>Releases</dt>
         <dd>
-          {#if RELEASES_URL}
-            <a class="text-link underline" href={RELEASES_URL} rel="noreferrer" target="_blank">Releases page</a>
+          {#if st.releases_url}
+            <a class="text-link underline break-all" href={st.releases_url} rel="noreferrer noopener" target="_blank">{st.releases_url}</a>
           {:else}
-            <span class="text-muted">The releases page link will appear here.</span>
+            <span class="text-muted">No public releases page yet.</span>
           {/if}
           <p class="mt-1 mb-0 text-[13px] text-muted">Woodpile never checks for updates or connects out; compare this version with the releases page yourself.</p>
         </dd>

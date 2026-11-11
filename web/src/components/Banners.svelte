@@ -22,9 +22,6 @@
     }
   }
 
-  // The API's banners carry only level and text, so the Retry button goes on the first
-  // error banner while any listener is down (see the report on docs/api.md).
-  const retryOn = $derived(failed.length ? (live.status?.banners.findIndex((b) => b.level === 'error') ?? -1) : -1);
 </script>
 
 {#if live.statusError}
@@ -33,21 +30,21 @@
     <div class="grow">Can't reach the Woodpile service ({live.statusError}). Retrying every 5 s.</div>
   </div>
 {/if}
-{#each live.status?.banners ?? [] as b, i (i)}
+{#each live.status?.banners ?? [] as b, i (`${i}:${b.kind}`)}
   <div class="banner {b.level}" role={b.level === 'error' ? 'alert' : 'status'}>
     <Icon name="alert" />
     <div class="grow">
       <div>{b.text}</div>
-      {#if i === retryOn}
+      {#if b.kind === 'listener_bind'}
         {#each failed as l (l.proto + l.port)}
           <div class="detail">
             {l.proto.toUpperCase()} {l.addr}:{l.port}: {l.error}{l.holder ? ` (held by ${l.holder})` : ''}
           </div>
         {/each}
-        {#if retryError}<div class="detail" role="status">{retryError}</div>{/if}
       {/if}
+      {#if b.action === 'retry_listeners' && retryError}<div class="detail" role="status">{retryError}</div>{/if}
     </div>
-    {#if i === retryOn}
+    {#if b.action === 'retry_listeners'}
       <button class="pill-btn" onclick={retry} disabled={retrying}>
         <Icon name="retry" size={15} />{retrying ? 'Retrying…' : 'Retry'}
       </button>

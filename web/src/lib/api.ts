@@ -18,9 +18,15 @@ export interface Listener {
 
 export type BannerLevel = 'error' | 'warn' | 'info';
 
+export type BannerKind = 'listener_bind' | 'writes_paused' | 'low_disk';
+export type BannerAction = '' | 'retry_listeners';
+
 export interface Banner {
+  /** Unknown future kinds are shown like any other banner. */
+  kind: BannerKind | (string & {});
   level: BannerLevel;
   text: string;
+  action: BannerAction | (string & {});
 }
 
 export interface Status {
@@ -29,7 +35,13 @@ export interface Status {
   os: string;
   data_dir: string;
   started_at: string;
+  /** null until the first message is received; drives the Welcome page. */
+  first_message_at: string | null;
+  /** What the OS actually granted. */
   udp_rcvbuf_bytes: number;
+  udp_rcvbuf_requested_bytes: number;
+  /** Empty until the project has a public releases page. */
+  releases_url: string;
   kernel_drops_visible: boolean;
   listeners: Listener[];
   host_ips: string[];
@@ -46,6 +58,14 @@ export interface Stats {
   /** Integer on Linux; null where the OS doesn't expose kernel UDP drops. */
   kernel_dropped_24h: number | null;
   truncated_24h: number;
+  /** Messages from senders outside the allowlist. */
+  rejected_24h: number;
+}
+
+export interface RejectedSender {
+  ip: string;
+  count_24h: number;
+  last_seen: string;
 }
 
 export type DeviceStatus = 'online' | 'quiet' | 'offline';
@@ -69,7 +89,7 @@ export type DevicePatch = Partial<Pick<Device, 'name' | 'group' | 'hidden'>>;
 export interface LogLine {
   received: string;
   device_id: string;
-  /** 0 emerg … 7 debug. The contract doesn't say how "unknown" is sent; see severity.ts. */
+  /** 0 emerg … 7 debug, or null when the message had no parseable PRI. */
   severity: number | null;
   raw: string;
 }
@@ -82,6 +102,8 @@ export interface SampledNotice {
 export interface LiveFilters {
   devices?: string[];
   group?: string;
+  /** Only devices with no group. An alternative to `group`. */
+  ungrouped?: boolean;
   /** Numeric severity ceiling: 4 means warning and worse. Unknown severities always pass. */
   min_severity?: number;
   q?: string;
@@ -161,7 +183,7 @@ export interface StorageHistoryEntry {
 
 export class ApiError extends Error {
   readonly status: number;
-  /** Per-field messages from a 400 on PUT /api/settings, keyed by field path. */
+  /** Per-field messages from a 400 on PUT /api/settings, keyed by dotted path ("listeners.allowlist[2]"). */
   readonly fields: Record<string, string>;
 
   constructor(status: number, message: string, fields: Record<string, string> = {}) {
@@ -246,6 +268,7 @@ function query(params: Record<string, string | number | boolean | string[] | und
 export const getStatus = () => request<Status>('GET', '/api/status');
 export const retryListeners = () => request<void>('POST', '/api/listeners/retry');
 export const getStats = () => request<Stats>('GET', '/api/stats');
+export const getRejected = () => request<RejectedSender[]>('GET', '/api/rejected');
 
 export const getDevices = () => request<Device[]>('GET', '/api/devices');
 export const patchDevice = (id: string, patch: DevicePatch) =>
@@ -279,6 +302,7 @@ export function openLive(filters: LiveFilters, h: LiveHandlers): () => void {
     `/api/live${query({
       devices: filters.devices,
       group: filters.group,
+      ungrouped: filters.ungrouped ? true : undefined,
       min_severity: filters.min_severity,
       q: filters.q,
     })}`,

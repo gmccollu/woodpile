@@ -9,6 +9,7 @@
 
   let {
     group = '',
+    ungrouped = false,
     devices = [],
     q = '',
     scope = 'all devices',
@@ -16,6 +17,7 @@
     height = '560px',
   }: {
     group?: string;
+    ungrouped?: boolean;
     devices?: string[];
     q?: string;
     scope?: string;
@@ -82,7 +84,7 @@
   // Reconnect whenever a filter changes. The server applies the filters and replays
   // up to 200 matching lines from its ring buffer on connect.
   $effect(() => {
-    const filters = { group: group || undefined, devices: devKey ? devKey.split(',') : undefined, min_severity: minSev < 7 ? minSev : undefined, q: qDebounced || undefined };
+    const filters = { group: group || undefined, ungrouped, devices: devKey ? devKey.split(',') : undefined, min_severity: minSev < 7 ? minSev : undefined, q: qDebounced || undefined };
     rows = [];
     pending = [];
     heldCount = 0;

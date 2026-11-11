@@ -1,6 +1,6 @@
-// Syslog severities (RFC 5424 §6.2.1). The API sends a number 0–7; for messages
-// that couldn't be parsed it may send null, a negative number or omit it (the
-// contract doesn't say), so anything outside 0–7 is treated as "unknown".
+// Syslog severities (RFC 5424 §6.2.1). The API sends 0–7, or null when the message
+// had no parseable PRI. Anything else outside 0–7 is also treated as "unknown",
+// defensively.
 
 export const SEVERITIES = [
   { n: 0, short: 'emerg', name: 'Emergency' },
