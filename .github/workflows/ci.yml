@@ -191,10 +191,16 @@ jobs:
           WOODPILE_REPO: ${{ github.event.repository.name }}
         run: go run github.com/goreleaser/goreleaser/v2@"$GORELEASER_VERSION" release --snapshot --clean --skip=publish
 
+      # The snapshot version is a prerelease (0.0.1-snapshot.<sha>), like an -rc tag.
+      - name: Release file names survive GitHub's asset naming
+        run: scripts/check-asset-names.sh dist
+
       - name: Inspect the deb and rpm
         run: |
           set -x
           deb=$(ls dist/*_amd64.deb)
+          # The package version keeps "~" (sorts before the release); only the file name drops it.
+          dpkg-deb -f "$deb" Version | grep -q '~snapshot' || { echo "deb Version lost the ~"; exit 1; }
           dpkg-deb --info "$deb"
           dpkg-deb --contents "$deb"
           for f in /usr/bin/woodpile /usr/lib/systemd/system/woodpile.service /etc/sysctl.d/60-woodpile.conf; do

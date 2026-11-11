@@ -91,7 +91,9 @@ checksum:
   algorithm: sha256
 
 snapshot:
-  version_template: "{{ incpatch .Version }}-snapshot+{{ .ShortCommit }}"
+  # A prerelease-style version (like -rc1) so CI's snapshot exercises the same naming;
+  # no "+", which GitHub would also rename in asset names.
+  version_template: "{{ incpatch .Version }}-snapshot.{{ .ShortCommit }}"
 
 changelog:
   use: git
@@ -104,7 +106,10 @@ nfpms:
   - id: woodpile
     ids: [woodpile]
     package_name: woodpile
-    file_name_template: "{{ .ConventionalFileName }}"
+    # The package version keeps nfpm's "~" for a prerelease (0.9.0~rc1 sorts before 0.9.0 in
+    # dpkg and rpm), but the file name doesn't: GitHub renames "~" in uploaded asset names,
+    # so checksums.txt wouldn't match. woodpile_0.9.0-rc1_amd64.deb, woodpile-0.9.0-rc1-1.x86_64.rpm.
+    file_name_template: '{{ replace .ConventionalFileName "~" "-" }}'
     formats: [deb, rpm]
     vendor: Woodpile
     homepage: "{{ .Env.WOODPILE_SERVER }}/{{ .Env.WOODPILE_OWNER }}/{{ .Env.WOODPILE_REPO }}"

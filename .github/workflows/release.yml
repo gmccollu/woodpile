@@ -141,6 +141,9 @@ jobs:
           go run github.com/goreleaser/goreleaser/v2@"$GORELEASER_VERSION" release --clean
           --release-notes "$RUNNER_TEMP/notes.md"
 
+      - name: Release file names survive GitHub's asset naming
+        run: scripts/check-asset-names.sh dist
+
       - name: Collect the binaries for the installers and the bench
         id: collect
         run: |
@@ -264,7 +267,9 @@ jobs:
       - name: Attach the MSIs to the draft release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "$GITHUB_REF_NAME" dist/msi/*.msi --clobber -R "$GITHUB_REPOSITORY"
+        run: |
+          scripts/check-asset-names.sh dist/msi
+          gh release upload "$GITHUB_REF_NAME" dist/msi/*.msi --clobber -R "$GITHUB_REPOSITORY"
 
   pkg:
     needs: goreleaser
@@ -347,7 +352,9 @@ jobs:
       - name: Attach the .pkg to the draft release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "$GITHUB_REF_NAME" dist/macos/*.pkg --clobber -R "$GITHUB_REPOSITORY"
+        run: |
+          scripts/check-asset-names.sh dist/macos
+          gh release upload "$GITHUB_REF_NAME" dist/macos/*.pkg --clobber -R "$GITHUB_REPOSITORY"
 
   bench:
     needs: goreleaser
@@ -406,19 +413,33 @@ jobs:
       id-token: write # build provenance
       attestations: write
     steps:
-      - name: Add the installers to checksums.txt
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      # checksums.txt is rebuilt from the files actually on the release, under the names they
+      # have there; GoReleaser's own checksums.txt is only used to check every file it built
+      # arrived intact (matched by hash, since an upload can be renamed). Safe to re-run.
+      - name: checksums.txt from the release's own files
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mkdir release && cd release
           gh release download "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY"
-          # Idempotent on re-runs: drop any earlier installer lines first.
-          grep -v -E '\.(msi|pkg)$' checksums.txt >checksums.new || true
-          sha256sum -- *.msi *.pkg >>checksums.new
-          mv checksums.new checksums.txt
-          # Every asset is now listed, and every listed file matches.
+          mv checksums.txt "$RUNNER_TEMP/goreleaser-checksums.txt"
+          sha256sum -- * >"$RUNNER_TEMP/actual.txt"
+          missing=0
+          while read -r sum name; do
+            grep -q "^$sum " "$RUNNER_TEMP/actual.txt" || { echo "not on the release (or changed): $name"; missing=1; }
+          done <"$RUNNER_TEMP/goreleaser-checksums.txt"
+          [ "$missing" -eq 0 ]
+          for ext in msi pkg; do ls ./*."$ext" >/dev/null || { echo "no .$ext on the release"; exit 1; }; done
+          mv "$RUNNER_TEMP/actual.txt" checksums.txt
+          # Every asset is listed under its real name, and every name survives GitHub as is.
           sha256sum -c checksums.txt
-          for f in *; do [ "$f" = checksums.txt ] || grep -q "  $f\$" checksums.txt || { echo "not in checksums.txt: $f"; exit 1; }; done
+          [ "$(wc -l <checksums.txt)" -eq "$(find . -maxdepth 1 -type f ! -name checksums.txt | wc -l)" ]
+          "$GITHUB_WORKSPACE/scripts/check-asset-names.sh" .
+          cat checksums.txt
           gh release upload "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" checksums.txt --clobber
 
       # Artifact attestations need a public repo (or GitHub Enterprise Cloud) on this plan.
