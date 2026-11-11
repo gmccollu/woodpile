@@ -205,8 +205,9 @@ configurable.
   - macOS: a launchd daemon running as a dedicated `_woodpile` user. Tested 2026-11-10 on macOS 27.2 as an
     ordinary user: binding 514 on `0.0.0.0` and `::` succeeded over both UDP and TCP; binding 514 on `127.0.0.1`
     or the en0 address failed with "Permission denied". So the dedicated user works with the default wildcard
-    bind. Still to check in M0: the same result from a launchd daemon with `UserName=_woodpile`, and whether the
-    macOS application firewall prompts for an unsigned binary.
+    bind. Confirmed in CI (2026-11-11, macos-latest): the launchd daemon as `_woodpile` binds UDP and TCP 514 on the
+    wildcard. With the application firewall on, it reports the binary as permitted; no prompt appears headless.
+    A prompt for a logged-in user on an unsigned binary is still unverified.
 - No outbound connections, no telemetry, no update checks. The CI test suite asserts that no code path dials
   out.
 
@@ -248,15 +249,20 @@ configurable.
 5. **M4 Installers:** MSI, pkg, deb/rpm, service install, upgrade and uninstall, install smoke tests in CI.
 6. **v1.0:** soak test, docs (README, install per OS, FAQ), first tagged release.
 
-### 8.1 Open items carried into M4 (from the M1–M2 build, 2026-11-11)
-- `woodpile install` (no package) must match the packages: run as the same least-privilege account (Windows
-  `NT SERVICE\Woodpile`, Linux a dynamic or `woodpile` user with `CAP_NET_BIND_SERVICE`, macOS `_woodpile`) and log
-  to the same paths. Today it runs as root/LocalSystem.
-- UI shutdown can wait ~5 s on a connection that never sent a request; close idle connections at shutdown.
-- First runs on real Windows, launchd and systemd: service start, logging, install/uninstall, upgrade, the MSI.
-- Linux-only paths: kernel UDP drop counter, `/proc` port-holder lookup, multi-IP e2e senders.
-- Data-dir lock (`woodpile.lock`) and run-state file (`woodpile.state.json`) were added during integration; keep them
-  documented in docs/install.md.
+### 8.1 M4 status (2026-11-11)
+Proven in CI on GitHub-hosted runners (`.github/workflows/install-smoke.yml`; on each: least-privilege account,
+UDP/TCP 514, the UI, 10,000 messages on disk exactly once, restart, uninstall keeping data, delete-logs removing it):
+- deb (Ubuntu, systemd, `CAP_NET_BIND_SERVICE` only), rpm (Fedora 41 container with systemd as PID 1), MSI
+  (`NT SERVICE\Woodpile`, protected ACL, 514-only firewall rules, event log, v0.0.1→v0.0.2 major upgrade), pkg
+  (launchd as `_woodpile`), and `woodpile install` / `uninstall` on all three OSes, which now matches the packages.
+- UI shutdown with an idle connection: 5.0 s → 0.14 s.
+- 2 h soak on macOS at 3,000 msg/s: 21.6M sent, every message on disk except the 183,000 counted as dropped during
+  a forced low-disk pause (exactly equal), 0 duplicates; RSS 31→37 MiB (peak 45), 19–23 open files.
+
+Still unproven:
+- Inbound traffic from another host through the OS firewalls (CI used loopback).
+- A real reboot; the 24 h soak (§7); a midnight crossing on the real binary (no fake clock in the binary).
+- arm64 packages; the macOS firewall prompt for a logged-in user; `reset-password` restarting a real service.
 
 ## 9. Roadmap (after v1)
 - TLS syslog (RFC 5425, port 6514)
