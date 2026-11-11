@@ -64,10 +64,13 @@ func plistPaths(plist string) (cfgPath, dataDir string) {
 }
 
 // ensureMacAccount runs the pkg's own ensure_service_account
-// (packaging/macos/scripts/common.sh) to create _woodpile. The script goes to sh
+// (packaging/macos/scripts/common.sh) to create _woodpile.
+func ensureMacAccount(h *host) error { return runPkgFunction(h, "ensure_service_account") }
+
+// runPkgFunction runs one function of the pkg's common.sh. The script goes to sh
 // on stdin, so no file in a temp folder another user could swap (review item 6).
-func ensureMacAccount(h *host) error {
-	out, err := h.runInput(packaging.MacAccountScript+"\nensure_service_account\n", "/bin/sh", "-s")
+func runPkgFunction(h *host, fn string) error {
+	out, err := h.runInput(packaging.MacAccountScript+"\nset -e\n"+fn+"\n", "/bin/sh", "-s")
 	if out != "" {
 		for _, l := range strings.Split(out, "\n") {
 			h.say("%s", strings.TrimPrefix(l, "woodpile: "))
@@ -86,15 +89,11 @@ func installLaunchd(h *host, o InstallOptions, dataDir string) (Result, error) {
 	if err != nil {
 		return res, err
 	}
-	// The daemon's own log folder, as the pkg's postinstall sets it.
-	if err := h.mkdirAll(darwinLogDir, 0o750); err != nil {
-		return res, err
-	}
-	if err := h.chownDir(darwinLogDir, DarwinUser, DarwinUser); err != nil {
-		return res, err
-	}
-	if err := h.chmod(darwinLogDir, 0o750); err != nil {
-		return res, err
+	// The daemon's own log folder, exactly as the pkg sets it (prepare_log_dir):
+	// root-owned, with one _woodpile-owned log file and no symlinks, so the
+	// service account can't point root at another file.
+	if err := runPkgFunction(h, "prepare_log_dir"); err != nil {
+		return res, fmt.Errorf("prepare %s: %w", darwinLogDir, err)
 	}
 
 	if err := h.copyFile(o.Exe, darwinBin, 0o755); err != nil {

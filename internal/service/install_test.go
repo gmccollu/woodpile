@@ -240,10 +240,14 @@ func TestInstallLaunchd(t *testing.T) {
 			t.Errorf("didn't run %q; ran:\n%s", c, strings.Join(r.cmds, "\n"))
 		}
 	}
-	if len(r.inputs) == 0 || !strings.HasSuffix(r.inputs[0], "\nensure_service_account\n") {
-		t.Error("the account script wasn't fed to sh on stdin")
+	if len(r.inputs) != 2 || !strings.HasSuffix(r.inputs[0], "\nensure_service_account\n") ||
+		!strings.HasSuffix(r.inputs[1], "\nprepare_log_dir\n") || !strings.Contains(r.inputs[1], "prepare_log_dir() {") {
+		t.Errorf("the pkg's ensure_service_account and prepare_log_dir weren't fed to sh: %d inputs", len(r.inputs))
 	}
-	for _, p := range []string{darwinPkgData, darwinPkgConfig, darwinLogDir} {
+	if slices.Contains(r.chowned, darwinLogDir) {
+		t.Error("the log folder was given to _woodpile (the pkg keeps it root-owned)")
+	}
+	for _, p := range []string{darwinPkgData, darwinPkgConfig} {
 		if !slices.Contains(r.chowned, p) {
 			t.Errorf("%s not given to _woodpile; chowned %v", p, r.chowned)
 		}
@@ -296,5 +300,31 @@ func TestStatusParsers(t *testing.T) {
 	r.fail = []string{"launchctl print"}
 	if st, _ := statusLaunchd(h); st != StateStopped {
 		t.Errorf("launchd not loaded: %s", st)
+	}
+}
+
+// The pkg's prepare_log_dir, as `woodpile install` runs it, removes symlinks
+// planted in the log folder and leaves one plain log file (chown is stubbed: no root).
+func TestPrepareLogDirRemovesSymlinks(t *testing.T) {
+	unixOnly(t)
+	dir := filepath.Join(t.TempDir(), "Logs")
+	victim := filepath.Join(t.TempDir(), "victim")
+	os.WriteFile(victim, []byte("keep"), 0o600)
+	os.MkdirAll(dir, 0o755)
+	os.Symlink(victim, filepath.Join(dir, "woodpile.log"))
+	os.Symlink(victim, filepath.Join(dir, "other.log"))
+	script := packaging.MacAccountScript + "\nchown() { :; }\nLOG_DIR='" + dir + "'\nLOG_FILE=\"$LOG_DIR/woodpile.log\"\nset -e\nprepare_log_dir\n"
+	if out, err := (execRunner{}).runInput(script, "/bin/sh", "-s"); err != nil {
+		t.Fatalf("%v: %s", err, out)
+	}
+	fi, err := os.Lstat(filepath.Join(dir, "woodpile.log"))
+	if err != nil || !fi.Mode().IsRegular() {
+		t.Fatalf("woodpile.log isn't a plain file: %v %v", fi, err)
+	}
+	if _, err := os.Lstat(filepath.Join(dir, "other.log")); !os.IsNotExist(err) {
+		t.Error("a planted symlink survived")
+	}
+	if b, _ := os.ReadFile(victim); string(b) != "keep" {
+		t.Error("the symlink's target was changed")
 	}
 }
