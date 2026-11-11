@@ -59,7 +59,8 @@ as dropped. Senders that already have logs on disk are exempt from the rate. All
 ## Devices
 
 `GET /api/devices?limit=200&offset=0&sort=rate|name|last_heard|first_seen&q=text&group=HQ&ungrouped=true&hidden=include|only|exclude`
-→ `{"devices": [...], "total": 1234}`. Default `limit` 200, max 1,000; default `sort=rate` (busiest first); `q` matches
+→ `{"devices": [...], "total": 1234}`. Default `limit` 200, max 1,000; default `sort=rate`. Directions are fixed:
+`rate` busiest first, `name` A–Z (devices without a name sort by IP), `last_heard` and `first_seen` newest first. `q` matches
 id, IP or name (case-insensitive substring); `hidden` defaults to `include`. Each device:
 ```json
 [{"id": "10.1.0.1", "ip": "10.1.0.1", "name": "edge-fw-01", "group": "HQ", "hidden": false,
@@ -68,6 +69,9 @@ id, IP or name (case-insensitive substring); `hidden` defaults to `include`. Eac
 ```
 
 Hidden devices are included, with `"hidden": true`.
+
+`GET /api/groups` → `[{"name": "HQ", "devices": 12}]`, sorted by name, with the number of non-hidden devices in each
+(ungrouped devices aren't listed).
 
 `PATCH /api/devices/{id}` body `{"name": "...", "group": "...", "hidden": true}` (any subset) → the updated device.
 
@@ -82,6 +86,7 @@ Hidden devices are included, with `"hidden": true`.
 - `min_severity` is the numeric syslog severity ceiling (0 emerg … 7 debug); messages with an unknown severity
   are always included.
 - On connect, the server first sends up to the last 200 matching messages from the ring buffer.
+- A heartbeat comment (`: ping`) is sent every 15 s, so a client can treat 45 s of silence as a dead stream.
 
 ## Severity filters (live tail and search)
 
@@ -129,7 +134,7 @@ An invalid value (not 0–7 or `unknown`) is a `400 {"error": ...}`.
 
 `POST /api/exports` body `{"devices": ["10.1.0.1"], "group": "", "ungrouped": false, "from": "...", "to": "...",
 "severities": [0, 1, "unknown"], "q": "", "regex": false, "case": false}` → `202 {"id": "exp_..."}`
-- `from` and `to` are required. Pick devices with `devices`, `group` or `ungrouped` (at least one must select a device). `severities`, `q`, `regex`
+- `from` and `to` are required. Pick devices with `devices`, `group`, `ungrouped`, or `"all_devices": true` (every non-hidden device); at least one must select a device. `severities`, `q`, `regex`
   and `case` are optional filters with exactly the same meaning as search, so "Export these results" exports what
   the search showed. Without them every line in range is exported.
 - One export builds at a time; a second `POST` while one is building is queued.
