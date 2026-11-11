@@ -4,6 +4,7 @@
 # The driver reaches the sender host and the VMs only through ssh host aliases in LAB_SSH_CONFIG
 # (typically ProxyJump through the sender), so nothing here knows a hostname or an IP.
 #
+#   wl --stdin-args              the arguments below as a JSON array on stdin (plain words only)
 #   wl fetch TAG                 download TAG's release assets (gh, on a machine with GitHub access) and check them
 #   wl tools                     build verifyseq (linux, windows) and the linux sender binary into LAB_ASSETS/tools
 #   wl setup-sender              install the sender tools and the sender namespaces (one source IP each)
@@ -24,6 +25,28 @@
 # LAB_RESULTS/<target>/results.log. Exit status 0 when the step's checks all pass.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
+# --stdin-args: the arguments arrive as a JSON array on stdin (from a wrapper whose remote command is a
+# constant), so nothing from the caller passes through a shell. They must be plain words.
+if [ "${1:-}" = "--stdin-args" ]; then
+	[ $# -eq 1 ] || { echo "wl: --stdin-args takes no other arguments" >&2; exit 2; }
+	decoded=$(python3 -I -c '
+import json, re, sys
+try:
+    v = json.loads(sys.stdin.read(65536))
+except ValueError as e:
+    sys.exit("wl: --stdin-args: stdin is not JSON (%s)" % e)
+if not isinstance(v, list) or not v or not all(isinstance(x, str) for x in v):
+    sys.exit("wl: --stdin-args: stdin must be a non-empty JSON array of strings")
+if v[0] == "--stdin-args":
+    sys.exit("wl: --stdin-args cannot be nested")
+for x in v:
+    if not re.fullmatch(r"[A-Za-z0-9._:/=+-]+", x):
+        sys.exit("wl: --stdin-args: argument %r has characters outside [A-Za-z0-9._:/=+-]" % x)
+print("\n".join(v))') || exit 2
+	args=()
+	while IFS= read -r a; do args+=("$a"); done <<<"$decoded"
+	set -- "${args[@]}"
+fi
 ENVFILE=${LAB_ENV:-$here/lab.env}
 [ -f "$ENVFILE" ] || { echo "wl: $ENVFILE not found (copy lab.env.example)" >&2; exit 2; }
 # shellcheck source=/dev/null
@@ -527,6 +550,6 @@ all)
 	fails=0; cmd_collect || true
 	exit "$rc"
 	;;
-help | -h | --help) sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//' ;;
+help | -h | --help) sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//' ;;
 *) die "unknown command $c (wl help)" ;;
 esac
