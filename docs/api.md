@@ -48,11 +48,15 @@ Change this file first if the contract changes.
 `GET /api/rejected` → `[{"ip": "198.51.100.7", "count_24h": 120, "last_seen": "..."}]` (senders refused by the allowlist)
 Sorted by `count_24h` descending, at most 200 entries. The server tracks at most 10,000 refused IPs and evicts the
 least recently seen.
+Banner kind `device_limit` (warn): new senders are being refused because the device cap (`max_devices`, default
+10,000) or the new-device rate (burst 1,000, then 100 per minute) was reached; their messages count as dropped.
 `banners` in `/api/status` are sent in priority order: errors first, then warnings.
 
 ## Devices
 
-`GET /api/devices`
+`GET /api/devices?limit=200&offset=0&sort=rate|name|last_heard|first_seen&q=text&group=HQ&ungrouped=true&hidden=include|only|exclude`
+→ `{"devices": [...], "total": 1234}`. Default `limit` 200, max 1,000; default `sort=rate` (busiest first); `q` matches
+id, IP or name (case-insensitive substring); `hidden` defaults to `include`. Each device:
 ```json
 [{"id": "10.1.0.1", "ip": "10.1.0.1", "name": "edge-fw-01", "group": "HQ", "hidden": false,
   "first_seen": "...", "last_heard": "...", "status": "online",   // online | quiet | offline
@@ -167,7 +171,7 @@ normalising (dedupe, sort). `listeners.allowlist` entries may be a bare IP or a 
                 "tcp": {"enabled": true, "addr": "0.0.0.0", "port": 514},
                 "allowlist": []},
   "storage": {"data_dir": "...", "retention_days": 30, "retention_bytes": 21474836480, "part_bytes": 104857600},
-  "ui": {"lan_mode": false, "port": 8514, "cert_file": "", "key_file": ""},   // empty = self-signed
+  "ui": {"lan_mode": false, "port": 8514, "cert_file": "", "key_file": "", "require_login_local": false},
   "quiet": {"quiet_after_seconds": 300, "offline_after_seconds": 3600}
 }
 ```
@@ -198,6 +202,12 @@ otherwise) except `/api/session`, `/api/login`, `/api/logout` and `GET /healthz`
 ```
 In localhost mode: `{"mode": "localhost", "auth_required": false, "authenticated": true, "password_set": false, "csrf_token": ""}`.
 `password_set` reports the real state in both modes (the LAN checkbox depends on it).
+
+`ui.require_login_local` (default false): when true and a password is set, localhost mode also requires login
+(same session and CSRF rules as LAN mode). It can't be turned on without a password.
+
+`PUT /api/password` requires `current` whenever a password is already set, in both modes. `woodpile
+reset-password` on the machine is the only way to replace a password without knowing it.
 
 **Forgotten password:** on the Woodpile machine, an administrator runs `woodpile reset-password`. It deletes the
 password hash, turns LAN mode off in the config, and restarts the UI on `http://localhost:<port>/`. There's no
