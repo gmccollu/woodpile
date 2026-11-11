@@ -61,7 +61,7 @@ collect_logs() {
 
 service_pid() {
 	if [ "$os" = Darwin ]; then
-		$SUDO launchctl print "system/$LABEL" 2>/dev/null | awk '$1 == "pid" && $2 == "=" {print $3}'
+		$SUDO launchctl print "system/$LABEL" 2>/dev/null | awk '$1 == "pid" && $2 == "=" {print $3; exit}'
 	else
 		systemctl show -p MainPID --value woodpile.service 2>/dev/null | grep -v '^0$' || true
 	fi
