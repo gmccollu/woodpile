@@ -179,6 +179,17 @@ CREATE INDEX stats_hourly_hour ON stats_hourly (hour);
 	`
 ALTER TABLE events ADD COLUMN source TEXT NOT NULL DEFAULT '';
 `,
+	// 3 -> 4: indexes for the device list and the dashboard at 10,000 devices
+	// (QueryDevices' orders and rate window; drop and truncation counts read
+	// only the buckets that have any).
+	`
+CREATE INDEX stats_minute_msgs ON stats (minute, device_id, msgs);
+CREATE INDEX stats_drops ON stats (minute) WHERE dropped > 0 OR truncated > 0;
+CREATE INDEX stats_hourly_drops ON stats_hourly (hour) WHERE dropped > 0 OR truncated > 0;
+CREATE INDEX devices_last_heard ON devices (last_heard DESC, id);
+CREATE INDEX devices_first_seen ON devices (first_seen DESC, id);
+CREATE INDEX devices_name_sort ON devices ((CASE WHEN name = '' THEN ip ELSE name END) COLLATE NOCASE, id);
+`,
 }
 
 // CurrentSchema is the schema version this build writes.

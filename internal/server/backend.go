@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"runtime"
 	"slices"
@@ -59,6 +60,8 @@ type backend struct {
 	// hidden holds the hidden devices, for the hub's HiddenOf; refreshed with
 	// groups.
 	hidden atomic.Pointer[map[string]bool]
+	// cacheMu serializes updates of groups and hidden (setCaches, refreshGroups).
+	cacheMu sync.Mutex
 
 	// firstMsg is the receive time of the first message since start (unix ms; 0
 	// until then), for first_message_at before the store's first index update.
@@ -170,9 +173,33 @@ func (b *backend) refreshGroups(ctx context.Context) error {
 			hid[d.ID] = true
 		}
 	}
+	b.cacheMu.Lock()
 	b.groups.Store(&m)
 	b.hidden.Store(&hid)
+	b.cacheMu.Unlock()
 	return nil
+}
+
+// setCaches updates one device in the live tail's group and hidden caches
+// (copy on write, so the hub's lock-free reads never see a half-built map),
+// instead of re-reading every device on each PATCH.
+func (b *backend) setCaches(d index.Device) {
+	b.cacheMu.Lock()
+	defer b.cacheMu.Unlock()
+	groups := maps.Clone(*b.groups.Load())
+	if d.Group != "" {
+		groups[d.ID] = d.Group
+	} else {
+		delete(groups, d.ID)
+	}
+	hidden := maps.Clone(*b.hidden.Load())
+	if d.Hidden {
+		hidden[d.ID] = true
+	} else {
+		delete(hidden, d.ID)
+	}
+	b.groups.Store(&groups)
+	b.hidden.Store(&hidden)
 }
 
 // hiddenOf is the hub's HiddenOf: a map lookup, no locks.
@@ -337,24 +364,15 @@ func (b *backend) Stats(ctx context.Context) (api.Stats, error) {
 	}
 	st.Sparkline = append(st.Sparkline, st.MsgsPerSec)
 
-	devs, err := b.Devices(ctx)
+	// Device statuses, counted in SQL from the index's last-heard times (which
+	// trail the live ones by the store's index interval, a few seconds).
+	q := b.config().Quiet
+	on, quiet, off, err := b.idx.StatusCounts(ctx, now.Add(-time.Duration(q.QuietAfterSeconds)*time.Second),
+		now.Add(-time.Duration(q.OfflineAfterSeconds)*time.Second))
 	if err != nil {
 		return st, err
 	}
-	for _, d := range devs {
-		if d.Hidden {
-			continue
-		}
-		st.Devices.Total++
-		switch d.Status {
-		case statusOnline:
-			st.Devices.Online++
-		case statusQuiet:
-			st.Devices.Quiet++
-		default:
-			st.Devices.Offline++
-		}
-	}
+	st.Devices = api.DeviceCounts{Total: on + quiet + off, Online: on, Quiet: quiet, Offline: off}
 
 	u := b.store.Usage()
 	st.Disk = api.Disk{UsedBytes: u.BytesOnDisk, CapBytes: u.CapBytes, FreeBytes: int64(u.FreeBytes), DaysKept: u.DaysKept}
@@ -362,12 +380,11 @@ func (b *backend) Stats(ctx context.Context) (api.Stats, error) {
 		st.Disk.DaysKept = 0
 	}
 
-	c, err := b.idx.Counts(ctx, nil, now.Add(-24*time.Hour), time.Time{})
-	if err != nil {
+	// Only buckets with drops or truncations are read (a day of per-minute
+	// buckets for 10,000 devices is 14 million rows).
+	if st.Truncated24h, st.Dropped24h, err = b.idx.DropCounts(ctx, now.Add(-24*time.Hour)); err != nil {
 		return st, err
 	}
-	st.Dropped24h = c.Dropped
-	st.Truncated24h = c.Truncated
 	if ln := b.ln.Load(); ln != nil {
 		st.Rejected24h = ln.Rejected24h()
 		if n, ok := ln.KernelDropped24h(); ok {
@@ -507,15 +524,15 @@ func (b *backend) UpdateDevice(ctx context.Context, id string, p api.DevicePatch
 	if err != nil {
 		return api.Device{}, err
 	}
-	if err := b.refreshGroups(ctx); err != nil {
-		b.log.Warn("couldn't refresh device groups and hidden devices for the live tail", "err", err)
-	}
+	b.setCaches(d)
 	now := b.now()
-	rs, err := b.deviceRates(ctx, now)
+	from := now.UTC().Truncate(time.Minute).Add(-time.Minute)
+	c, err := b.idx.Counts(ctx, []string{d.ID}, from, time.Time{})
 	if err != nil {
 		return api.Device{}, err
 	}
-	return withLive(d, b.live.snapshot(now), rs, now, b.config().Quiet), nil
+	rs := rates{from: from, counts: map[string]index.Counts{d.ID: c}}
+	return withLive(d, b.live.subset([]string{d.ID}, now), rs, now, b.config().Quiet), nil
 }
 
 func (b *backend) Settings(ctx context.Context) (api.Settings, error) {

@@ -2,6 +2,7 @@ package server
 
 import (
 	"net/netip"
+	"strings"
 	"sync"
 	"time"
 
@@ -113,25 +114,47 @@ func (l *liveDevices) snapshot(now time.Time) map[string]liveStat {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
 	out := make(map[string]liveStat, len(l.devs))
-	nowSec := now.Unix()
 	for a, d := range l.devs {
-		d.mu.Lock()
-		var n int64
-		for i := range d.sec {
-			if s := d.sec[i]; s > nowSec-rateSeconds && s <= nowSec {
-				n += d.count[i]
-			}
+		out[model.DeviceID(a)] = d.stat(now)
+	}
+	return out
+}
+
+// subset is snapshot for the given device IDs only (a page of the list).
+func (l *liveDevices) subset(ids []string, now time.Time) map[string]liveStat {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	out := make(map[string]liveStat, len(ids))
+	for _, id := range ids {
+		a, err := netip.ParseAddr(strings.ReplaceAll(id, "_", ":"))
+		if err != nil {
+			continue
 		}
-		first, last := d.first, d.last
-		d.mu.Unlock()
-		window := time.Duration(rateSeconds) * time.Second
-		if since := now.Sub(time.UnixMilli(first)); since < window {
-			window = max(since, minRateWindow)
-		}
-		out[model.DeviceID(a)] = liveStat{
-			LastHeard:  time.UnixMilli(last).UTC(),
-			MsgsPerMin: int64(float64(n)*float64(time.Minute)/float64(window) + 0.5),
+		if d := l.devs[a]; d != nil {
+			out[id] = d.stat(now)
 		}
 	}
 	return out
+}
+
+// stat is one sender's live numbers at now.
+func (d *liveDevice) stat(now time.Time) liveStat {
+	nowSec := now.Unix()
+	d.mu.Lock()
+	var n int64
+	for i := range d.sec {
+		if s := d.sec[i]; s > nowSec-rateSeconds && s <= nowSec {
+			n += d.count[i]
+		}
+	}
+	first, last := d.first, d.last
+	d.mu.Unlock()
+	window := time.Duration(rateSeconds) * time.Second
+	if since := now.Sub(time.UnixMilli(first)); since < window {
+		window = max(since, minRateWindow)
+	}
+	return liveStat{
+		LastHeard:  time.UnixMilli(last).UTC(),
+		MsgsPerMin: int64(float64(n)*float64(time.Minute)/float64(window) + 0.5),
+	}
 }

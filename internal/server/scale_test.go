@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"net/netip"
 	"testing"
 	"time"
 
@@ -28,6 +29,15 @@ func TestDeviceEndpointsAt10000Devices(t *testing.T) {
 	}
 	if err := r.srv.idx.Apply(context.Background(), b); err != nil {
 		t.Fatal(err)
+	}
+	// And the live counters a running server keeps (what msgs_per_min shows
+	// and sort=rate orders by): device i sent i%7 messages just now.
+	at := time.Now()
+	for i := 0; i < 10000; i++ {
+		a := netip.AddrFrom4([4]byte{10, byte(i >> 16), byte(i >> 8), byte(i)})
+		for n := 0; n < i%7; n++ {
+			r.srv.be.live.add(a, at)
+		}
 	}
 	timed := func(what string, f func()) {
 		t.Helper()

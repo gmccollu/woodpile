@@ -431,11 +431,34 @@ func TestRollupAndCounts(t *testing.T) {
 	}
 }
 
+// dropV4Indexes undoes migration 3 -> 4, for tests that rebuild an older schema.
+const dropV4Indexes = `DROP INDEX stats_minute_msgs; DROP INDEX stats_drops; DROP INDEX stats_hourly_drops;
+	DROP INDEX devices_last_heard; DROP INDEX devices_first_seen; DROP INDEX devices_name_sort; `
+
+func TestMigrateV3ToV4Indexes(t *testing.T) {
+	dir := t.TempDir()
+	d := openIn(t, dir)
+	if _, err := d.db.Exec(dropV4Indexes + `PRAGMA user_version = 3`); err != nil {
+		t.Fatal(err)
+	}
+	d.Close()
+	d2 := openIn(t, dir)
+	if v, _ := d2.SchemaVersion(ctx); v != 4 || CurrentSchema != 4 {
+		t.Fatalf("version %d", v)
+	}
+	var n int
+	d2.db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type = 'index' AND name IN ('stats_minute_msgs', 'stats_drops',
+		'stats_hourly_drops', 'devices_last_heard', 'devices_first_seen', 'devices_name_sort')`).Scan(&n)
+	if n != 6 {
+		t.Errorf("%d of 6 indexes", n)
+	}
+}
+
 func TestMigrateV2ToV3EventSource(t *testing.T) {
 	dir := t.TempDir()
 	d := openIn(t, dir)
 	// Turn it back into a v2 database with an event in it.
-	if _, err := d.db.Exec(`ALTER TABLE events DROP COLUMN source; PRAGMA user_version = 2`); err != nil {
+	if _, err := d.db.Exec(dropV4Indexes + `ALTER TABLE events DROP COLUMN source; PRAGMA user_version = 2`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := d.db.Exec(`INSERT INTO events (time, level, kind, device_id, text) VALUES (?, 'info', 'start', '', 'old')`, t0.UnixMilli()); err != nil {
@@ -443,7 +466,7 @@ func TestMigrateV2ToV3EventSource(t *testing.T) {
 	}
 	d.Close()
 	d2 := openIn(t, dir)
-	if v, _ := d2.SchemaVersion(ctx); v != 3 || CurrentSchema != 3 {
+	if v, _ := d2.SchemaVersion(ctx); v != CurrentSchema {
 		t.Fatalf("version %d", v)
 	}
 	d2.AddEvent(ctx, Event{Time: t0.Add(time.Second), Level: LevelInfo, Kind: KindStart, Text: "new", Source: SourceListenerUDP})
@@ -461,7 +484,7 @@ func TestMigrateV1ToV2(t *testing.T) {
 	d := openIn(t, dir)
 	d.Apply(ctx, Batch{Activity: []Activity{{DeviceID: "192.0.2.1", IP: "192.0.2.1", Minute: t0, Counts: Counts{Msgs: 3}}}})
 	// Turn it back into a v1 database.
-	if _, err := d.db.Exec(`DROP TABLE stats_hourly; ALTER TABLE events DROP COLUMN source; PRAGMA user_version = 1`); err != nil {
+	if _, err := d.db.Exec(dropV4Indexes + `DROP TABLE stats_hourly; ALTER TABLE events DROP COLUMN source; PRAGMA user_version = 1`); err != nil {
 		t.Fatal(err)
 	}
 	d.Close()

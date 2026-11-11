@@ -105,31 +105,44 @@ func (d *DB) QueryDevices(ctx context.Context, q DeviceQuery) (DevicePage, error
 	default:
 		return page, fmt.Errorf("index: unknown device sort %q", q.Sort)
 	}
-	rateTo := int64(1<<62 - 1)
+	rateFrom, rateTo := ms(q.RateFrom.Truncate(time.Minute)), int64(1<<62-1)
 	if !q.RateTo.IsZero() {
 		rateTo = ms(q.RateTo)
 	}
-	rows, err := d.db.QueryContext(ctx, `SELECT `+deviceCols+`, COALESCE(r.rate, 0) AS rate FROM devices d
-		LEFT JOIN (SELECT device_id, sum(msgs) AS rate FROM stats WHERE minute >= ? AND minute < ? GROUP BY device_id) r
-		ON r.device_id = d.id WHERE `+w+` ORDER BY `+order+` LIMIT ? OFFSET ?`,
-		append(append([]any{ms(q.RateFrom.Truncate(time.Minute)), rateTo}, args...), q.Limit, q.Offset)...)
+	// Pick the page's IDs first, from cheap columns (indexes serve the time and
+	// name orders), then read the costly columns (bytes on disk, the rate) for
+	// those rows only. Computing them for every device before sorting made a
+	// page of 30 cost all 10,000 (review N15, slow machines).
+	var inner string
+	inArgs := args
+	if q.Sort == "" || q.Sort == SortRate {
+		inner = `SELECT d.id FROM devices d
+			LEFT JOIN (SELECT device_id, sum(msgs) AS rate FROM stats WHERE minute >= ? AND minute < ? GROUP BY device_id) r
+			ON r.device_id = d.id WHERE ` + w + ` ORDER BY COALESCE(r.rate, 0) DESC, d.id LIMIT ? OFFSET ?`
+		inArgs = append([]any{rateFrom, rateTo}, args...)
+	} else {
+		inner = `SELECT d.id FROM devices d WHERE ` + w + ` ORDER BY ` + order + ` LIMIT ? OFFSET ?`
+	}
+	inArgs = append(append([]any{}, inArgs...), q.Limit, q.Offset)
+	idRows, err := d.db.QueryContext(ctx, inner, inArgs...)
 	if err != nil {
 		return page, err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var dv Device
-		var hidden int
-		var first, last int64
-		if err := rows.Scan(&dv.ID, &dv.IP, &dv.Name, &dv.Group, &hidden, &first, &last, &dv.TotalMsgs, &dv.TotalBytes,
-			&dv.BytesOnDisk, &dv.RecentMsgs); err != nil {
+	var ids []string
+	for idRows.Next() {
+		var id string
+		if err := idRows.Scan(&id); err != nil {
+			idRows.Close()
 			return page, err
 		}
-		dv.Hidden = hidden != 0
-		dv.FirstSeen, dv.LastHeard = tm(first), tm(last)
-		page.Devices = append(page.Devices, dv)
+		ids = append(ids, id)
 	}
-	return page, rows.Err()
+	idRows.Close()
+	if err := idRows.Err(); err != nil || len(ids) == 0 {
+		return page, err
+	}
+	page.Devices, err = d.DevicesByID(ctx, ids, q.RateFrom, q.RateTo)
+	return page, err
 }
 
 // Groups returns every group with its number of non-hidden devices, sorted by name.
