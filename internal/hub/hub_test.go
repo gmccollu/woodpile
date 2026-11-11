@@ -83,6 +83,7 @@ func TestFilters(t *testing.T) {
 		{"severities 3,7", Filter{Severities: SeveritySet(0).With(3).With(7)}, []string{"<11>Link DOWN on port 1", "<15>debug noise"}},
 		{"severities unknown only", Filter{Severities: SeverityUnknownBit}, []string{"no pri: Link down"}},
 		{"severities win over min_severity", Filter{Severities: SeveritySet(0).With(6), MinSeverity: sev(0)}, []string{"<14>user login ok"}},
+		{"severities none", Filter{Severities: SeverityNone, MinSeverity: sev(7)}, nil},
 		{"all severities", Filter{Severities: AllSeverities}, []string{"<11>Link DOWN on port 1", "<14>user login ok", "<15>debug noise", "no pri: Link down", "<12>Ünïcode WARNING"}},
 	}
 	for _, c := range cases {
@@ -156,7 +157,10 @@ func TestParseSeverities(t *testing.T) {
 	if s, err := ParseSeverities("UNKNOWN,7"); err != nil || s != SeverityUnknownBit|1<<7 {
 		t.Errorf("%b %v", s, err)
 	}
-	for _, bad := range []string{"8", "-1", "warn", "3,x", "03", "1.0", " 9 "} {
+	if s, err := ParseSeverities("none"); err != nil || s != SeverityNone || s.Has(0) || s.Has(-1) {
+		t.Errorf("none: %b %v", s, err)
+	}
+	for _, bad := range []string{"8", "-1", "warn", "3,x", "03", "1.0", " 9 ", "none,3", "unknown,none"} {
 		if _, err := ParseFilter(url.Values{"severities": {bad}}); err == nil {
 			t.Errorf("severities=%q accepted", bad)
 		}

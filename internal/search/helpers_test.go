@@ -1,0 +1,331 @@
+package search
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/netip"
+	"regexp"
+	"slices"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/gmccollu/woodpile/internal/hub"
+	"github.com/gmccollu/woodpile/internal/index"
+	"github.com/gmccollu/woodpile/internal/model"
+	"github.com/gmccollu/woodpile/internal/store"
+	"github.com/gmccollu/woodpile/internal/syslog"
+)
+
+var bg = context.Background()
+
+var quiet = slog.New(slog.NewTextHandler(io.Discard, nil))
+
+type fakeClock struct {
+	mu sync.Mutex
+	t  time.Time
+}
+
+func (c *fakeClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.t
+}
+
+func (c *fakeClock) Set(t time.Time) {
+	c.mu.Lock()
+	c.t = t
+	c.mu.Unlock()
+}
+
+// rec is one message the fixture wrote.
+type rec struct {
+	ms  int64
+	dev string
+	raw string
+	seq int
+}
+
+type fixture struct {
+	t     *testing.T
+	dir   string
+	idx   *index.DB
+	st    *store.Store
+	clock *fakeClock
+	recs  []rec
+	eng   *Engine
+	day0  time.Time
+	devs  []netip.Addr
+}
+
+var (
+	devA = netip.MustParseAddr("192.0.2.1")
+	devB = netip.MustParseAddr("192.0.2.2")
+	devC = netip.MustParseAddr("198.51.100.7")
+	devH = netip.MustParseAddr("2001:db8::5") // hidden
+)
+
+// newFixture writes perDay messages per device per day for days days through a
+// real store with small parts, so the data dir has compressed parts and day
+// files, and plain active files on the last day. Devices A and B are in group
+// HQ, C has no group and H is hidden.
+func newFixture(t *testing.T, days, perDay int) *fixture {
+	t.Helper()
+	return newFixtureParts(t, days, perDay, 16<<10)
+}
+
+// newBigFixture has files large enough for many checkpoints (one every ~64 KiB
+// written over more than a minute), so time ranges seek inside files.
+func newBigFixture(t *testing.T) *fixture {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("big fixture")
+	}
+	return newFixtureParts(t, 2, 10000, 512<<10)
+}
+
+func newFixtureParts(t *testing.T, days, perDay int, partBytes int64) *fixture {
+	t.Helper()
+	dir := t.TempDir()
+	idx, err := index.Open(dir + "/" + index.FileName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { idx.Close() })
+	day0 := time.Date(2026, 11, 8, 0, 0, 0, 0, time.UTC)
+	clock := &fakeClock{t: day0}
+	st, err := store.Open(store.Options{
+		DataDir: dir, Index: idx, PartBytes: partBytes, Manual: true, Clock: clock.Now, Logger: quiet,
+		DiskUsage: func(string) (uint64, uint64, error) { return 1 << 40, 1 << 41, nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &fixture{t: t, dir: dir, idx: idx, st: st, clock: clock, day0: day0, devs: []netip.Addr{devA, devB, devC, devH}}
+	t.Cleanup(func() { st.Close() })
+	seq := 0
+	for d := 0; d < days; d++ {
+		start := day0.Add(time.Duration(d) * 24 * time.Hour)
+		clock.Set(start.Add(time.Second))
+		if err := st.Maintain(); err != nil {
+			t.Fatal(err)
+		}
+		step := (24 * time.Hour) / time.Duration(perDay*len(f.devs)+1)
+		at := start.Add(time.Second)
+		for i := 0; i < perDay; i++ {
+			for _, a := range f.devs {
+				at = at.Add(step)
+				f.write(a, at, seq)
+				seq++
+			}
+			if i%max(perDay/6, 1) == 0 {
+				clock.Set(at)
+				if err := st.Maintain(); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		clock.Set(at)
+		if err := st.Maintain(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.flush()
+	for _, a := range []netip.Addr{devA, devB} {
+		g := "HQ"
+		if _, err := idx.UpdateDevice(bg, model.DeviceID(a), index.DeviceUpdate{Group: &g}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	yes := true
+	if _, err := idx.UpdateDevice(bg, model.DeviceID(devH), index.DeviceUpdate{Hidden: &yes}); err != nil {
+		t.Fatal(err)
+	}
+	f.eng = New(Options{DataDir: dir, Index: idx, Now: clock.Now, Logger: quiet, block: 4 << 10})
+	return f
+}
+
+// msgText makes a varied message for seq.
+func msgText(seq int) string {
+	sev := seq % 8
+	switch seq % 13 {
+	case 0:
+		return fmt.Sprintf("no pri: Link down seq=%06d", seq)
+	case 1:
+		return fmt.Sprintf("<%d>host app: multi\nline\r\nmsg seq=%06d", 8+sev, seq)
+	case 2:
+		return fmt.Sprintf(`<%d>host app: path C:\temp\new seq=%06d \n literal`, 16+sev, seq)
+	case 3:
+		return fmt.Sprintf("<%d>host app: Ünïcode WARNING seq=%06d", 24+sev, seq)
+	case 4:
+		return fmt.Sprintf("\xef\xbb\xbf<%d>1 2026-11-10T00:00:00Z host app - - - Link DOWN on port %d seq=%06d", sev, seq%48, seq)
+	case 5:
+		return fmt.Sprintf("<999>bad pri seq=%06d", seq)
+	}
+	return fmt.Sprintf("<%d>Nov 10 00:00:00 host app[%d]: conn opened tcp 203.0.113.%d seq=%06d", 128+sev, seq%7, seq%250, seq)
+}
+
+func (f *fixture) write(a netip.Addr, at time.Time, seq int) {
+	raw := msgText(seq)
+	if err := f.st.Write(model.Message{Received: at, Sender: a, Raw: []byte(raw)}); err != nil {
+		f.t.Fatal(err)
+	}
+	f.recs = append(f.recs, rec{ms: at.UnixMilli(), dev: model.DeviceID(a), raw: raw, seq: seq})
+}
+
+func (f *fixture) flush() {
+	if err := f.st.Flush(); err != nil {
+		f.t.Fatal(err)
+	}
+	if err := f.st.Maintain(); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+// expect is the brute-force answer to q over everything written.
+func (f *fixture) expect(q Query) []rec {
+	fromMs, toMs, err := f.eng.resolveRange(q.Filter)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	devs := map[string]bool{}
+	named := map[string]bool{}
+	for _, d := range q.Devices {
+		named[d] = true
+	}
+	for _, a := range f.devs {
+		id := model.DeviceID(a)
+		group := ""
+		if a == devA || a == devB {
+			group = "HQ"
+		}
+		if len(named) > 0 && !named[id] || len(named) == 0 && a == devH {
+			continue
+		}
+		if q.Group != "" && group != q.Group || q.Ungrouped && group != "" {
+			continue
+		}
+		devs[id] = true
+	}
+	var re *regexp.Regexp
+	if q.Regex {
+		expr := q.Q
+		if !q.Case {
+			expr = "(?i)" + expr
+		}
+		re = regexp.MustCompile(expr)
+	}
+	var out []rec
+	for _, r := range f.recs {
+		if !devs[r.dev] || r.ms < fromMs || r.ms >= toMs {
+			continue
+		}
+		if q.Severities != 0 {
+			var m model.Message
+			syslog.Parse([]byte(r.raw), &m)
+			if !q.Severities.Has(m.Severity) {
+				continue
+			}
+		}
+		switch {
+		case q.Q == "":
+		case re != nil:
+			if !re.MatchString(r.raw) {
+				continue
+			}
+		case q.Case:
+			if !strings.Contains(r.raw, q.Q) {
+				continue
+			}
+		default:
+			if !strings.Contains(strings.ToLower(r.raw), strings.ToLower(q.Q)) {
+				continue
+			}
+		}
+		out = append(out, r)
+	}
+	slices.SortStableFunc(out, func(a, b rec) int {
+		if a.ms != b.ms {
+			if q.Asc {
+				return cmpInt(a.ms, b.ms)
+			}
+			return cmpInt(b.ms, a.ms)
+		}
+		if a.dev != b.dev {
+			return strings.Compare(a.dev, b.dev)
+		}
+		if q.Asc {
+			return a.seq - b.seq
+		}
+		return b.seq - a.seq
+	})
+	return out
+}
+
+func cmpInt(a, b int64) int {
+	switch {
+	case a < b:
+		return -1
+	case a > b:
+		return 1
+	}
+	return 0
+}
+
+// all pages through q and returns every result, checking each page.
+func (f *fixture) all(q Query) ([]Line, int) {
+	f.t.Helper()
+	var out []Line
+	pages := 0
+	for {
+		p, err := f.eng.Search(bg, q)
+		if err != nil {
+			f.t.Fatalf("page %d: %v", pages, err)
+		}
+		pages++
+		if len(p.Results) > max(q.Limit, 0) && q.Limit > 0 {
+			f.t.Fatalf("page %d has %d results, limit %d", pages, len(p.Results), q.Limit)
+		}
+		out = append(out, p.Results...)
+		if p.NextCursor == "" {
+			return out, pages
+		}
+		q.Cursor = p.NextCursor
+		if pages > 100000 {
+			f.t.Fatal("no end")
+		}
+	}
+}
+
+// same compares results with the expected records.
+func same(t *testing.T, what string, got []Line, want []rec) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Errorf("%s: %d results, want %d", what, len(got), len(want))
+	}
+	for i := 0; i < min(len(got), len(want)); i++ {
+		g, w := got[i], want[i]
+		if g.Received.UnixMilli() != w.ms || g.DeviceID != w.dev || string(g.Raw) != w.raw {
+			t.Errorf("%s: result %d = %s %s %q, want %s %s %q", what, i, g.Received.Format(time.RFC3339Nano), g.DeviceID, g.Raw,
+				time.UnixMilli(w.ms).UTC().Format(time.RFC3339Nano), w.dev, w.raw)
+			return
+		}
+		var m model.Message
+		syslog.Parse(g.Raw, &m)
+		if g.Severity != m.Severity {
+			t.Errorf("%s: result %d severity %d, want %d", what, i, g.Severity, m.Severity)
+			return
+		}
+	}
+}
+
+func sevs(v ...int) hub.SeveritySet {
+	var s hub.SeveritySet
+	for _, x := range v {
+		s = s.With(x)
+	}
+	return s
+}

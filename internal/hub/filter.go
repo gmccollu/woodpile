@@ -28,11 +28,16 @@ type Filter struct {
 }
 
 // SeveritySet is a set of syslog severities 0-7 plus "unknown" (no parseable
-// PRI). The zero value is the empty set, which as a filter means "all".
+// PRI). The zero value means "no severity filter" (all pass), as an empty
+// severities= does; SeverityNone (severities=none) lets nothing pass.
 type SeveritySet uint16
 
 // SeverityUnknownBit is the set bit for messages with no parseable PRI.
 const SeverityUnknownBit SeveritySet = 1 << 8
+
+// SeverityNone is the set that matches nothing (severities=none). Has is false
+// for every severity.
+const SeverityNone SeveritySet = 1 << 9
 
 // AllSeverities holds 0-7 and unknown.
 const AllSeverities SeveritySet = 0x1ff
@@ -54,20 +59,30 @@ func (s SeveritySet) With(sev int) SeveritySet {
 }
 
 // ParseSeverities reads a severities= value: a comma-separated list of 0-7 and
-// "unknown". Blank items are ignored, so "" is the empty set (meaning all).
+// "unknown", or "none" on its own (SeverityNone). Blank items are ignored, so ""
+// is the zero set (meaning all).
 func ParseSeverities(v string) (SeveritySet, error) {
 	var s SeveritySet
+	none := false
 	for _, item := range strings.Split(v, ",") {
 		item = strings.TrimSpace(item)
 		switch {
 		case item == "":
+		case strings.EqualFold(item, "none"):
+			none = true
 		case strings.EqualFold(item, "unknown"):
 			s |= SeverityUnknownBit
 		case len(item) == 1 && item[0] >= '0' && item[0] <= '7':
 			s |= 1 << uint(item[0]-'0')
 		default:
-			return 0, fmt.Errorf("severities: %q is not a severity (0 to 7, or unknown)", item)
+			return 0, fmt.Errorf("severities: %q is not a severity (0 to 7, unknown, or none on its own)", item)
 		}
+	}
+	if none {
+		if s != 0 {
+			return 0, fmt.Errorf("severities: none can't be combined with other values")
+		}
+		return SeverityNone, nil
 	}
 	return s, nil
 }
