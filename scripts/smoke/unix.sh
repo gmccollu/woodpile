@@ -191,8 +191,14 @@ deb | rpm)
 	say "reindex: refused as root, works as the service's user (re-test N1)"
 	$SUDO systemctl stop woodpile.service
 	refuses "sudo -u woodpile" $SUDO "$(command -v woodpile)" reindex
-	if [ -n "$SUDO" ]; then as_wp="sudo -u woodpile"; else as_wp="runuser -u woodpile --"; fi
-	$as_wp "$(command -v woodpile)" reindex || die "reindex as the woodpile user failed"
+	wp=$(command -v woodpile)
+	if [ -n "$SUDO" ]; then
+		sudo -u woodpile "$wp" reindex || die "reindex as the woodpile user failed"
+	else
+		# Root in a minimal container (no sudo or runuser): drop to woodpile with Python.
+		python3 -c 'import os, pwd, sys; p = pwd.getpwnam("woodpile"); os.setgroups([]); os.setgid(p.pw_gid); os.setuid(p.pw_uid); os.execv(sys.argv[1], sys.argv[1:])' \
+			"$wp" reindex || die "reindex as the woodpile user failed"
+	fi
 	ok "reindex runs as the woodpile user"
 	$SUDO test ! -O "$DATA/woodpile.lock" || die "the lock file is root's"
 	$SUDO systemctl start woodpile.service
