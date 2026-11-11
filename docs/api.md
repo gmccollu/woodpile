@@ -78,7 +78,8 @@ Hidden devices are included, with `"hidden": true`.
 
 Both `/api/live` and `/api/search` take either:
 - `severities=0,3,7,unknown`: any set of syslog severities (0 emerg … 7 debug) plus `unknown` (no parseable PRI).
-  Only those are returned. An empty or missing value means all.
+  Only those are returned. An empty or missing value means all; `severities=none` means nothing (the live tail
+  sends no messages, search returns no results). `none` can't be combined with other values.
 - `min_severity=N`: the older ceiling form (0…N, plus unknown). If both are given, `severities` wins.
 
 An invalid value (not 0–7 or `unknown`) is a `400 {"error": ...}`.
@@ -99,30 +100,36 @@ An invalid value (not 0–7 or `unknown`) is a `400 {"error": ...}`.
 - `order`: `desc` (newest first, the default) or `asc`.
 - `limit`: default 500, max 5,000.
 - `cursor`: from the previous page's `next_cursor`; the other parameters must be the same as on the first page, or
-  the server returns `400`.
+  the server returns `400`. `limit` is the exception: it may change from page to page.
 - Each request has a time budget of 10 s. If the budget runs out before `limit` results, the response has what it
   found, `partial: true` and a `next_cursor` that resumes where the scan stopped. The UI keeps asking while
   `partial` is true and the user hasn't cancelled.
 - `next_cursor` is empty when the range is exhausted.
+- `scanned_bytes`, `scanned_files` and `elapsed_ms` are for this request only; the UI adds them up across pages.
 - `ref` identifies one line for `/api/context`. It stays valid until the file is deleted by retention.
 
-`GET /api/context?ref=opaque&before=50&after=50` → `{"lines": [...same shape as results...], "hit_index": 50}`
+`GET /api/context?ref=opaque&before=50&after=50` → `{"lines": [...same shape as results...], "hit_index": 50,
+"at_start": false, "at_end": false}`
+- `at_start` / `at_end` are true when there are no older / newer stored lines for that device.
 - Lines come from the same device, in file order, and can cross into the neighbouring part or day file.
 - `before` / `after` max 500 each. A `ref` whose file is gone is a `404`.
 
 ## Exports
 
-`POST /api/exports` body `{"devices": ["10.1.0.1"], "from": "...", "to": "...", "severities": [0, 1, "unknown"], "q": ""}`
-→ `202 {"id": "exp_..."}`
-- `devices` is required (at least one). `severities` and `q` are optional filters with the same meaning as search;
-  without them every line in range is exported.
+`POST /api/exports` body `{"devices": ["10.1.0.1"], "group": "", "ungrouped": false, "from": "...", "to": "...",
+"severities": [0, 1, "unknown"], "q": "", "regex": false, "case": false}` → `202 {"id": "exp_..."}`
+- Pick devices with `devices`, `group` or `ungrouped` (at least one must select a device). `severities`, `q`, `regex`
+  and `case` are optional filters with exactly the same meaning as search, so "Export these results" exports what
+  the search showed. Without them every line in range is exported.
 - One export builds at a time; a second `POST` while one is building is queued.
 
 `POST /api/exports/estimate` (same body) → `{"lines": 123456, "bytes": 45678901, "files": 12}`: an upper bound
 from the index, without scanning, so the UI can show the size before building.
 
 `GET /api/exports` → `[{"id", "created", "devices", "from", "to", "state": "queued|building|ready|failed|expired",
-"progress": 0.42, "lines": 0, "size_bytes": 0, "error": ""}]`, newest first.
+"progress": 0.42, "lines": 0, "size_bytes": 0, "error": "", "ready_at": null, "expires_at": null,
+"filters": {"group": "", "ungrouped": false, "severities": [], "q": "", "regex": false, "case": false}}]`, newest
+first. `ready_at` / `expires_at` are set once the export is ready; `filters` echoes the request.
 
 `GET /api/exports/{id}` → one entry, same shape.
 
