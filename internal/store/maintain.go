@@ -296,8 +296,8 @@ func (s *Store) checkDisk() (free, total uint64, ok bool) {
 	return free, total, true
 }
 
-// guardDisk keeps free space above max(MinFreeBytes, MinFreePercent): it deletes the
-// oldest closed files (compressed first, then ones still awaiting compression; never
+// guardDisk keeps free space above max(MinFreeBytes, MinFreePercent): it asks
+// Reclaim (exports) first, then deletes the oldest closed files (compressed first, then ones still awaiting compression; never
 // an active file), and pauses writing when nothing is left to delete.
 func (s *Store) guardDisk(now time.Time) {
 	free, total, ok := s.checkDisk()
@@ -305,6 +305,14 @@ func (s *Store) guardDisk(now time.Time) {
 		return
 	}
 	thr := s.minFree(total)
+	if free < thr && s.opts.Reclaim != nil {
+		if freed := s.opts.Reclaim(thr - free); freed > 0 {
+			if free, total, ok = s.checkDisk(); !ok {
+				return
+			}
+			thr = s.minFree(total)
+		}
+	}
 	if free < thr {
 		cands := s.sortedClosed(func(e *catEntry) bool { return e.name.Compressed })
 		cands = append(cands, s.sortedClosed(func(e *catEntry) bool { return !e.name.Compressed })...)

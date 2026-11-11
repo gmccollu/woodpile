@@ -61,6 +61,12 @@ type Options struct {
 	RetentionBytes int64   // delete the oldest compressed files while all logs exceed this
 	MinFreeBytes   uint64  // low-disk guard: keep at least max(MinFreeBytes,
 	MinFreePercent float64 // MinFreePercent of the volume) free
+	// Reclaim, if set, is called by the low-disk guard before it deletes any log
+	// file, with the number of bytes it needs freed. It should delete files that
+	// matter less than logs (exports) and return how many bytes it freed; the
+	// guard then reads the free space again. It runs on the maintenance loop, so
+	// it must be quick and must not call the Store.
+	Reclaim func(need uint64) (freed uint64)
 
 	FlushInterval time.Duration // write buffers to the files at least this often
 	FlushBytes    int           // and whenever a device's buffer reaches this

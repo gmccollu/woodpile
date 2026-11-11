@@ -412,6 +412,50 @@ func TestLowDiskGuardAndPause(t *testing.T) {
 	}
 }
 
+func TestLowDiskGuardReclaimsFirst(t *testing.T) {
+	var asked []uint64
+	var e *env
+	reclaimable := uint64(2 << 20) // say, exports
+	e = newEnv(t, func(o *Options) {
+		o.MinFreeBytes, o.MinFreePercent = 1<<20, 5
+		o.Reclaim = func(need uint64) uint64 {
+			asked = append(asked, need)
+			freed := min(reclaimable, need+need/2)
+			reclaimable -= freed
+			e.disk.mu.Lock()
+			e.disk.other -= freed
+			e.disk.mu.Unlock()
+			return freed
+		}
+	})
+	e.disk.total = 100 << 20 // threshold: 5 MiB
+	writeDays(e, []netip.Addr{ip(1)}, 5, 600000)
+	logs := uint64(duLogs(e.dir))
+	// 300 KB short: the exports cover it, so no log is deleted.
+	e.disk.setOther(100<<20 - logs - (5<<20 - 300<<10))
+	e.maintain()
+	if len(asked) != 1 || asked[0] < 300<<10 || asked[0] > 310<<10 {
+		t.Fatalf("Reclaim asked for %v", asked)
+	}
+	if hist, _ := e.idx.Deletions(bg, time.Time{}, time.Time{}, 0); len(hist) != 0 {
+		t.Fatalf("deleted logs although exports covered it: %+v", hist)
+	}
+	// 3 MiB short: the rest of the exports (~1.5 MiB) aren't enough, so the
+	// oldest logs go too.
+	e.disk.setOther(100<<20 - uint64(duLogs(e.dir)) - (5<<20 - 3<<20))
+	e.maintain()
+	if reclaimable != 0 || len(asked) != 2 {
+		t.Fatalf("reclaimable left %d, asked %v", reclaimable, asked)
+	}
+	hist, _ := e.idx.Deletions(bg, time.Time{}, time.Time{}, 0)
+	if len(hist) == 0 || hist[0].Reason != index.ReasonLowDisk {
+		t.Fatalf("history %+v", hist)
+	}
+	if free, _, _ := e.disk.usage(""); free < 5<<20 {
+		t.Fatalf("free %d after the guard", free)
+	}
+}
+
 func TestDiskUsageErrorDisablesGuard(t *testing.T) {
 	e := newEnv(t, func(o *Options) {
 		o.DiskUsage = func(string) (uint64, uint64, error) { return 0, 0, errors.New("statfs: boom") }

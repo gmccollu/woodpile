@@ -109,7 +109,8 @@ type Kind string
 // Event kinds. The store records rotate, compress (failures), delete, drop, pause,
 // resume and recover; the service and listeners record start, stop and bind; the
 // HTTP layer records ui (UI server start, bind errors, mode changes, certificates)
-// and auth (password changes, login lockouts).
+// and auth (password changes, login lockouts); the export queue records export
+// (queued, ready, failed, cancelled, deleted, expired).
 const (
 	KindStart    Kind = "start"
 	KindStop     Kind = "stop"
@@ -124,6 +125,7 @@ const (
 	KindError    Kind = "error"
 	KindUI       Kind = "ui"
 	KindAuth     Kind = "auth"
+	KindExport   Kind = "export"
 )
 
 // Event is one of the service's own events.
