@@ -12,14 +12,18 @@ Change this file first if the contract changes.
   "version": "0.1.0", "build": "abc1234", "os": "darwin/arm64",
   "data_dir": "/Library/Application Support/Woodpile",
   "started_at": "2026-11-10T20:00:00Z",
-  "udp_rcvbuf_bytes": 33554432,
+  "first_message_at": null,                   // null until the first message is received (drives the Welcome page)
+  "udp_rcvbuf_bytes": 33554432,               // what the OS actually granted
+  "udp_rcvbuf_requested_bytes": 33554432,
+  "releases_url": "",                         // build-time constant; empty until the project has a public home
   "kernel_drops_visible": false,
   "listeners": [
     {"proto": "udp", "addr": "0.0.0.0", "port": 514, "ok": true,  "error": ""},
     {"proto": "tcp", "addr": "0.0.0.0", "port": 514, "ok": false, "error": "bind: address already in use", "holder": "syslogd (pid 312)"}
   ],
   "host_ips": ["10.1.0.50", "fd00::50"],
-  "banners": [{"level": "error", "text": "TCP 514 is in use by syslogd (pid 312)."}]
+  "banners": [{"kind": "listener_bind", "level": "error", "text": "TCP 514 is in use by syslogd (pid 312).",
+               "action": "retry_listeners"}]   // action: "" | "retry_listeners"; kinds: listener_bind, writes_paused, low_disk
 }
 ```
 
@@ -31,11 +35,18 @@ Change this file first if the contract changes.
   "msgs_per_sec": 1284.2,
   "sparkline": [1100, 1180, 1250],            // msgs/sec averaged per minute, oldest first, last 60 minutes
   "devices": {"total": 14, "online": 12, "quiet": 1, "offline": 1},
-  "disk": {"used_bytes": 3435973836, "cap_bytes": 21474836480, "free_bytes": 400000000000, "days_kept": 31},
+  "disk": {"used_bytes": 3435973836, "cap_bytes": 21474836480, "free_bytes": 400000000000, "days_kept": 30},
   "dropped_24h": 0,                           // drops Woodpile itself saw (disk guard, write errors)
   "kernel_dropped_24h": null,                 // integer on Linux, null where the OS doesn't expose it
-  "truncated_24h": 0
+  "truncated_24h": 0,
+  "rejected_24h": 0                           // messages from senders outside the allowlist
 }
+```
+`days_kept` is the number of distinct UTC days that still have data on disk (today counts).
+`devices` counts exclude hidden devices.
+
+`GET /api/rejected` → `[{"ip": "198.51.100.7", "count_24h": 120, "last_seen": "..."}]` (senders refused by the allowlist)
+```
 ```
 
 ## Devices
@@ -47,13 +58,17 @@ Change this file first if the contract changes.
   "msgs_per_min": 36720, "total_msgs": 9123456, "bytes_on_disk": 123456789}]
 ```
 
+Hidden devices are included, with `"hidden": true`.
+
 `PATCH /api/devices/{id}` body `{"name": "...", "group": "...", "hidden": true}` (any subset) → the updated device.
 
 ## Live tail
 
-`GET /api/live?devices=10.1.0.1,10.1.0.2&group=HQ&min_severity=4&q=text` → `text/event-stream`.
+`GET /api/live?devices=10.1.0.1,10.1.0.2&group=HQ&ungrouped=true&min_severity=4&q=text` → `text/event-stream`.
 - `event: message` `data: {"received": "...", "device_id": "10.1.0.1", "severity": 6, "raw": "<134>..."}`
 - `event: sampled` `data: {"rate": 1284.2, "shown": 50}`: sent once a second while the server is sampling.
+- `group` and `ungrouped=true` are alternatives; `ungrouped=true` matches devices with no group.
+- `severity` is an integer 0–7, or `null` when the message had no parseable PRI.
 - `min_severity` is the numeric syslog severity ceiling (0 emerg … 7 debug); messages with an unknown severity
   are always included.
 - On connect, the server first sends up to the last 200 matching messages from the ring buffer.
@@ -76,7 +91,8 @@ Change this file first if the contract changes.
 ## Settings
 
 `GET /api/settings` / `PUT /api/settings` (whole object; the server validates and returns the saved object, or `400` with
-`{"errors": {"field": "message"}}`).
+`{"errors": {"listeners.udp.port": "message", "listeners.allowlist[2]": "message"}}`). Error keys are dotted JSON paths,
+with `[i]` for list items. `storage.data_dir` is read-only in v1: a PUT that changes it gets a `400` on that key.
 ```json
 {
   "listeners": {"udp": {"enabled": true, "addr": "0.0.0.0", "port": 514},
