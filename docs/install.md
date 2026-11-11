@@ -83,7 +83,18 @@ The installer:
 - installs the `Woodpile` service (automatic start, restarted if it fails) running as the virtual account
   `NT SERVICE\Woodpile`, which can write only to `C:\ProgramData\Woodpile`;
 - adds Windows Firewall rules for woodpile.exe on UDP 514 and TCP 514 only. The UI port isn't opened;
+- resets the ACL of `C:\ProgramData\Woodpile` and everything already in it (owner Administrators; links inside are
+  removed), and keeps only `SeChangeNotifyPrivilege` in the service's token;
 - adds a Start menu shortcut, **Woodpile**, that opens the UI.
+
+**Firewall profiles:** the two rules (**Woodpile syslog (UDP 514)** and **Woodpile syslog (TCP 514)**) apply to all
+network profiles, **Public included**, because devices often sit on a network Windows calls Public only because
+nobody told it otherwise, and they'd be silently blocked. To allow syslog only on Domain and Private networks
+(administrator PowerShell; repeat after an upgrade or repair, which re-creates the rules):
+
+```powershell
+Get-NetFirewallRule -DisplayName "Woodpile syslog (*)" | Set-NetFirewallRule -Profile Domain,Private
+```
 
 **Upgrade:** run the newer MSI. It replaces the old version and restarts the service; the config and logs stay.
 
@@ -100,7 +111,7 @@ or delete `C:\ProgramData\Woodpile` yourself after uninstalling.
 **Keep**. When you open it, Windows may show "Windows protected your PC"; choose **More info → Run anyway**. Signed
 installers will remove both prompts.
 
-**Scoop** (program only, no service): `scoop bucket add woodpile https://github.com/OWNER/scoop-bucket`, then
+**Scoop** (not published yet; program only, no service): `scoop bucket add woodpile https://github.com/gmccollu/scoop-bucket`, then
 `scoop install woodpile`, and run `woodpile run` in a terminal.
 
 ## macOS
@@ -135,7 +146,7 @@ skips this.) The `sudo installer` command above doesn't show the prompt.
 **macOS firewall:** if the application firewall is on (System Settings → Network → Firewall), allow incoming
 connections for `/usr/local/bin/woodpile` there (Options… → +) if devices can't reach port 514.
 
-**Homebrew** (program only, no service): `brew install --cask OWNER/tap/woodpile`, then `woodpile run`.
+**Homebrew** (not published yet; program only, no service): `brew install --cask gmccollu/tap/woodpile`, then `woodpile run`.
 
 ## Linux (deb and rpm)
 

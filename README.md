@@ -3,8 +3,13 @@
 A simple, reliable syslog server for Windows, macOS and Linux, with a clean web UI.
 Install it, point your devices at it, and it keeps every message as plain files within a disk budget.
 
-Status: early development. See [SPEC.md](SPEC.md) for the v1 design, [docs/install.md](docs/install.md) for the
-installers and [docs/api.md](docs/api.md) for the UI's API.
+**[Download Woodpile](https://github.com/gmccollu/woodpile/releases/latest)**: an installer for Windows (MSI), macOS
+(pkg) or Linux (deb, rpm), or a portable zip/tarball that runs with nothing installed.
+Then follow the **[user guide](docs/user-guide.md)**: install or run portable, point a device at it, find the logs,
+search, and export a zip for support. Questions: [FAQ](FAQ.md). What's new: [CHANGELOG.md](CHANGELOG.md).
+
+More: [docs/install.md](docs/install.md) (every installer in detail), [SPEC.md](SPEC.md) (the design),
+[docs/api.md](docs/api.md) (the UI's API), [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md).
 
 ## Features
 

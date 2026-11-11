@@ -6,6 +6,7 @@
 #   make fuzz       run every fuzz target for FUZZTIME (default 30s)
 #   make snapshot   goreleaser release --snapshot (archives, deb, rpm; nothing published)
 #   make check      goreleaser check + packaging lint
+#   make notices    regenerate THIRD_PARTY_NOTICES.txt (after a dependency change)
 #   make pkg        macOS .pkg (macOS only)          make msi: see packaging/windows/build-msi.ps1
 
 GO                 ?= go
@@ -21,12 +22,12 @@ LDFLAGS := -s -w -X main.version=$(patsubst v%,%,$(VERSION)) -X main.commit=$(CO
 # -race needs cgo; turn it off with RACE= if there's no C toolchain.
 RACE ?= -race
 
-.PHONY: all web build test vet fuzz snapshot check lint-packaging pkg clean help
+.PHONY: all web build test vet fuzz snapshot check lint-packaging notices pkg clean help
 
 all: build
 
 help:
-	@sed -n '1,10p' Makefile | sed 's/^# \{0,1\}//'
+	@sed -n '1,11p' Makefile | sed 's/^# \{0,1\}//'
 
 web:
 	@if [ -f web/package.json ]; then \
@@ -55,6 +56,9 @@ check: lint-packaging
 
 lint-packaging:
 	scripts/lint-packaging.sh
+
+notices:
+	scripts/third_party_notices.py
 
 pkg: web
 	packaging/macos/build-pkg.sh --version $(VERSION) --commit $(COMMIT)
