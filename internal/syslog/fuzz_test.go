@@ -29,10 +29,10 @@ func FuzzParse(f *testing.F) {
 		if !bytes.Equal(raw, orig) {
 			t.Fatalf("raw modified")
 		}
-		if (m.Facility == model.SeverityUnknown) != (m.Severity == model.SeverityUnknown) {
+		if (m.Facility == model.Unknown) != (m.Severity == model.Unknown) {
 			t.Fatalf("facility %d and severity %d disagree on unknown", m.Facility, m.Severity)
 		}
-		if m.Facility != model.SeverityUnknown && (m.Facility < 0 || m.Facility > 23 || m.Severity < 0 || m.Severity > 7) {
+		if m.Facility != model.Unknown && (m.Facility < 0 || m.Facility > 23 || m.Severity < 0 || m.Severity > 7) {
 			t.Fatalf("facility/severity out of range: %d/%d", m.Facility, m.Severity)
 		}
 		if !m.Timestamp.IsZero() && m.Timestamp.Location() != time.UTC {

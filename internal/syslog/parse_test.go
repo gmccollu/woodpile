@@ -8,7 +8,7 @@ import (
 	"woodpile/internal/model"
 )
 
-const unk = model.SeverityUnknown
+const unk = model.Unknown
 
 // recv is the default received time for the table: 2026-11-10 20:41:08 UTC.
 var recv = time.Date(2026, 11, 10, 20, 41, 8, 0, time.UTC)

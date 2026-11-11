@@ -6,8 +6,8 @@ import (
 	"time"
 )
 
-// SeverityUnknown marks a message whose PRI could not be parsed.
-const SeverityUnknown = -1
+// Unknown marks a Facility or Severity that could not be parsed (no valid PRI).
+const Unknown = -1
 
 // Message is one received syslog message. Raw is always the bytes exactly as received
 // (after framing, before any parsing); everything else is best-effort metadata.
@@ -18,12 +18,12 @@ type Message struct {
 	Truncated bool       // Raw was cut at the max message size
 
 	// Parsed metadata (zero values when absent).
-	Facility  int       // 0-23, or SeverityUnknown if no PRI
-	Severity  int       // 0-7, or SeverityUnknown if no PRI
+	Facility  int       // 0-23, or Unknown if no PRI
+	Severity  int       // 0-7, or Unknown if no PRI
 	Timestamp time.Time // the device's own timestamp as a UTC instant, if parseable. Zone-less device times are
 	// read as UTC wall-clock time (the real zone can't be known), so the UI labels this "device time".
-	Hostname  string
-	App       string
+	Hostname string
+	App      string
 }
 
 // DeviceID returns the directory-safe device ID for a sender: the IP as text,

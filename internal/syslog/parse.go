@@ -32,7 +32,7 @@ type result struct {
 
 // Parse fills m.Facility, m.Severity, m.Timestamp, m.Hostname and m.App from
 // raw. It overwrites all five (fields it cannot read are reset to their zero
-// values, and Facility/Severity to model.SeverityUnknown when there is no
+// values, and Facility/Severity to model.Unknown when there is no
 // valid PRI). It never modifies raw, never panics and keeps no reference to
 // raw: Hostname and App are copied (one allocation for both, none when both
 // are empty).
@@ -42,7 +42,7 @@ type result struct {
 // without a year gets one from m.Received (see stamp.time); if m.Received is
 // zero, such a timestamp is left zero.
 func Parse(raw []byte, m *model.Message) {
-	r := result{fac: model.SeverityUnknown, sev: model.SeverityUnknown}
+	r := result{fac: model.Unknown, sev: model.Unknown}
 	b := raw
 	i := skipLeading(b, 0, true)
 	hasPRI := false
