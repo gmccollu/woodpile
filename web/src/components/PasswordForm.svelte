@@ -2,7 +2,9 @@
   // Sets or changes the UI password (PUT /api/password). It lives inside the Settings
   // <form>, so it uses a group and handles Enter itself instead of nesting a form.
   import { ApiError, putPassword } from '../lib/api';
-  import { auth, loadSession } from '../lib/session.svelte';
+  import { auth, loadSession, login } from '../lib/session.svelte';
+
+  let { onchange }: { onchange?: () => void } = $props();
 
   let current = $state('');
   let next = $state('');
@@ -25,10 +27,25 @@
     }
     busy = true;
     try {
-      await putPassword(needCurrent ? current : '', next);
-      done = isSet ? 'Password changed. Other sessions were logged out.' : 'Password set. You can turn on LAN mode now.';
+      const first = !isSet;
+      const pw = next;
+      await putPassword(needCurrent ? current : '', pw);
       current = next = confirm = '';
+      if (first) {
+        // docs/api.md: the first password also turns on require_login_local, so this machine
+        // needs a login from now on. Log in with the password just set rather than bounce
+        // to the login screen.
+        try {
+          await login(pw);
+        } catch {
+          /* the login screen will ask */
+        }
+        done = 'Password set. Login is now required on this machine too; you can turn it off below.';
+      } else {
+        done = 'Password changed. Other sessions were logged out.';
+      }
       await loadSession();
+      onchange?.();
     } catch (x) {
       const e = x as ApiError;
       if (e.status === 400 && e.fields?.new) errs = { new: e.fields.new };

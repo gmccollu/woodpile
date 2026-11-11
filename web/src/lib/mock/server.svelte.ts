@@ -95,6 +95,14 @@ const probe = {
   sessionBodies: [] as string[],
   /** The body of the last POST /api/exports(/estimate). */
   lastExportBody: '',
+  /** Downloads served, and the status of the last download attempt. */
+  downloads: [] as { id: string; ticket: boolean; status: number }[],
+  lastDownloadStatus: 0,
+  lastTicketUrl: '',
+  /** Fetches a URL like a browser navigation would (no session header); returns the status. */
+  async navigateStatus(path: string): Promise<number> {
+    return (await mockTransport.fetch(path, { headers: {} })).status;
+  },
   get secret() {
     return authState.secret;
   },
@@ -105,7 +113,11 @@ const probe = {
 
 // mock_loggedin=1 starts with a session, as if this browser had logged in earlier: the mock
 // issues a secret and puts it where the UI keeps one.
-if (mock.lan && mock.loggedIn) {
+if (P.get('mock_require_local') === '1') {
+  // Localhost with require_login_local on (and so a password).
+  if (!authState.password) authState.password = MOCK_PASSWORD;
+}
+if (mock.loggedIn && (mock.lan || P.get('mock_require_local') === '1')) {
   authState.secret = newToken();
   setSessionSecret(authState.secret);
 }
@@ -326,7 +338,7 @@ let settings: Settings = {
     retention_bytes: 20 * GiB,
     part_bytes: 100 * MiB,
   },
-  ui: { lan_mode: P.get('mock_auth') === '1', port: 8514, cert_file: '', key_file: '', require_login_local: false },
+  ui: { lan_mode: P.get('mock_auth') === '1', port: 8514, cert_file: '', key_file: '', require_login_local: P.get('mock_require_local') === '1' },
   quiet: { quiet_after_seconds: 300, offline_after_seconds: 3600 },
 };
 
@@ -899,6 +911,9 @@ function exportTick() {
 }
 setInterval(exportTick, 250);
 
+/** Download tickets: opaque → export, issuing session's secret, expiry. */
+const tickets = new Map<string, { id: string; secret: string; until: number }>();
+
 const exportJSON = (e: MockExport): ExportInfo => {
   const { estimate: _e, ...rest } = e;
   void _e;
@@ -1043,7 +1058,8 @@ async function route(method: string, url: URL, body: unknown, header: string | n
     authState.secret = '';
     return new Response(null, { status: 204 });
   }
-  if (authOn() && !PUBLIC.includes(p)) {
+  const ticketed = method === 'GET' && /^\/api\/exports\/[^/]+\/download$/.test(p) && url.searchParams.has('ticket');
+  if (authOn() && !PUBLIC.includes(p) && !ticketed) {
     // docs/api.md: the cookie and the X-Woodpile-Session header together; either alone is a 401.
     if (!hasSession(header)) return err(401, 'Log in first.');
   }
@@ -1060,6 +1076,8 @@ async function route(method: string, url: URL, body: unknown, header: string | n
     const len = new TextEncoder().encode(b.new ?? '').length;
     if (len < 8 || len > 1024)
       return json({ error: 'That password is not allowed.', errors: { new: 'Use 8 to 1024 characters.' } }, 400);
+    // docs/api.md: the first password also turns on require_login_local.
+    if (!authState.password) settings.ui.require_login_local = true;
     authState.password = b.new ?? '';
     return new Response(null, { status: 204 });
   }
@@ -1174,12 +1192,31 @@ async function route(method: string, url: URL, body: unknown, header: string | n
     return json({ id: e.id }, 202);
   }
   if (method === 'GET' && p === '/api/exports') return json(exportsList.map(exportJSON));
+  const tk = p.match(/^\/api\/exports\/([^/]+)\/ticket$/);
+  if (tk && method === 'POST') {
+    const e = exportsList.find((x) => x.id === decodeURIComponent(tk[1]));
+    if (!e || e.state === 'expired') return err(404, 'No such export.');
+    if (e.state !== 'ready') return err(409, 'That export is not ready yet.');
+    const t = newToken();
+    tickets.set(t, { id: e.id, secret: authState.secret, until: now + 60_000 });
+    probe.lastTicketUrl = `/api/exports/${encodeURIComponent(e.id)}/download?ticket=${t}`;
+    return json({ url: probe.lastTicketUrl });
+  }
   const ex = p.match(/^\/api\/exports\/([^/]+)(\/download)?$/);
   if (ex) {
     const k = exportsList.findIndex((e) => e.id === decodeURIComponent(ex[1]));
     const e = exportsList[k];
     if (!e) return err(404, 'No such export.');
     if (method === 'GET' && ex[2]) {
+      // A ticket: single-use, 60 s, bound to the session (and its cookie) and to this export.
+      const t = url.searchParams.get('ticket');
+      if (t !== null) {
+        const tk2 = tickets.get(t);
+        tickets.delete(t);
+        if (!tk2 || tk2.until < now || tk2.id !== e.id || (authOn() && (!mock.loggedIn || tk2.secret !== authState.secret)))
+          return err(401, 'That download link has expired. Ask for a new one.');
+      }
+      probe.downloads.push({ id: e.id, ticket: t !== null, status: 200 });
       if (e.state === 'expired') return err(404, 'That export has expired.');
       if (e.state !== 'ready') return err(409, 'That export is not ready yet.');
       const name = `woodpile-${e.from.slice(0, 16).replace(/:/g, '')}-${e.to.slice(0, 16).replace(/:/g, '')}.zip`;
@@ -1210,7 +1247,9 @@ export const mockTransport: Transport = {
     return route(method, url, body, header, init?.signal ?? undefined);
   },
   async download(path) {
-    const res = await mockTransport.fetch(path);
+    // Like a browser download: the cookie goes along, the X-Woodpile-Session header can't.
+    const res = await mockTransport.fetch(path, { headers: {} });
+    probe.lastDownloadStatus = res.status;
     if (!res.ok) return;
     const a = document.createElement('a');
     a.href = URL.createObjectURL(await res.blob());

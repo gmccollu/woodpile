@@ -4,8 +4,10 @@
     createExport,
     deleteExport,
     estimateExport,
+    ApiError,
     downloadsViaTransport,
     exportDownloadUrl,
+    exportTicket,
     listExports,
     transportDownload,
     type ExportEstimate,
@@ -176,10 +178,39 @@
   }
 
   // A plain link streams the zip; only mock mode (no server) needs to go through the transport.
-  function download(ev: MouseEvent, e: ExportInfo) {
-    if (!downloadsViaTransport()) return;
+  // Downloads always go through a fresh ticket (docs/api.md): a plain link can't carry the
+  // session header, and the ticket URL keeps the browser's own download handling for big
+  // files. A 401 shows the login (api.ts); a gone or unready export refreshes the list.
+  let downloading = $state('');
+  let downloadError = $state<Record<string, string>>({});
+  async function download(ev: MouseEvent, e: ExportInfo) {
     ev.preventDefault();
-    transportDownload(exportDownloadUrl(e.id));
+    if (downloading) return;
+    downloading = e.id;
+    downloadError = { ...downloadError, [e.id]: '' };
+    try {
+      const { url } = await exportTicket(e.id);
+      if (downloadsViaTransport()) await transportDownload(url);
+      else {
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = '';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+      }
+    } catch (x) {
+      const err = x as ApiError;
+      if (err.status !== 401) {
+        downloadError = {
+          ...downloadError,
+          [e.id]: err.status === 404 ? 'That export is gone. It may have expired.' : err.status === 409 ? "It isn't ready yet." : err.message,
+        };
+        kick();
+      }
+    } finally {
+      downloading = '';
+    }
   }
 
   // A group export may list no devices (the server resolves the group when it builds).
@@ -306,8 +337,8 @@
               </div>
               <div class="flex shrink-0 items-center gap-2">
                 {#if e.state === 'ready'}
-                  <a class="pill-btn no-underline" href={exportDownloadUrl(e.id)} download onclick={(ev) => download(ev, e)}>
-                    <Icon name="download" size={14} />Download
+                  <a class="pill-btn no-underline" href={exportDownloadUrl(e.id)} download onclick={(ev) => download(ev, e)} aria-busy={downloading === e.id}>
+                    <Icon name="download" size={14} />{downloading === e.id ? 'Starting…' : 'Download'}
                   </a>
                 {/if}
                 <button type="button" class="ghost-btn" onclick={() => remove(e)}>
@@ -326,7 +357,11 @@
               <div class="mt-1 text-[12.5px] text-muted">
                 {num(e.lines)} lines · {bytes(e.size_bytes)} · expires in {remaining(expiresIn(e))}
               </div>
-            {:else if e.state === 'failed'}
+            {/if}
+            {#if downloadError[e.id]}
+              <div class="mt-1 text-[12.5px] font-medium text-bad-fg" role="alert">{downloadError[e.id]}</div>
+            {/if}
+            {#if e.state === 'failed'}
               <div class="mt-1 text-[12.5px] font-medium text-bad-fg">{e.error || 'The build failed.'}</div>
             {:else if e.state === 'expired'}
               <div class="mt-1 text-[12.5px] text-muted">Deleted after 24 hours. Build it again if you still need it.</div>

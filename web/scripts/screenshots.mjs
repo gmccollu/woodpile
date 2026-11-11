@@ -570,6 +570,27 @@ const SHOTS = [
     wait: 2500,
     check: `['Stores', 'Warehouses', 'Lab', 'HQ', 'Ungrouped'].every((g) => [...document.querySelectorAll('[role=tab]')].some((t) => t.textContent.trim() === g))`,
   },
+  ...[
+    ['lan', '/?mock_panel=0&mock_auth=1&mock_loggedin=1#/export'],
+    ['require-login-local', '/?mock_panel=0&mock_require_local=1&mock_loggedin=1#/export'],
+  ].map(([mode, url]) => ({
+    name: `export-download-with-ticket-${mode}`,
+    noshot: true,
+    mode: 'light',
+    url,
+    wait: 2000,
+    act: `const m = window.__woodpileMock;
+      if (await m.navigateStatus('/api/exports/exp_7Hq2/download') !== 401) throw new Error('a plain link should get 401');
+      document.querySelector('li[data-state=ready] a[download]').click();
+      await new Promise((r) => setTimeout(r, 1500));
+      const d = m.downloads[m.downloads.length - 1];
+      if (!d || !d.ticket || m.lastDownloadStatus !== 200) throw new Error('download failed: ' + m.lastDownloadStatus);
+      // single-use: the same URL a second time is refused
+      if (!m.lastTicketUrl.includes('ticket=')) throw new Error('no ticket issued');
+      window.__reuse = await m.navigateStatus(m.lastTicketUrl);`,
+    after: 300,
+    check: `window.__reuse === 401 && !document.querySelector('[role=alert]') && !!__btn('Log out')`,
+  })),
   {
     name: 'export-failure-shows-error',
     noshot: true,
@@ -699,7 +720,9 @@ const SHOTS = [
       if (!document.body.innerText.includes('Use 8 to 1024 characters.')) throw new Error('no length error');
       __set(__field('New password'), 'correct horse'); __set(__field('Repeat it'), 'correct horse'); await __tick(); __btn('Set password').click();`,
     after: 800,
-    check: `document.body.innerText.includes('Password set.') && !document.querySelector('[aria-describedby^="hint-lan"]').disabled`,
+    check: `document.body.innerText.includes('Password set. Login is now required on this machine too; you can turn it off below.')
+      && !document.querySelector('[aria-describedby^="hint-lan"]').disabled && __field('Require login on this machine too').checked
+      && !!__btn('Log out') && !__field('Password')`,
   },
   {
     name: 'settings-lan-warning-light',

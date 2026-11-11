@@ -613,7 +613,7 @@
         </div>
       </details>
 
-      <PasswordForm />
+      <PasswordForm onchange={load} />
     </section>
 
     <section class="card">

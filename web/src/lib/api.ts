@@ -498,6 +498,12 @@ export const estimateExport = (r: ExportRequest, signal?: AbortSignal) =>
 export const listExports = () => request<ExportInfo[]>('GET', '/api/exports');
 export const deleteExport = (id: string) => request<void>('DELETE', `/api/exports/${encodeURIComponent(id)}`);
 export const exportDownloadUrl = (id: string) => `/api/exports/${encodeURIComponent(id)}/download`;
+/**
+ * A one-use, 60 s download URL (docs/api.md): a browser download can't send the
+ * X-Woodpile-Session header, so the ticket stands in for it. Ask for a new one each time.
+ */
+export const exportTicket = (id: string) =>
+  request<{ url: string }>('POST', `/api/exports/${encodeURIComponent(id)}/ticket`);
 
 export const getSettings = () => request<Settings>('GET', '/api/settings');
 export const putSettings = (s: Settings) => request<Settings>('PUT', '/api/settings', s);
