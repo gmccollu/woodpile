@@ -1,6 +1,7 @@
 // Which devices a search or export covers: all, a group, the ungrouped ones, or a list.
-import type { Device, SevKey } from './api';
+import type { SevKey } from './api';
 import { ALL_SEVS } from './api';
+import { deviceName } from './status.svelte';
 
 export interface Scope {
   mode: 'all' | 'group' | 'ungrouped' | 'devices';
@@ -18,25 +19,13 @@ export function scopeParams(s: Scope): { devices?: string[]; group?: string; ung
   return {};
 }
 
-/** The concrete device ids (exports need a list). Hidden devices only when named. */
-export function scopeDeviceIds(s: Scope, all: Device[]): string[] {
-  if (s.mode === 'devices') return s.devices;
-  const shown = all.filter((d) => !d.hidden);
-  if (s.mode === 'group') return shown.filter((d) => d.group === s.group).map((d) => d.id);
-  if (s.mode === 'ungrouped') return shown.filter((d) => !d.group).map((d) => d.id);
-  return shown.map((d) => d.id);
-}
-
-export function scopeLabel(s: Scope, all: Device[]): string {
+export function scopeLabel(s: Scope): string {
   if (s.mode === 'group') return `Group: ${s.group}`;
   if (s.mode === 'ungrouped') return 'Ungrouped devices';
   if (s.mode === 'devices') {
     if (!s.devices.length) return 'No devices';
-    const names = s.devices.map((id) => {
-      const d = all.find((x) => x.id === id);
-      return d?.name || id;
-    });
-    return names.length > 2 ? `${names.slice(0, 2).join(', ')} +${names.length - 2}` : names.join(', ');
+    const names = s.devices.slice(0, 3).map(deviceName);
+    return s.devices.length > 2 ? `${names.slice(0, 2).join(', ')} +${s.devices.length - 2}` : names.join(', ');
   }
   return 'All devices';
 }

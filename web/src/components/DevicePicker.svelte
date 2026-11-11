@@ -1,25 +1,46 @@
 <script lang="ts">
-  import type { Device } from '../lib/api';
+  // Scope picker for search and export. The device list comes from the server as you
+  // type (/api/devices?q=…), so it stays fast with 10,000 devices.
+  import { getDevices, type Device } from '../lib/api';
   import { scopeLabel, type Scope } from '../lib/scope';
+  import { anyUngrouped, groupsSeen, remember } from '../lib/status.svelte';
   import StatusDot from './StatusDot.svelte';
 
-  let {
-    value = $bindable(),
-    devices,
-    allowGroups = true,
-  }: { value: Scope; devices: Device[]; allowGroups?: boolean } = $props();
+  let { value = $bindable(), allowGroups = true }: { value: Scope; allowGroups?: boolean } = $props();
 
+  const LIST = 100;
   let open = $state(false);
   let filter = $state('');
   let root: HTMLDivElement | undefined = $state();
+  let listed = $state<Device[]>([]);
+  let total = $state(0);
+  let loading = $state(false);
 
-  const groups = $derived([...new Set(devices.filter((d) => !d.hidden).map((d) => d.group).filter(Boolean))].sort());
-  const hasUngrouped = $derived(devices.some((d) => !d.hidden && !d.group));
-  const listed = $derived(
-    devices
-      .filter((d) => !filter || `${d.name} ${d.ip} ${d.group}`.toLowerCase().includes(filter.toLowerCase()))
-      .sort((a, b) => (a.name || a.ip).localeCompare(b.name || b.ip, undefined, { numeric: true })),
-  );
+  const groups = $derived(open ? groupsSeen() : []);
+  const hasUngrouped = $derived(open && anyUngrouped());
+
+  $effect(() => {
+    if (!open) return;
+    const f = filter.trim();
+    const ctrl = new AbortController();
+    const t = setTimeout(async () => {
+      loading = true;
+      try {
+        const page = await getDevices({ q: f, sort: 'name', limit: LIST, hidden: 'include' }, ctrl.signal);
+        remember(page.devices);
+        listed = page.devices;
+        total = page.total;
+      } catch {
+        /* keep the last list */
+      } finally {
+        loading = false;
+      }
+    }, f ? 250 : 0);
+    return () => {
+      clearTimeout(t);
+      ctrl.abort();
+    };
+  });
 
   $effect(() => {
     if (!open) return;
@@ -45,7 +66,7 @@
 
 <div class="dp" bind:this={root}>
   <button type="button" class="ghost-btn trigger" aria-expanded={open} aria-haspopup="dialog" onclick={() => (open = !open)}>
-    <span class="truncate">{scopeLabel(value, devices)}</span> <span aria-hidden="true">▾</span>
+    <span class="truncate">{scopeLabel(value)}</span> <span aria-hidden="true">▾</span>
   </button>
   {#if open}
     <div class="pop glass" role="dialog" aria-label="Choose devices">
@@ -60,7 +81,10 @@
           {/if}
         </div>
       {/if}
-      <input class="field my-2" placeholder="Find a device" bind:value={filter} aria-label="Find a device" />
+      <input class="field my-2" placeholder="Find a device by name or IP" bind:value={filter} aria-label="Find a device" />
+      <p class="m-0 mb-1 text-[12px] text-muted" aria-live="polite">
+        {loading ? 'Searching…' : total > listed.length ? `Showing ${listed.length} of ${total.toLocaleString()}. Type to narrow.` : `${total.toLocaleString()} device${total === 1 ? '' : 's'}`}
+      </p>
       <div class="list">
         {#each listed as d (d.id)}
           <label class="dev">

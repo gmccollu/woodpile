@@ -20,7 +20,9 @@
     "skipLibCheck": true,
     "allowJs": false,
     "noUnusedLocals": true,
-    "noUnusedParameters": true
+    "noUnusedParameters": true,
+    "allowImportingTsExtensions": true,
+    "erasableSyntaxOnly": true
   },
   "include": [
     "src/**/*.ts",

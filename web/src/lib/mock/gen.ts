@@ -76,6 +76,10 @@ const TEMPLATES: Record<Kind, Template[]> = {
     // Multi-line output (CR/LF) and a stray control character.
     [6, 2, 'backup', () => `job finished\r\nfiles ${int(100, 9000)}\r\nexit status 0\r\n`],
     [4, 0.5, 'app', () => `disk check \x07 attention: ${int(85, 95)}% used`],
+    // A huge single message (exercises the 8 KiB row cap) and spoofing characters (bidi
+    // override, zero-width space) that the UI must show rather than apply.
+    [7, 0.15, 'app', () => `payload dump: ${'0123456789abcdef'.repeat(1300)}`],
+    [5, 0.6, 'ftpd', () => `file uploaded by user\u200b01: invoice\u202efdp.exe`],
   ],
   ap: [
     [6, 50, 'wlan', () => `client ${mac()} associated ssid corp-wifi rssi -${int(45, 80)}`],

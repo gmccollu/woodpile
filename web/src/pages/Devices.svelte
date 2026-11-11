@@ -1,60 +1,93 @@
 <script lang="ts">
   import { tick } from 'svelte';
-  import { patchDevice, type Device, type DevicePatch } from '../lib/api';
+  import { getDevices, patchDevice, type Device, type DevicePatch, type DeviceSort } from '../lib/api';
   import { ago, bytes, date, dateTime, num, rate } from '../lib/format';
-  import { live, NOW_WITHIN_S, replaceDevice } from '../lib/status.svelte';
+  import { DEVICE_POLL_MS, groupsSeen, live, NOW_WITHIN_S, remember, replaceDevice } from '../lib/status.svelte';
   import { ui } from '../lib/ui.svelte';
   import Icon from '../components/Icon.svelte';
   import StatusDot from '../components/StatusDot.svelte';
 
   type Col = 'name' | 'ip' | 'group' | 'status' | 'first_seen' | 'last_heard' | 'msgs_per_min' | 'total_msgs' | 'bytes_on_disk';
 
+  // The server pages, filters and sorts (docs/api.md), so this stays fast with 10,000 devices.
+  const PAGE = 200;
+  /** Columns the API can sort by, and its sort key. Direction is the server's (see the report). */
+  const SORTS: Partial<Record<Col, DeviceSort>> = { name: 'name', msgs_per_min: 'rate', last_heard: 'last_heard', first_seen: 'first_seen' };
+  const SORT_HINT: Record<DeviceSort, string> = { name: 'A to Z', rate: 'busiest first', last_heard: 'most recent first', first_seen: 'newest first' };
+
   let showHidden = $state(false);
-  let sortBy = $state<Col>('name');
-  let desc = $state(false);
+  let sortBy = $state<DeviceSort>('name');
+  let offset = $state(0);
+  let rows = $state<Device[] | null>(null);
+  let total = $state(0);
+  let hiddenCount = $state(0);
+  let loadError = $state('');
   let editing = $state<{ id: string; field: 'name' | 'group' } | null>(null);
   let editValue = $state('');
   let saving = $state<string | null>(null);
   let rowError = $state<Record<string, string>>({});
 
-  const all = $derived(live.devices ?? []);
-  const hiddenCount = $derived(all.filter((d) => d.hidden).length);
-  const groups = $derived([...new Set(all.map((d) => d.group).filter(Boolean))].sort());
-  const filterText = $derived(ui.filter.trim().toLowerCase());
-  const statusOrder = { online: 0, quiet: 1, offline: 2 };
+  const groups = $derived(rows ? groupsSeen() : []);
+  let q = $state('');
+  $effect(() => {
+    const v = ui.filter.trim();
+    const t = setTimeout(() => {
+      if (v !== q) {
+        q = v;
+        offset = 0;
+      }
+    }, 250);
+    return () => clearTimeout(t);
+  });
 
-  function key(d: Device, c: Col): string | number {
-    if (c === 'name') return (d.name || d.ip).toLowerCase();
-    if (c === 'status') return statusOrder[d.status];
-    if (c === 'last_heard' || c === 'first_seen') return Date.parse(d[c]);
-    return d[c] as string | number;
-  }
-
-  const rows = $derived(
-    all
-      .filter((d) => showHidden || !d.hidden)
-      .filter((d) => !filterText || `${d.name} ${d.ip} ${d.group}`.toLowerCase().includes(filterText))
-      .sort((a, b) => {
-        const x = key(a, sortBy);
-        const y = key(b, sortBy);
-        const r = typeof x === 'number' && typeof y === 'number' ? x - y : String(x).localeCompare(String(y), undefined, { numeric: true });
-        return desc ? -r : r;
-      }),
-  );
+  $effect(() => {
+    const params = { limit: PAGE, offset, sort: sortBy, q, hidden: showHidden ? ('include' as const) : ('exclude' as const) };
+    let stop = false;
+    const ctrl = new AbortController();
+    const load = async () => {
+      // Don't overwrite a row while it's being edited.
+      if (editing) return;
+      try {
+        const [page, hid] = await Promise.all([
+          getDevices(params, ctrl.signal),
+          getDevices({ limit: 1, hidden: 'only' }, ctrl.signal),
+        ]);
+        if (stop) return;
+        remember(page.devices);
+        rows = page.devices;
+        total = page.total;
+        hiddenCount = hid.total;
+        loadError = '';
+      } catch (e) {
+        if (!stop && (e as Error).name !== 'AbortError') loadError = (e as Error).message;
+      }
+    };
+    load();
+    const t = setInterval(load, DEVICE_POLL_MS);
+    return () => {
+      stop = true;
+      ctrl.abort();
+      clearInterval(t);
+    };
+  });
 
   function sort(c: Col) {
-    if (sortBy === c) desc = !desc;
-    else {
-      sortBy = c;
-      desc = ['first_seen', 'last_heard', 'msgs_per_min', 'total_msgs', 'bytes_on_disk'].includes(c);
-    }
+    const k = SORTS[c];
+    if (!k || k === sortBy) return;
+    sortBy = k;
+    offset = 0;
+  }
+
+  function replaceRow(d: Device) {
+    replaceDevice(d);
+    if (rows) rows = rows.map((x) => (x.id === d.id ? d : x));
   }
 
   async function save(d: Device, patch: DevicePatch) {
     saving = d.id;
     rowError = { ...rowError, [d.id]: '' };
     try {
-      replaceDevice(await patchDevice(d.id, patch));
+      replaceRow(await patchDevice(d.id, patch));
     } catch (e) {
       rowError = { ...rowError, [d.id]: (e as Error).message };
     } finally {
@@ -125,22 +158,29 @@
       <thead>
         <tr>
           {#each cols as col (col.c)}
-            <th scope="col" class:text-right={col.num} aria-sort={sortBy === col.c ? (desc ? 'descending' : 'ascending') : 'none'}>
-              <button class="sort" onclick={() => sort(col.c)}>
-                {col.label}{#if sortBy === col.c}<span aria-hidden="true">{desc ? ' ↓' : ' ↑'}</span>{/if}
-              </button>
+            {@const k = SORTS[col.c]}
+            <th scope="col" class:text-right={col.num} aria-sort={k && sortBy === k ? (k === 'name' ? 'ascending' : 'descending') : undefined}>
+              {#if k}
+                <button class="sort" class:on={sortBy === k} onclick={() => sort(col.c)} title="Sort: {SORT_HINT[k]}">
+                  {col.label}{#if sortBy === k}<span aria-hidden="true">{k === 'name' ? ' ↑' : ' ↓'}</span>{/if}
+                </button>
+              {:else}
+                {col.label}
+              {/if}
             </th>
           {/each}
           <th scope="col"><span class="sr-only">Actions</span></th>
         </tr>
       </thead>
       <tbody>
-        {#if live.devices === null}
+        {#if loadError}
+          <tr><td colspan="10" class="text-bad-fg">Couldn't load devices: {loadError}</td></tr>
+        {:else if rows === null}
           <tr><td colspan="10" class="text-muted">Loading…</td></tr>
         {:else if !rows.length}
-          <tr><td colspan="10" class="text-muted">{all.length ? 'No devices match.' : 'No devices have sent anything yet.'}</td></tr>
+          <tr><td colspan="10" class="text-muted">{q || live.deviceTotal ? 'No devices match.' : 'No devices have sent anything yet.'}</td></tr>
         {/if}
-        {#each rows as d (d.id)}
+        {#each rows ?? [] as d (d.id)}
           <tr class:opacity-60={d.hidden}>
             <td><StatusDot status={d.status} label /></td>
             <td class="min-w-[160px]">
@@ -203,6 +243,16 @@
       </tbody>
     </table>
   </div>
+  {#if rows && total > 0}
+    <div class="pager">
+      <span class="text-[13px] text-muted" aria-live="polite">
+        {num(offset + 1)}–{num(Math.min(offset + rows.length, total))} of {num(total)}{q ? ` matching “${q}”` : ''}
+      </span>
+      <span class="grow"></span>
+      <button class="ghost-btn" disabled={offset === 0} onclick={() => (offset = Math.max(0, offset - PAGE))}>← Previous</button>
+      <button class="ghost-btn" disabled={offset + PAGE >= total} onclick={() => (offset += PAGE)}>Next →</button>
+    </div>
+  {/if}
 </section>
 
 <style>
@@ -233,6 +283,16 @@
   th:last-child,
   td:last-child {
     padding-right: 16px;
+  }
+  .pager {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 16px 14px 20px;
+    border-top: 1px solid var(--divider);
+  }
+  .sort.on {
+    color: var(--fg);
   }
   .sort {
     background: none;

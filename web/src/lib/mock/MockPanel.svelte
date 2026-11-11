@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { MOCK_PASSWORD, expireSession, mock, restartFirstRun, sendFirstMessage, setLanAuth } from './server.svelte';
+  import { MOCK_PASSWORD, expireSession, mock, restartFirstRun, sendFirstMessage, setFleetSize, setLanAuth } from './server.svelte';
   import { loadSession } from '../session.svelte';
   import { refreshDevices, refreshStatus } from '../status.svelte';
   import { go } from '../router.svelte';
@@ -57,6 +57,11 @@
           <button class="ghost-btn" onclick={firstRun}>Restart as first run</button>
           <button class="ghost-btn" onclick={testMessage} disabled={!mock.firstRun}>Send test message</button>
         </div>
+        <label class="row">
+          <input type="checkbox" checked={mock.fleetExtra > 0} onchange={(e) => { setFleetSize(e.currentTarget.checked ? 10_000 : 0); refreshDevices(); }} />
+          10,000 extra devices
+        </label>
+        <label class="row"><input type="checkbox" bind:checked={mock.deviceLimit} onchange={() => refreshStatus()} /> New senders refused (device limit)</label>
         <label class="row"><input type="checkbox" bind:checked={mock.slowScan} /> Slow search scans (partial pages)</label>
         <label class="row"><input type="checkbox" bind:checked={mock.exportFail} /> Exports fail at 40 %</label>
         <label class="row"><input type="checkbox" checked={mock.lan} onchange={lan} /> LAN mode with auth</label>

@@ -9,6 +9,7 @@
   import Icon from './Icon.svelte';
   import SeverityChips from './SeverityChips.svelte';
   import LogText from './LogText.svelte';
+  import { tip } from '../lib/logtext';
 
   let {
     group = '',
@@ -225,7 +226,7 @@
       </p>
     {/if}
     {#each rows as r (r.k)}
-      <div class="logline" title={r.raw}>
+      <div class="logline" title={tip(r.raw)}>
         <span class="c t" title={r.received}>{clock(r.received, prefs.utc)}</span><span class="c h" title={r.device_id}>{deviceName(r.device_id)}</span><span
           class="c s {sevClass(r.severity)}">{sevLabel(r.severity)}</span
         ><span class="m">{#if showRaw}<span class="text-log-dim"><LogText text={r.pri + r.header} raw /></span>{/if}<LogText text={r.body} raw={showRaw} /></span>

@@ -21,10 +21,11 @@
 //   mock_slow_scan=1  search pages come back partial (budget used up) so the UI keeps fetching
 //   mock_export_fail=1 exports fail at 40 %
 //   mock_export_secs=N seconds an export takes to build (default 8)
+//   mock_devices=N    add N generated devices (up to 10,000) to the fleet
+//   mock_device_limit=1 new senders are being refused (device_limit banner)
 
 import type {
   Device,
-  EventStream,
   ExportInfo,
   RejectedSender,
   Settings,
@@ -34,6 +35,7 @@ import type {
   Transport,
 } from '../api';
 import { isKnown } from '../severity';
+import { setSessionSecret } from '../api';
 import { FLEET, line, testLine, weighted, type GenLine, type MockDeviceDef } from './gen';
 import { STEP, deviceAt, lineAt, shareOf } from './history';
 
@@ -62,13 +64,18 @@ export const mock = $state({
   exportFail: P.get('mock_export_fail') === '1',
   /** Seconds an export takes to build. */
   exportSecs: n('mock_export_secs', 8),
+  /** New senders are being refused (the device_limit banner). Also on when the fleet is at max_devices. */
+  deviceLimit: P.get('mock_device_limit') === '1',
+  /** Generated devices added to the fleet. */
+  fleetExtra: 0,
 });
 
 export const MOCK_PASSWORD = 'woodpile-demo';
 
 const authState = {
   password: P.get('mock_auth') === '1' || P.get('mock_password') === '1' ? MOCK_PASSWORD : '',
-  csrf: newToken(),
+  /** The current session's secret; issued only by login. '' when there's no session. */
+  secret: '',
   failures: [] as number[],
   lastAttempt: 0,
   lockedUntil: P.get('mock_locked') === '1' ? Date.now() + 15 * 60_000 : 0,
@@ -78,9 +85,28 @@ function newToken(): string {
   return Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-/** For the smoke checks in scripts/screenshots.mjs: the last X-CSRF-Token the mock received. */
-const probe = { lastCsrf: '' as string | null, livePaths: [] as string[], get csrf() { return authState.csrf; } };
+/** For the smoke checks: what the mock saw (header values and /api/session bodies). */
+const probe = {
+  livePaths: [] as string[],
+  /** X-Woodpile-Session on the last request of each kind. */
+  lastGetHeader: '' as string | null,
+  lastWriteHeader: '' as string | null,
+  lastLiveHeader: '' as string | null,
+  sessionBodies: [] as string[],
+  get secret() {
+    return authState.secret;
+  },
+  /** Simulates a request that has the cookie but not the header (e.g. another app on this host). */
+  cookieOnly: false,
+};
 (window as unknown as { __woodpileMock: typeof probe }).__woodpileMock = probe;
+
+// mock_loggedin=1 starts with a session, as if this browser had logged in earlier: the mock
+// issues a secret and puts it where the UI keeps one.
+if (mock.lan && mock.loggedIn) {
+  authState.secret = newToken();
+  setSessionSecret(authState.secret);
+}
 
 /** Mock panel: switch LAN mode with auth on (logged out) or off. */
 export function setLanAuth(on: boolean) {
@@ -88,23 +114,28 @@ export function setLanAuth(on: boolean) {
   settings.ui.lan_mode = on;
   if (on && !authState.password) authState.password = MOCK_PASSWORD;
   mock.loggedIn = false;
-  authState.csrf = newToken();
+  authState.secret = '';
 }
 
 /** Mock panel: end the session as if it expired; the next API call gets a 401. */
 export function expireSession() {
   mock.loggedIn = false;
-  authState.csrf = newToken();
+  authState.secret = '';
 }
 
-function sessionJSON() {
-  const lan = mock.lan;
+/** Login is required in LAN mode, and on localhost too when require_login_local is on. */
+const authOn = () => mock.lan || (!!settings.ui.require_login_local && !!authState.password);
+
+/** The mock's stand-in for "cookie and matching X-Woodpile-Session header". */
+const hasSession = (header: string | null) => mock.loggedIn && !!authState.secret && header === authState.secret;
+
+function sessionJSON(header: string | null = null) {
+  const on = authOn();
   return {
-    mode: lan ? 'lan' : 'localhost',
-    auth_required: lan,
-    authenticated: !lan || mock.loggedIn,
+    mode: mock.lan ? 'lan' : 'localhost',
+    auth_required: on,
+    authenticated: !on || hasSession(header),
     password_set: !!authState.password,
-    csrf_token: lan && mock.loggedIn ? authState.csrf : '',
   };
 }
 
@@ -174,6 +205,103 @@ const thisHost: MockDeviceDef = { ip: '127.0.0.1', name: '', group: '', kind: 's
 
 if (!mock.firstRun) addFleet(Date.now());
 
+const CERT_FP = 'SHA256:3F:9A:1C:77:0B:E4:52:D8:6A:91:C3:0E:F2:48:BB:17:65:2D:A0:C9:8E:11:7F:44:D6:5B:02:E9:A3:C8:70:1D';
+
+// Generated devices for scale testing (mock_devices=N or the panel). Vendor-neutral names,
+// private 10.100+ addresses, a few groups, a mix of busy, quiet and offline.
+const BIG_GROUPS = ['Stores', 'Warehouses', 'Lab', ''];
+const KINDS = ['sw', 'ap', 'srv', 'fw'] as const;
+export function setFleetSize(extra: number) {
+  extra = Math.max(0, Math.min(10_000, Math.round(extra)));
+  for (const ip of [...devs.keys()]) if (ip.startsWith('10.1') && /^10\.1\d\d\./.test(ip) && Number(ip.split('.')[1]) >= 100) devs.delete(ip);
+  const now = Date.now();
+  for (let i = 0; i < extra; i++) {
+    const ip = `10.${100 + Math.floor(i / 62500)}.${Math.floor(i / 250) % 250}.${(i % 250) + 1}`;
+    const kind = KINDS[i % KINDS.length];
+    const r = (Math.imul(i + 1, 2654435761) >>> 0) / 4294967296;
+    const quietFor = r < 0.06 ? 20 * MIN : r < 0.1 ? 5 * 60 * MIN : 0;
+    devs.set(ip, {
+      def: { ip, name: i % 9 === 4 ? '' : `${kind === 'ap' ? 'ap' : kind === 'sw' ? 'sw' : kind === 'fw' ? 'fw' : 'srv'}-${String(i + 1).padStart(5, '0')}`, group: BIG_GROUPS[i % 4], kind, weight: quietFor ? 0 : 0.02 + r * 0.2 },
+      name: i % 9 === 4 ? '' : `${kind}-${String(i + 1).padStart(5, '0')}`,
+      group: BIG_GROUPS[i % 4],
+      hidden: i % 97 === 0,
+      firstSeen: now - (1 + r * 30) * 24 * 60 * MIN,
+      lastHeard: now - quietFor,
+      total: Math.round(r * 2e5),
+      bytes: Math.round(r * 1.5e6),
+      sending: !quietFor,
+    });
+  }
+  pickerAt = 0;
+  mock.fleetExtra = extra;
+}
+
+// Weighted random sender with a cumulative table and binary search (rebuilt each second).
+let pickerAt = 0;
+let pickTable: { cum: number[]; list: Dev[] } = { cum: [], list: [] };
+function senderPicker(): (() => Dev) | null {
+  const now = Date.now();
+  if (now - pickerAt > 1000) {
+    const list = [...devs.values()].filter((d) => d.sending);
+    const cum: number[] = [];
+    let t = 0;
+    for (const d of list) cum.push((t += d.def.weight));
+    pickTable = { cum, list };
+    pickerAt = now;
+  }
+  const { cum, list } = pickTable;
+  if (!list.length) return null;
+  const total = cum[cum.length - 1];
+  return () => {
+    const x = Math.random() * total;
+    let lo = 0;
+    let hi = cum.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (cum[mid] < x) lo = mid + 1;
+      else hi = mid;
+    }
+    return list[lo];
+  };
+}
+
+/** Devices that sent in the last 10 minutes (what max_devices counts). */
+function activeDevices(now: number): number {
+  let n = 0;
+  for (const d of devs.values()) if (now - d.lastHeard < 10 * MIN) n++;
+  return n;
+}
+
+/** docs/api.md: limit/offset/sort/q/group/ungrouped/hidden → {devices, total}. */
+function devicesRoute(u: URLSearchParams, now: number): Response {
+  const limit = Math.min(1000, Math.max(1, Number(u.get('limit') || 200)));
+  const offset = Math.max(0, Number(u.get('offset') || 0));
+  const sort = u.get('sort') || 'rate';
+  if (!['rate', 'name', 'last_heard', 'first_seen'].includes(sort)) return err(400, `invalid sort "${sort}"`);
+  const hidden = u.get('hidden') || 'include';
+  const q = (u.get('q') ?? '').toLowerCase();
+  const group = u.get('group');
+  const ungrouped = u.get('ungrouped') === 'true';
+  let list = [...devs.values()].filter((d) => {
+    if (hidden === 'exclude' && d.hidden) return false;
+    if (hidden === 'only' && !d.hidden) return false;
+    if (group && d.group !== group) return false;
+    if (ungrouped && d.group) return false;
+    if (q && !d.def.ip.toLowerCase().includes(q) && !d.name.toLowerCase().includes(q)) return false;
+    return true;
+  });
+  const rateOf = (d: Dev) => (d.sending && !mock.firstRun ? d.def.weight : 0);
+  const label = (d: Dev) => d.name || d.def.ip;
+  // Directions: rate busiest first, name A–Z, last_heard and first_seen newest first.
+  if (sort === 'rate') list.sort((a, b) => rateOf(b) - rateOf(a) || label(a).localeCompare(label(b), undefined, { numeric: true }));
+  else if (sort === 'name') list.sort((a, b) => label(a).localeCompare(label(b), undefined, { numeric: true }));
+  else if (sort === 'last_heard') list.sort((a, b) => b.lastHeard - a.lastHeard);
+  else list.sort((a, b) => b.firstSeen - a.firstSeen);
+  const total = list.length;
+  list = list.slice(offset, offset + limit);
+  return json({ devices: list.map((d) => deviceJSON(d, now)), total });
+}
+
 // ---------- Settings ----------
 
 let settings: Settings = {
@@ -182,6 +310,9 @@ let settings: Settings = {
     tcp: { enabled: true, addr: '0.0.0.0', port: 514 },
     // Non-empty so the rejected-senders list has something to show.
     allowlist: ['10.0.0.0/8', '192.0.2.44/32', 'fd00:1::/64'],
+    max_devices: 10_000,
+    new_device_burst: 5_000,
+    new_devices_per_minute: 200,
   },
   storage: {
     data_dir: OS.startsWith('windows')
@@ -193,7 +324,7 @@ let settings: Settings = {
     retention_bytes: 20 * GiB,
     part_bytes: 100 * MiB,
   },
-  ui: { lan_mode: P.get('mock_auth') === '1', port: 8514, cert_file: '', key_file: '' },
+  ui: { lan_mode: P.get('mock_auth') === '1', port: 8514, cert_file: '', key_file: '', require_login_local: false },
   quiet: { quiet_after_seconds: 300, offline_after_seconds: 3600 },
 };
 
@@ -238,6 +369,14 @@ function validate(s: Settings): Record<string, string> {
   if (st.data_dir !== settings.storage.data_dir) e['storage.data_dir'] = 'The data folder can only be changed in the config file.';
   port('ui.port', s.ui.port, 1024);
   if (s.ui.lan_mode && !authState.password) e['ui.lan_mode'] = 'Set a password before turning on LAN mode.';
+  if (s.ui.require_login_local && !authState.password) e['ui.require_login_local'] = 'Set a password first.';
+  const lim = (k: 'max_devices' | 'new_device_burst' | 'new_devices_per_minute', lo: number, hi: number) => {
+    const v = s.listeners[k];
+    if (!Number.isInteger(v) || v < lo || v > hi) e[`listeners.${k}`] = `Use a whole number from ${lo.toLocaleString()} to ${hi.toLocaleString()}.`;
+  };
+  lim('max_devices', 1, 1_000_000);
+  lim('new_device_burst', 1, 1_000_000);
+  lim('new_devices_per_minute', 1, 100_000);
   const cert = s.ui.cert_file ?? '';
   const key = s.ui.key_file ?? '';
   const abs = (f: string) => f.startsWith('/') || /^[A-Za-z]:\\/.test(f);
@@ -265,7 +404,7 @@ let sparkMinute = Math.floor(Date.now() / MIN);
 let droppedByGuard = 0;
 // A fleet that's been running started when its oldest device was first seen.
 let firstMessageAt = devs.size ? Math.min(...[...devs.values()].map((d) => d.firstSeen)) : 0;
-const subs = new Set<MockEventSource>();
+const subs = new Set<LiveSub>();
 
 function status(d: Dev, now: number): Device['status'] {
   const age = (now - d.lastHeard) / 1000;
@@ -305,8 +444,8 @@ function tick() {
 
   if (mock.firstRun) return;
 
-  const senders = [...devs.values()].filter((d) => d.sending);
-  if (!senders.length) return;
+  const pick = senderPicker();
+  if (!pick) return;
   const want = (mock.rate / 10) + pendingFraction;
   const whole = Math.floor(want);
   pendingFraction = want - whole;
@@ -314,7 +453,7 @@ function tick() {
   const make = Math.min(whole, 20);
   trueThisSecond += whole;
   for (let i = 0; i < whole; i++) {
-    const d = weighted(senders, (x) => x.def.weight);
+    const d = pick();
     d.lastHeard = now;
     d.total++;
     d.bytes += 140;
@@ -388,6 +527,8 @@ if (mock.firstRun) {
   }
 }
 
+if (!mock.firstRun && n('mock_devices', 0) > 0) setFleetSize(n('mock_devices', 0));
+
 setInterval(tick, 100);
 setInterval(secondTick, 1000);
 
@@ -447,7 +588,8 @@ function deviceMatches(ip: string, f: MockFilters, searchHidden = false): boolea
 }
 
 function matches(l: GenLine, f: MockFilters): boolean {
-  if (!deviceMatches(l.device_id, f)) return false;
+  // docs/api.md: hidden devices are left out of the live tail unless named in devices.
+  if (!deviceMatches(l.device_id, f, true)) return false;
   if (f.sev && !f.sev.has(sevKeyOf(l.severity))) return false;
   if (f.q && !l.raw.toLowerCase().includes(f.q.toLowerCase())) return false;
   return true;
@@ -455,55 +597,33 @@ function matches(l: GenLine, f: MockFilters): boolean {
 
 const SAMPLE_LIMIT = 50;
 
-class MockEventSource implements EventStream {
-  onerror: ((e: Event) => void) | null = null;
-  readyState = 0;
-  onopen: ((e: Event) => void) | null = null;
-  private listeners: Record<string, ((e: MessageEvent<string>) => void)[]> = {};
-  private filters: MockFilters;
+/** One open /api/live stream: SSE text pushed into a ReadableStream. */
+class LiveSub {
   private sentThisSecond = 0;
   private matchedThisSecond = 0;
-  private closed = false;
+  private readonly filters: MockFilters;
+  private readonly out: ReadableStreamDefaultController<Uint8Array>;
+  constructor(filters: MockFilters, out: ReadableStreamDefaultController<Uint8Array>) {
+    this.filters = filters;
+    this.out = out;
+  }
 
-  constructor(path: string) {
-    const u = new URL(path, location.origin);
-    probe.livePaths.push(u.pathname + u.search);
-    let sev: Set<string> | null = null;
-    let bad = false;
+  private enc = new TextEncoder();
+  write(text: string) {
     try {
-      sev = sevFilter(u.searchParams);
+      this.out.enqueue(this.enc.encode(text));
     } catch {
-      bad = true; // the real server answers 400, which EventSource reports as an error
+      subs.delete(this); // the reader went away
     }
-    this.filters = {
-      devices: u.searchParams.get('devices')?.split(',').filter(Boolean),
-      group: u.searchParams.get('group') ?? undefined,
-      ungrouped: u.searchParams.get('ungrouped') === 'true',
-      sev,
-      q: u.searchParams.get('q') ?? undefined,
-    };
-    setTimeout(() => {
-      if (this.closed) return;
-      if (bad || (mock.lan && !mock.loggedIn)) {
-        // The real server answers 401: EventSource reports an error and closes for good.
-        this.readyState = 2;
-        this.onerror?.(new Event('error'));
-        return;
-      }
-      this.readyState = 1;
-      this.onopen?.(new Event('open'));
-      for (const l of ring.filter((x) => matches(x, this.filters)).slice(-200)) this.send('message', l);
-      subs.add(this);
-    }, mock.latency);
   }
 
-  addEventListener(type: 'message' | 'sampled', fn: (e: MessageEvent<string>) => void) {
-    (this.listeners[type] ??= []).push(fn);
+  send(type: string, data: unknown) {
+    // Split the event across lines to exercise the parser (data is one JSON line).
+    this.write(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`);
   }
 
-  private send(type: string, data: unknown) {
-    const ev = new MessageEvent<string>(type, { data: JSON.stringify(data) });
-    for (const fn of this.listeners[type] ?? []) fn(ev);
+  replay() {
+    for (const l of ring.filter((x) => matches(x, this.filters)).slice(-200)) this.send('message', l);
   }
 
   offer(l: GenLine) {
@@ -522,19 +642,59 @@ class MockEventSource implements EventStream {
     this.sentThisSecond = 0;
     this.matchedThisSecond = 0;
   }
+}
 
-  close() {
-    this.readyState = 2;
-    this.closed = true;
-    subs.delete(this);
-  }
+function liveResponse(u: URLSearchParams, sev: Set<string> | null, signal?: AbortSignal): Response {
+  const filters: MockFilters = {
+    devices: u.get('devices')?.split(',').filter(Boolean),
+    group: u.get('group') ?? undefined,
+    ungrouped: u.get('ungrouped') === 'true',
+    sev,
+    q: u.get('q') ?? undefined,
+  };
+  let sub: LiveSub | null = null;
+  let beat = 0;
+  const end = () => {
+    if (sub) subs.delete(sub);
+    clearInterval(beat);
+  };
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      sub = new LiveSub(filters, controller);
+      sub.write(': connected\n\n');
+      sub.replay();
+      subs.add(sub);
+      // A heartbeat comment, as the server sends, so idle streams stay alive.
+      beat = window.setInterval(() => sub?.write(': ping\n\n'), 15_000);
+      signal?.addEventListener('abort', () => {
+        end();
+        try {
+          controller.error(new DOMException('aborted', 'AbortError'));
+        } catch {
+          /* already closed */
+        }
+      });
+    },
+    cancel: end,
+  });
+  return new Response(body, { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
 }
 
 // ---------- Routes ----------
 
+let weightCache = { at: 0, total: 1 };
+function sendingWeight(now: number): number {
+  if (now - weightCache.at > 1000) {
+    let t = 0;
+    for (const x of devs.values()) if (x.sending) t += x.def.weight;
+    weightCache = { at: now, total: t || 1 };
+  }
+  return weightCache.total;
+}
+
 function deviceJSON(d: Dev, now: number): Device {
   const running = d.sending && !mock.firstRun;
-  const share = d.def.weight / ([...devs.values()].filter((x) => x.sending).reduce((s, x) => s + x.def.weight, 0) || 1);
+  const share = d.def.weight / sendingWeight(now);
   return {
     id: d.def.ip,
     ip: d.def.ip,
@@ -573,6 +733,13 @@ function statusJSON(): Status {
       level: 'error',
       text: 'TCP 514 is in use by syslogd (pid 312). Woodpile is still receiving on UDP 514. Stop the other syslog service, or move the TCP listener to another port in Settings, then press Retry.',
     });
+  if (mock.deviceLimit || activeDevices(Date.now()) >= settings.listeners.max_devices)
+    banners.push({
+      kind: 'device_limit',
+      action: '',
+      level: 'warn',
+      text: `New senders are being refused: ${activeDevices(Date.now()).toLocaleString()} devices sent in the last 10 minutes and the limit is ${settings.listeners.max_devices.toLocaleString()}. Their messages count as dropped.`,
+    });
   if (mock.paused)
     banners.push({
       kind: 'writes_paused',
@@ -591,6 +758,7 @@ function statusJSON(): Status {
     udp_rcvbuf_requested_bytes: 32 * MiB,
     releases_url: P.get('mock_releases') ?? '',
     kernel_drops_visible: OS.startsWith('linux'),
+    ...(mock.lan ? { ui_cert_fingerprint: CERT_FP } : {}),
     listeners,
     host_ips: ['10.1.0.50', '192.168.64.1', 'fd00::50'],
     banners,
@@ -648,13 +816,19 @@ function allowed(ip: string): boolean {
 }
 
 function rejected(now: number): RejectedSender[] {
-  if (!settings.listeners.allowlist.length || mock.firstRun) return [];
+  if (mock.firstRun) return [];
   const mins = (now - START) / MIN;
-  return OUTSIDERS.filter((o) => !allowed(o.ip)).map((o, i) => ({
-    ip: o.ip,
-    count_24h: Math.round(o.base + o.per_min * mins),
-    last_seen: new Date(now - (i * 47 + 3) * 1000).toISOString(),
-  }));
+  const out: RejectedSender[] = settings.listeners.allowlist.length
+    ? OUTSIDERS.filter((o) => !allowed(o.ip)).map((o, i) => ({
+        ip: o.ip,
+        count_24h: Math.round(o.base + o.per_min * mins),
+        last_seen: new Date(now - (i * 47 + 3) * 1000).toISOString(),
+        reason: 'allowlist',
+      }))
+    : [];
+  // One host opening more TCP connections than the per-source limit allows.
+  out.push({ ip: '10.9.0.66', count_24h: Math.round(2_310 + 40 * mins), last_seen: new Date(now - 9000).toISOString(), reason: 'per_source' });
+  return out.sort((a, b) => b.count_24h - a.count_24h);
 }
 
 // ---------- Exports ----------
@@ -831,16 +1005,23 @@ function searchRoute(u: URLSearchParams, now: number): Response {
   });
 }
 
-async function route(method: string, url: URL, body: unknown, csrf: string | null): Promise<Response> {
+async function route(method: string, url: URL, body: unknown, header: string | null, signal?: AbortSignal): Promise<Response> {
   const p = url.pathname;
   const now = Date.now();
   const changing = !['GET', 'HEAD', 'OPTIONS'].includes(method);
-  if (changing) probe.lastCsrf = csrf;
+  if (p !== '/api/live') {
+    if (changing) probe.lastWriteHeader = header;
+    else probe.lastGetHeader = header;
+  }
 
   if (method === 'GET' && p === '/healthz') return json({ ok: true });
-  if (method === 'GET' && p === '/api/session') return json(sessionJSON());
+  if (method === 'GET' && p === '/api/session') {
+    const body = JSON.stringify(sessionJSON(header));
+    probe.sessionBodies.push(body);
+    return new Response(body, { status: 200, headers: { 'Content-Type': 'application/json' } });
+  }
   if (method === 'POST' && p === '/api/login') {
-    if (!mock.lan) return err(400, 'LAN mode is off; there is nothing to log in to.');
+    if (!authOn()) return err(400, 'Login is off: LAN mode and require_login_local are both off.');
     const locked = lockout(now);
     if (locked) return locked;
     const recent = authState.failures.filter((t) => now - t < 15 * 60_000).length;
@@ -852,20 +1033,21 @@ async function route(method: string, url: URL, body: unknown, csrf: string | nul
     }
     authState.failures = [];
     mock.loggedIn = true;
-    authState.csrf = newToken();
-    return json(sessionJSON());
+    authState.secret = newToken();
+    return json({ ...sessionJSON(authState.secret), session_secret: authState.secret });
   }
   if (method === 'POST' && p === '/api/logout') {
     mock.loggedIn = false;
+    authState.secret = '';
     return new Response(null, { status: 204 });
   }
-  if (mock.lan && !PUBLIC.includes(p)) {
-    if (!mock.loggedIn) return err(401, 'Log in first.');
-    if (changing && csrf !== authState.csrf) return err(403, 'Missing or wrong CSRF token.');
+  if (authOn() && !PUBLIC.includes(p)) {
+    // docs/api.md: the cookie and the X-Woodpile-Session header together; either alone is a 401.
+    if (!hasSession(header)) return err(401, 'Log in first.');
   }
   if (method === 'PUT' && p === '/api/password') {
     const b = (body ?? {}) as { current?: string; new?: string };
-    if (mock.lan && authState.password) {
+    if (authState.password) {
       const locked = lockout(now);
       if (locked) return locked;
       if (b.current !== authState.password) {
@@ -885,8 +1067,19 @@ async function route(method: string, url: URL, body: unknown, csrf: string | nul
     mock.clash = false; // pretend the other process was stopped
     return new Response(null, { status: 204 });
   }
+  if (method === 'GET' && p === '/api/live') {
+    probe.lastLiveHeader = header;
+    probe.livePaths.push(url.pathname + url.search);
+    let sev: Set<string> | null;
+    try {
+      sev = sevFilter(url.searchParams);
+    } catch (e) {
+      return err(400, (e as Error).message);
+    }
+    return liveResponse(url.searchParams, sev, signal);
+  }
   if (method === 'GET' && p === '/api/stats') return json(statsJSON(now));
-  if (method === 'GET' && p === '/api/devices') return json([...devs.values()].map((d) => deviceJSON(d, now)));
+  if (method === 'GET' && p === '/api/devices') return devicesRoute(url.searchParams, now);
   const dm = p.match(/^\/api\/devices\/([^/]+)$/);
   if (dm && method === 'PATCH') {
     const d = devs.get(decodeURIComponent(dm[1]));
@@ -910,8 +1103,8 @@ async function route(method: string, url: URL, body: unknown, csrf: string | nul
       // The real server restarts at the new address; the mock just switches modes and keeps
       // this browser logged in, as if it had already logged in there.
       mock.lan = s.ui.lan_mode;
-      mock.loggedIn = s.ui.lan_mode;
-      authState.csrf = newToken();
+      // The real server restarts at a new origin, where this browser has no secret yet. The
+      // mock keeps the origin, so it keeps the current session (if any) rather than invent one.
     }
     return json(settings);
   }
@@ -1004,10 +1197,9 @@ export const mockTransport: Transport = {
     const body = typeof init?.body === 'string' ? JSON.parse(init.body) : undefined;
     await sleep(mock.latency * (0.5 + Math.random()));
     if (mock.slowScan && url.pathname === '/api/search') await sleep(700);
-    const csrf = new Headers(init?.headers).get('X-CSRF-Token');
-    return route(method, url, body, csrf);
+    const header = probe.cookieOnly ? null : new Headers(init?.headers).get('X-Woodpile-Session');
+    return route(method, url, body, header, init?.signal ?? undefined);
   },
-  eventSource: (path) => new MockEventSource(path),
   async download(path) {
     const res = await mockTransport.fetch(path);
     if (!res.ok) return;

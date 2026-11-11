@@ -5,15 +5,16 @@
   import { prefs } from '../lib/prefs.svelte';
   import { defaultRange, rangeFromQuery, rangeToQuery, resolveRange, type Range } from '../lib/range';
   import { go, router, setQuery } from '../lib/router.svelte';
-  import { allScope, scopeDeviceIds, scopeFromQuery, scopeLabel, scopeParams, scopeToQuery, sevFromQuery, sevToQuery, type Scope } from '../lib/scope';
+  import { allScope, scopeFromQuery, scopeLabel, scopeParams, scopeToQuery, sevFromQuery, sevToQuery, type Scope } from '../lib/scope';
   import { sevClass, sevLabel } from '../lib/severity';
-  import { deviceName, live } from '../lib/status.svelte';
+  import { deviceName } from '../lib/status.svelte';
   import { splitRaw } from '../lib/syslog';
   import DevicePicker from '../components/DevicePicker.svelte';
   import Icon from '../components/Icon.svelte';
   import SeverityChips from '../components/SeverityChips.svelte';
   import TimeRange from '../components/TimeRange.svelte';
   import LogText from '../components/LogText.svelte';
+  import { tip } from '../lib/logtext';
 
   const PAGE = 500;
   const HOST_MAX = 28;
@@ -195,8 +196,7 @@
     if (!active) return;
     // Same devices (groups stay groups), range and filters, so the zip holds what the search showed.
     const p = new URLSearchParams();
-    if (activeScope.mode === 'all') p.set('dev', scopeDeviceIds(activeScope, live.devices ?? []).join(','));
-    else scopeToQuery(activeScope, p);
+    scopeToQuery(activeScope, p); // "all devices" stays all (no dev= list)
     p.set('from', active.from!);
     p.set('to', active.to!);
     sevToQuery(active.severities ?? [...ALL_SEVS], p);
@@ -236,7 +236,7 @@
       <button type="submit" class="pill-btn px-5 py-2"><Icon name="search" size={15} />Search</button>
     </div>
     <div class="flex flex-wrap items-center gap-3">
-      <DevicePicker bind:value={scope} devices={live.devices ?? []} />
+      <DevicePicker bind:value={scope} />
       <TimeRange bind:value={range} error={rangeError} />
       <div class="seg" role="radiogroup" aria-label="Order">
         <button type="button" role="radio" aria-checked={order === 'desc'} onclick={() => (order = 'desc')}>Newest first</button>
@@ -252,7 +252,7 @@
       <span class="text-log-dim" aria-live="polite">
         {#if status === 'idle'}Search, or leave the box empty to browse.
         {:else if active}
-          {num(results.length)} line{results.length === 1 ? '' : 's'}{cursor ? '+' : ''} · {scopeLabel(activeScope, live.devices ?? [])} · {stamp(
+          {num(results.length)} line{results.length === 1 ? '' : 's'}{cursor ? '+' : ''} · {scopeLabel(activeScope)} · {stamp(
             active.from!,
             prefs.utc,
           )} → {stamp(active.to!, prefs.utc)}{prefs.utc ? ' UTC' : ''}
@@ -300,7 +300,7 @@
           role="button"
           tabindex="0"
           data-ref={r.ref}
-          title={r.raw}
+          title={tip(r.raw)}
           aria-label="Show the lines around this one"
           onclick={() => openContext(r.ref)}
           onkeydown={(e) => rowKey(e, r.ref)}
@@ -349,7 +349,7 @@
       </div>
       {#if ctx.loading && !ctx.lines.length}<p class="font-sans text-log-dim">Loading…</p>{/if}
       {#each ctx.lines as l, i (l.ref)}
-        <div class="logline" class:hit={i === ctx.hit} title={l.raw}>
+        <div class="logline" class:hit={i === ctx.hit} title={tip(l.raw)}>
           <span class="c t">{stamp(l.received, prefs.utc)}</span><span class="c h">{deviceName(l.device_id)}</span><span class="c s {sevClass(l.severity)}"
             >{sevLabel(l.severity)}</span
           ><span class="m"><LogText text={text(l)} re={i === ctx.hit ? hl : null} raw={showRaw} /></span>

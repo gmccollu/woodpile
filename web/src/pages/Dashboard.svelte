@@ -1,7 +1,7 @@
 <script lang="ts">
-  import { getStats, type Device, type Stats } from '../lib/api';
+  import { getDevices, getStats, type Device, type Stats } from '../lib/api';
   import { ago, agoShort, bytes, num, rate } from '../lib/format';
-  import { live, NOW_WITHIN_S } from '../lib/status.svelte';
+  import { anyUngrouped, deviceName, DEVICE_POLL_MS, groupsSeen, live, NOW_WITHIN_S, remember } from '../lib/status.svelte';
   import { ui } from '../lib/ui.svelte';
   import LiveTail from '../components/LiveTail.svelte';
   import Sparkline from '../components/Sparkline.svelte';
@@ -33,22 +33,52 @@
     return () => clearInterval(t);
   });
 
-  const visible = $derived((live.devices ?? []).filter((d) => !d.hidden));
-  const groups = $derived([...new Set(visible.map((d) => d.group).filter(Boolean))].sort());
-  const hasUngrouped = $derived(visible.some((d) => !d.group));
-  const filterText = $derived(ui.filter.trim().toLowerCase());
+  const groups = $derived(live.devices ? groupsSeen() : []);
+  const hasUngrouped = $derived(live.devices ? anyUngrouped() : false);
+  const filterText = $derived(ui.filter.trim());
 
-  const inTab = (d: Device) => tab === ALL || (tab === UNGROUPED ? !d.group : d.group === tab);
+  // The strip asks the server for the busiest STRIP_MAX in the current tab and filter,
+  // plus the total (docs/api.md: sort=rate is busiest first).
+  let strip = $state<Device[] | null>(null);
+  let stripTotal = $state(0);
+  $effect(() => {
+    const p = {
+      sort: 'rate' as const,
+      limit: STRIP_MAX,
+      hidden: 'exclude' as const,
+      q: filterText,
+      group: tab !== ALL && tab !== UNGROUPED ? tab : undefined,
+      ungrouped: tab === UNGROUPED,
+    };
+    let stop = false;
+    const ctrl = new AbortController();
+    const loadStrip = async () => {
+      try {
+        const page = await getDevices(p, ctrl.signal);
+        if (stop) return;
+        remember(page.devices);
+        strip = page.devices;
+        stripTotal = page.total;
+      } catch {
+        /* keep the last strip */
+      }
+    };
+    const t0 = setTimeout(loadStrip, filterText ? 250 : 0);
+    const t = setInterval(loadStrip, DEVICE_POLL_MS);
+    return () => {
+      stop = true;
+      ctrl.abort();
+      clearTimeout(t0);
+      clearInterval(t);
+    };
+  });
+
   const label = (d: Device) => d.name || d.ip;
   // Busiest first. Rates are bucketed (powers of two) so chips don't swap places every poll.
   const bucket = (d: Device) => Math.round(Math.log2(d.msgs_per_min + 1));
-  const inScope = $derived(
-    visible
-      .filter(inTab)
-      .filter((d) => !filterText || `${d.name} ${d.ip}`.toLowerCase().includes(filterText))
-      .sort((a, b) => bucket(b) - bucket(a) || label(a).localeCompare(label(b), undefined, { numeric: true })),
+  const chips = $derived(
+    [...(strip ?? [])].sort((a, b) => bucket(b) - bucket(a) || label(a).localeCompare(label(b), undefined, { numeric: true })),
   );
-  const chips = $derived(inScope.slice(0, STRIP_MAX));
 
   // Click selects one device (click it again to clear); Cmd/Ctrl-click adds or removes.
   function pick(id: string, e: MouseEvent) {
@@ -61,7 +91,7 @@
   const tailGroup = $derived(picked.length || tab === ALL || tab === UNGROUPED ? '' : tab);
   const scope = $derived.by(() => {
     if (picked.length) {
-      const names = picked.map((id) => visible.find((d) => d.id === id)).map((d, i) => (d ? label(d) : picked[i]));
+      const names = picked.map(deviceName);
       return names.length > 3 ? `${names.slice(0, 3).join(', ')} +${names.length - 3}` : names.join(', ');
     }
     return tab === ALL ? 'all devices' : tab === UNGROUPED ? 'ungrouped' : tab;
@@ -174,10 +204,10 @@
 </div>
 
 <div class="strip mb-4" role="group" aria-label="Devices: click to show one in the live tail, Cmd or Ctrl-click for several">
-  {#if live.devices && !inScope.length}
+  {#if strip && !strip.length}
     <p class="m-0 px-1 text-sm text-muted">
-      {visible.length ? 'No devices match.' : 'No devices yet. Point a device at this machine on port 514.'}
-      {#if !visible.length}<a class="text-link underline" href="#/welcome">Setup help</a>{/if}
+      {live.deviceTotal ? 'No devices match.' : 'No devices yet. Point a device at this machine on port 514.'}
+      {#if !live.deviceTotal}<a class="text-link underline" href="#/welcome">Setup help</a>{/if}
     </p>
   {/if}
   {#each chips as d (d.id)}
@@ -192,8 +222,8 @@
       <span class="meta">{d.status === 'online' ? rate(d.msgs_per_min) : agoShort(d.last_heard, live.now, NOW_WITHIN_S)}</span>
     </button>
   {/each}
-  {#if inScope.length > STRIP_MAX}
-    <a class="chip more" href="#/devices">All {inScope.length} devices →</a>
+  {#if stripTotal > STRIP_MAX}
+    <a class="chip more" href="#/devices">All {num(stripTotal)} devices →</a>
   {/if}
 </div>
 

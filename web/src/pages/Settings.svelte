@@ -12,6 +12,7 @@
   import { ago, bytes, dateTime, GiB, MiB, num } from '../lib/format';
   import { deviceName, live, refreshStatus } from '../lib/status.svelte';
   import { auth, loadSession } from '../lib/session.svelte';
+  import { router } from '../lib/router.svelte';
   import PasswordForm from '../components/PasswordForm.svelte';
   import CopyButton from '../components/CopyButton.svelte';
 
@@ -24,11 +25,15 @@
     tcpAddr: string;
     tcpPort: number;
     allowlist: string;
+    maxDevices: number;
+    burst: number;
+    perMinute: number;
     dataDir: string;
     retentionDays: number;
     retentionGiB: number;
     partMiB: number;
     lanMode: boolean;
+    requireLocal: boolean;
     uiPort: number;
     certFile: string;
     keyFile: string;
@@ -61,11 +66,15 @@
       tcpAddr: s.listeners.tcp.addr,
       tcpPort: s.listeners.tcp.port,
       allowlist: s.listeners.allowlist.join('\n'),
+      maxDevices: s.listeners.max_devices,
+      burst: s.listeners.new_device_burst,
+      perMinute: s.listeners.new_devices_per_minute,
       dataDir: s.storage.data_dir,
       retentionDays: s.storage.retention_days,
       retentionGiB: round(s.storage.retention_bytes / GiB),
       partMiB: round(s.storage.part_bytes / MiB),
       lanMode: s.ui.lan_mode,
+      requireLocal: !!s.ui.require_login_local,
       uiPort: s.ui.port,
       certFile: s.ui.cert_file ?? '',
       keyFile: s.ui.key_file ?? '',
@@ -83,6 +92,9 @@
         udp: { enabled: f.udpEnabled, addr: f.udpAddr.trim(), port: n(f.udpPort) },
         tcp: { enabled: f.tcpEnabled, addr: f.tcpAddr.trim(), port: n(f.tcpPort) },
         allowlist: parseAllowlist(f.allowlist),
+        max_devices: n(f.maxDevices),
+        new_device_burst: n(f.burst),
+        new_devices_per_minute: n(f.perMinute),
       },
       storage: {
         data_dir: f.dataDir,
@@ -90,7 +102,13 @@
         retention_bytes: Math.round(n(f.retentionGiB) * GiB),
         part_bytes: Math.round(n(f.partMiB) * MiB),
       },
-      ui: { lan_mode: f.lanMode, port: n(f.uiPort), cert_file: f.certFile.trim(), key_file: f.keyFile.trim() },
+      ui: {
+        lan_mode: f.lanMode,
+        port: n(f.uiPort),
+        cert_file: f.certFile.trim(),
+        key_file: f.keyFile.trim(),
+        require_login_local: f.requireLocal,
+      },
       quiet: {
         quiet_after_seconds: Math.round(n(f.quietMin) * 60),
         offline_after_seconds: Math.round(n(f.offlineMin) * 60),
@@ -145,6 +163,14 @@
   }
   load();
 
+  // The device_limit banner links to #/settings?section=limits.
+  let scrolled = false;
+  $effect(() => {
+    if (scrolled || !form || !router.query.includes('section=limits')) return;
+    scrolled = true;
+    requestAnimationFrame(() => document.getElementById('sender-limits')?.scrollIntoView({ block: 'start', behavior: 'instant' }));
+  });
+
   const dirty = $derived(!!form && !!saved && JSON.stringify(fromForm(form)) !== JSON.stringify(saved));
 
   // Field paths this page shows inline. Anything else the server reports goes in the summary.
@@ -156,11 +182,15 @@
     'listeners.tcp.addr',
     'listeners.tcp.port',
     'listeners.allowlist',
+    'listeners.max_devices',
+    'listeners.new_device_burst',
+    'listeners.new_devices_per_minute',
     'storage.data_dir',
     'storage.retention_days',
     'storage.retention_bytes',
     'storage.part_bytes',
     'ui.lan_mode',
+    'ui.require_login_local',
     'ui.port',
     'ui.cert_file',
     'ui.key_file',
@@ -208,12 +238,15 @@
         // location.hostname keeps IPv6 brackets. Turning LAN mode off means localhost only.
         const url = lan ? `https://${location.hostname}:${saved.ui.port}/` : `http://localhost:${saved.ui.port}/`;
         moved = { url, lan, port: saved.ui.port };
+        auth.movedTo = url;
       }
       savedAt = Date.now();
       setTimeout(() => (savedAt = 0), 2500);
-      refreshStatus();
-      loadRejected();
-      loadSession();
+      if (!auth.movedTo) {
+        refreshStatus();
+        loadRejected();
+        loadSession();
+      }
     } catch (x) {
       if (x instanceof ApiError && Object.keys(x.fields).length) {
         errors = x.fields;
@@ -243,6 +276,7 @@
     `netsh advfirewall firewall add rule name="Woodpile UI" dir=in action=allow protocol=TCP localport=${port}`;
   const passwordSet = $derived(!!auth.session?.password_set);
   const isMac = $derived(live.status?.os.startsWith('darwin') ?? false);
+  const REASON: Record<string, string> = { allowlist: 'not on the allowlist', per_source: 'too many TCP connections' };
   const reasonText = { age: 'older than the retention period', cap: 'disk cap reached', low_disk: 'low disk space' };
 </script>
 
@@ -365,6 +399,34 @@
         <span class="hint">Empty means every sender is accepted. Changes apply when you save.</span>
       </label>
 
+      <fieldset class="limits" id="sender-limits">
+        <legend class="text-[14px] font-semibold">Sender limits</legend>
+        <p class="hint mt-1">
+          These protect against floods of fake source addresses, which would otherwise each become a device. Senders that already have logs
+          on disk are never rate-limited; refused messages count as dropped.
+        </p>
+        <div class="grid gap-4 sm:grid-cols-3">
+          <label class="lbl">
+            <span>Active devices</span>
+            <input class="field" type="number" min="1" bind:value={form.maxDevices} aria-invalid={!!err('listeners.max_devices')} aria-describedby="err-listeners.max_devices h-max" />
+            <span class="hint" id="h-max">Devices that sent in the last 10 minutes. Default 10,000.</span>
+            {@render fieldError('listeners.max_devices')}
+          </label>
+          <label class="lbl">
+            <span>New senders at once</span>
+            <input class="field" type="number" min="1" bind:value={form.burst} aria-invalid={!!err('listeners.new_device_burst')} aria-describedby="err-listeners.new_device_burst h-burst" />
+            <span class="hint" id="h-burst">A burst of new addresses accepted before the rate applies. Default 5,000.</span>
+            {@render fieldError('listeners.new_device_burst')}
+          </label>
+          <label class="lbl">
+            <span>New senders per minute after that</span>
+            <input class="field" type="number" min="1" bind:value={form.perMinute} aria-invalid={!!err('listeners.new_devices_per_minute')} aria-describedby="err-listeners.new_devices_per_minute h-rate" />
+            <span class="hint" id="h-rate">The steady rate for brand-new addresses. Default 200.</span>
+            {@render fieldError('listeners.new_devices_per_minute')}
+          </label>
+        </div>
+      </fieldset>
+
       <h3 class="mt-4 mb-2 text-[14px] font-semibold">Refused senders, last 24 h</h3>
       {#if rejected === null}
         <p class="hint">Loading…</p>
@@ -378,6 +440,7 @@
                 <th scope="col">Sender</th>
                 <th scope="col" class="text-right">Messages</th>
                 <th scope="col">Last seen</th>
+                <th scope="col">Why</th>
                 <th scope="col"><span class="sr-only">Actions</span></th>
               </tr>
             </thead>
@@ -387,10 +450,14 @@
                   <td class="font-mono">{r.ip}</td>
                   <td class="text-right tabular-nums">{num(r.count_24h)}</td>
                   <td title={dateTime(r.last_seen)}>{ago(r.last_seen, live.now)}</td>
+                  <td>{REASON[r.reason] ?? r.reason}</td>
                   <td class="text-right">
-                    <button type="button" class="ghost-btn whitespace-nowrap" onclick={() => allow(r.ip)} disabled={inDraft(r.ip)} aria-label="Allow {r.ip}">
-                      {inDraft(r.ip) ? 'Added, save to apply' : 'Allow'}
-                    </button>
+                    <!-- Allowing only helps allowlist refusals; a per-source refusal is a connection flood. -->
+                    {#if r.reason === 'allowlist'}
+                      <button type="button" class="ghost-btn whitespace-nowrap" onclick={() => allow(r.ip)} disabled={inDraft(r.ip)} aria-label="Allow {r.ip}">
+                        {inDraft(r.ip) ? 'Added, save to apply' : 'Allow'}
+                      </button>
+                    {/if}
                   </td>
                 </tr>
               {/each}
@@ -489,6 +556,37 @@
       {#if saved?.ui.lan_mode && isWindows}
         {@render firewall(saved.ui.port)}
       {/if}
+      {#if saved?.ui.lan_mode && live.status?.ui_cert_fingerprint}
+        <div class="fp mt-3">
+          <p class="m-0 text-[13.5px]">
+            <b>Certificate fingerprint (SHA-256).</b> When the browser warns about the certificate, open its details and check the SHA-256
+            fingerprint matches this one. If it doesn't, you aren't talking to this Woodpile.
+          </p>
+          <div class="mt-2 flex flex-wrap items-center gap-2">
+            <code class="font-mono text-[12.5px] break-all">{live.status.ui_cert_fingerprint}</code>
+            <CopyButton text={live.status.ui_cert_fingerprint} />
+          </div>
+        </div>
+      {/if}
+
+      <label class="mt-4 flex items-start gap-3">
+        <input
+          type="checkbox"
+          bind:checked={form.requireLocal}
+          disabled={!passwordSet && !form.requireLocal}
+          aria-invalid={!!err('ui.require_login_local')}
+          aria-describedby="hint-local err-ui.require_login_local"
+          class="mt-1"
+        />
+        <span>
+          <span class="font-semibold">Require login on this machine too</span>
+          <span class="hint block" id="hint-local">
+            For shared or multi-user machines: anyone logged in to this computer can otherwise open the UI on localhost without a password.
+            {#if !passwordSet}Set a password below first.{/if}
+          </span>
+        </span>
+      </label>
+      {@render fieldError('ui.require_login_local')}
 
       <label class="lbl mt-3 w-40">
         <span>UI port</span>
@@ -557,6 +655,20 @@
   .moved {
     padding: 16px 18px;
     border-radius: 22px;
+    border: 1px solid var(--info-border);
+    background: var(--info-bg);
+  }
+  .limits {
+    /* Land below the sticky save bar when the device_limit banner links here. */
+    scroll-margin-top: 90px;
+    border: 0;
+    border-top: 1px solid var(--divider);
+    margin: 18px 0 0;
+    padding: 14px 0 0;
+  }
+  .fp {
+    padding: 10px 14px;
+    border-radius: 14px;
     border: 1px solid var(--info-border);
     background: var(--info-bg);
   }

@@ -35,6 +35,12 @@
     <Icon name="alert" />
     <div class="grow">
       <div>{b.text}</div>
+      {#if b.kind === 'device_limit'}
+        <div class="detail-text">
+          The limits stop a flood of fake source addresses from filling the device list. If these are real devices, raise the limits in
+          <a class="text-link underline" href="#/settings?section=limits">Settings → Sender limits</a>.
+        </div>
+      {/if}
       {#if b.kind === 'listener_bind'}
         {#each failed as l (l.proto + l.port)}
           <div class="detail">
@@ -85,6 +91,10 @@
   .info {
     background: var(--info-bg);
     border-color: var(--info-border);
+  }
+  .detail-text {
+    margin-top: 4px;
+    font-size: 13.5px;
   }
   .detail {
     margin-top: 4px;

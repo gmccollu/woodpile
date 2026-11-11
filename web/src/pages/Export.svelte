@@ -17,8 +17,8 @@
   import { prefs } from '../lib/prefs.svelte';
   import { defaultRange, rangeFromQuery, resolveRange, type Range } from '../lib/range';
   import { router } from '../lib/router.svelte';
-  import { scopeDeviceIds, scopeFromQuery, sevFromQuery, type Scope } from '../lib/scope';
-  import { deviceName, live } from '../lib/status.svelte';
+  import { scopeFromQuery, sevFromQuery, type Scope } from '../lib/scope';
+  import { allVisibleIds, deviceName, live } from '../lib/status.svelte';
   import { SEVERITIES } from '../lib/severity';
   import DevicePicker from '../components/DevicePicker.svelte';
   import Icon from '../components/Icon.svelte';
@@ -49,16 +49,28 @@
     fromSearch = true;
   });
 
-  const ids = $derived(scopeDeviceIds(scope, live.devices ?? []));
+  // How many devices the scope covers, where that's known without asking (groups resolve on the server).
+  const count = $derived(scope.mode === 'devices' ? scope.devices.length : scope.mode === 'all' ? live.deviceTotal : null);
   const formError = $derived(
-    !ids.length ? 'Pick at least one device.' : !sev.length ? 'Pick at least one severity, or All.' : '',
+    count === 0 ? 'Pick at least one device.' : !sev.length ? 'Pick at least one severity, or All.' : '',
   );
 
+  // "All devices" has no API form, so it's sent as the list (paged from the server, cached briefly).
+  let allIds: { at: number; ids: string[] } | null = null;
+  async function everyDevice(): Promise<string[]> {
+    if (!allIds || Date.now() - allIds.at > 30_000) allIds = { at: Date.now(), ids: await allVisibleIds() };
+    return allIds.ids;
+  }
+
   // Groups stay groups (the server resolves them when it builds); "all devices" is sent as the list.
-  function request(): ExportRequest {
+  async function request(): Promise<ExportRequest> {
     const { from, to } = resolveRange(range);
     const who =
-      scope.mode === 'group' ? { group: scope.group } : scope.mode === 'ungrouped' ? { ungrouped: true } : { devices: ids };
+      scope.mode === 'group'
+        ? { group: scope.group }
+        : scope.mode === 'ungrouped'
+          ? { ungrouped: true }
+          : { devices: scope.mode === 'devices' ? scope.devices : await everyDevice() };
     return { ...who, from, to, severities: sev, q: q.trim(), regex, case: cs };
   }
 
@@ -67,7 +79,7 @@
   let estError = $state('');
   let estBusy = $state(false);
   $effect(() => {
-    const key = JSON.stringify({ ids, scope, range, sev, q, regex, cs, e: formError });
+    const key = JSON.stringify({ scope, range, sev, q, regex, cs, e: formError });
     void key;
     if (formError) {
       est = null;
@@ -77,7 +89,7 @@
     const t = setTimeout(async () => {
       estBusy = true;
       try {
-        est = await estimateExport(request(), ctrl.signal);
+        est = await estimateExport(await request(), ctrl.signal);
         estError = '';
       } catch (x) {
         if ((x as Error).name !== 'AbortError') {
@@ -110,22 +122,28 @@
     }
   }
 
-  // Poll fast while something is queued or building.
+  // Poll fast while something is queued or building. kick() polls now and re-evaluates the
+  // pace, so a new build shows its progress straight away instead of after a slow tick.
+  let pollTimer = 0;
+  let polling = true;
+  async function poll() {
+    clearTimeout(pollTimer);
+    await refresh();
+    now = Date.now();
+    if (!polling) return;
+    clearTimeout(pollTimer);
+    const busy = list?.some((e) => e.state === 'queued' || e.state === 'building');
+    pollTimer = window.setTimeout(poll, busy ? 1000 : 5000);
+  }
+  const kick = () => poll();
+
   $effect(() => {
-    let stop = false;
-    let t = 0;
-    const loop = async () => {
-      await refresh();
-      now = Date.now();
-      if (stop) return;
-      const busy = list?.some((e) => e.state === 'queued' || e.state === 'building');
-      t = window.setTimeout(loop, busy ? 1000 : 5000);
-    };
-    loop();
+    polling = true;
+    poll();
     const clock = setInterval(() => (now = Date.now()), 30_000);
     return () => {
-      stop = true;
-      clearTimeout(t);
+      polling = false;
+      clearTimeout(pollTimer);
       clearInterval(clock);
     };
   });
@@ -135,8 +153,8 @@
     building = true;
     buildError = '';
     try {
-      await createExport(request());
-      await refresh();
+      await createExport(await request());
+      await kick();
     } catch (x) {
       buildError = (x as Error).message;
     } finally {
@@ -150,7 +168,7 @@
     } catch (x) {
       listError = (x as Error).message;
     }
-    await refresh();
+    await kick();
   }
 
   // A plain link streams the zip; only mock mode (no server) needs to go through the transport.
@@ -201,8 +219,8 @@
 
       <div class="row">
         <span class="lbl">Devices</span>
-        <DevicePicker bind:value={scope} devices={live.devices ?? []} />
-        <span class="text-[13px] text-muted">{num(ids.length)} device{ids.length === 1 ? '' : 's'}</span>
+        <DevicePicker bind:value={scope} />
+        {#if count !== null}<span class="text-[13px] text-muted">{num(count)} device{count === 1 ? '' : 's'}</span>{/if}
       </div>
       <div class="row">
         <span class="lbl">Time range</span>

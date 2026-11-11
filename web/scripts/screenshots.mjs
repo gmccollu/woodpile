@@ -274,6 +274,138 @@ const SHOTS = [
     check: `document.querySelector('.tail.full')?.getBoundingClientRect().width === innerWidth`,
   },
 
+  // ---- Scale: 10,000 devices, paginated ----
+  {
+    name: 'devices-10k-light',
+    mode: 'light',
+    url: '/?mock_panel=0&mock_devices=10000#/devices',
+    wait: 3000,
+    check: `/1–200 of [\\d,]{5,}/.test(document.body.innerText) && document.querySelectorAll('tbody tr').length === 200`,
+  },
+  {
+    name: 'devices-10k-next-and-search',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0&mock_devices=10000#/devices',
+    wait: 2500,
+    act: `__btn('Next →').click(); await new Promise((r) => setTimeout(r, 1500));
+      if (!/201–400 of/.test(document.body.innerText)) throw new Error('next page not shown');
+      __set(document.querySelector('input[type=search]'), 'sw-0004');`,
+    after: 2500,
+    check: `(() => { const rows = [...document.querySelectorAll('tbody tr')]; return rows.length > 0 && rows.length <= 200
+      && rows.every((r) => r.textContent.includes('sw-0004')) && /1–\\d+ of \\d+ matching/.test(document.body.innerText); })()`,
+  },
+  {
+    name: 'dashboard-10k-light',
+    mode: 'light',
+    url: '/?mock_panel=0&mock_devices=10000#/dashboard',
+    wait: 3000,
+    check: `document.querySelectorAll('.strip button.chip').length === 30 && /All [\\d,]{5,} devices/.test(document.querySelector('.strip .more')?.textContent ?? '')`,
+  },
+  {
+    name: 'banner-device-limit-light',
+    mode: 'light',
+    url: '/?mock_panel=0&mock_device_limit=1#/dashboard',
+    wait: 2000,
+    check: `document.body.innerText.includes('New senders are being refused') && !!document.querySelector('a[href="#/settings?section=limits"]')`,
+  },
+  {
+    name: 'device-limit-link-opens-sender-limits',
+    noshot: true,
+    report: `JSON.stringify({ top: document.getElementById('sender-limits')?.getBoundingClientRect().top, y: scrollY, h: innerHeight, hash: location.hash })`,
+    mode: 'light',
+    url: '/?mock_panel=0&mock_device_limit=1#/dashboard',
+    wait: 2000,
+    act: `document.querySelector('a[href="#/settings?section=limits"]').click();`,
+    after: 1500,
+    check: `(() => { const el = document.getElementById('sender-limits'); const r = el?.getBoundingClientRect(); return !!r && r.top >= 0 && r.top < innerHeight; })()`,
+  },
+  {
+    name: 'sender-limits-validation',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/settings',
+    act: `__set(__field('Active devices'), '0'); __btn('Save').click();`,
+    after: 800,
+    check: `document.getElementById('err-listeners.max_devices')?.textContent.startsWith('Use a whole number')`,
+  },
+  {
+    name: 'require-login-local',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0&mock_password=1#/settings',
+    act: `const box = __field('Require login on this machine too'); if (box.disabled) throw new Error('disabled with a password set');
+      box.click(); await __tick(); __btn('Save').click(); await new Promise((r) => setTimeout(r, 1500));
+      if (!__field('Password')) throw new Error('no login form after turning on require_login_local');
+      __set(__field('Password'), 'woodpile-demo'); await __tick(); __btn('Log in').click();`,
+    after: 1500,
+    check: `location.hash.startsWith('#/settings') && __field('Require login on this machine too').checked && !!__btn('Log out')`,
+  },
+  {
+    name: 'require-login-local-needs-password',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/settings',
+    check: `__field('Require login on this machine too').disabled && document.body.innerText.includes('shared or multi-user machines')`,
+  },
+  {
+    name: 'password-change-needs-current-localhost',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0&mock_password=1#/settings',
+    check: `!!__field('Current password') && document.body.innerText.includes('Change password')`,
+  },
+  {
+    name: 'refused-sender-reasons',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/settings',
+    check: `(() => { const rows = [...document.querySelectorAll('tr')]; const ps = rows.find((r) => r.textContent.includes('10.9.0.66'));
+      const al = rows.find((r) => r.textContent.includes('198.51.100.7'));
+      return ps && al && ps.textContent.includes('too many TCP connections') && !ps.querySelector('button')
+        && al.textContent.includes('not on the allowlist') && !!al.querySelector('button'); })()`,
+  },
+
+  // ---- Hostile content: long lines, spoofing characters ----
+  {
+    name: 'search-long-line-light',
+    mode: 'light',
+    url: '/?mock_panel=0#/search?q=payload%20dump&r=7d',
+    wait: 2500,
+    check: `(() => { const l = [...document.querySelectorAll('.logline.clickable')]; return l.length > 0
+      && l.every((x) => x.offsetHeight <= 24 && x.textContent.length < 9000 && x.textContent.includes('show full message')); })()`,
+  },
+  {
+    name: 'long-line-expands-in-place',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/search?q=payload%20dump&r=7d',
+    wait: 2500,
+    act: `document.querySelector('.logline.clickable .more-btn').click();`,
+    after: 600,
+    check: `document.querySelector('.logline.clickable').textContent.length > 20000 && !document.querySelector('[role=dialog]')`,
+  },
+  {
+    name: 'search-spoofing-chars-light',
+    mode: 'light',
+    url: '/?mock_panel=0#/search?q=file%20uploaded&r=24h',
+    wait: 2500,
+    check: `(() => { const l = [...document.querySelectorAll('.logline.clickable .m')]; return l.length > 0
+      && l.every((x) => x.textContent.includes('⟨U+202E⟩') && x.textContent.includes('⟨U+200B⟩')
+        && !x.textContent.includes('\u202e') && !x.textContent.includes('\u200b')); })()`,
+  },
+  {
+    name: 'spoofing-chars-raw-escaped',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/search?q=file%20uploaded&r=24h',
+    wait: 2500,
+    act: `__btn('Raw').click();`,
+    after: 500,
+    check: `(() => { const l = [...document.querySelectorAll('.logline.clickable .m')]; return l.length > 0
+      && l.every((x) => x.textContent.includes('\\\\u202e') && !x.textContent.includes('\u202e')); })()`,
+  },
+
   // ---- Search ----
   ...both({
     name: 'search-results',
@@ -476,7 +608,7 @@ const SHOTS = [
     check: `/locked for 1[45] min \\d+ s/.test(document.body.innerText) && __btn('Log in').disabled`,
   },
   {
-    name: 'login-returns-and-sends-csrf',
+    name: 'login-returns-and-sends-secret',
     noshot: true,
     mode: 'light',
     url: '/?mock_panel=0&mock_auth=1#/devices',
@@ -486,8 +618,45 @@ const SHOTS = [
       const i = document.getElementById('edit-name-10.1.0.1'); __set(i, 'edge-fw-01b');
       i.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));`,
     after: 900,
-    check: `location.hash === '#/devices' && !!__btn('Log out') && document.body.innerText.includes('edge-fw-01b')
-      && window.__woodpileMock.lastCsrf === window.__woodpileMock.csrf && window.__woodpileMock.csrf.length === 32`,
+    check: `(() => { const m = window.__woodpileMock; const key = 'woodpile.session.' + location.origin;
+      return location.hash === '#/devices' && !!__btn('Log out') && document.body.innerText.includes('edge-fw-01b')
+        && m.secret.length === 32 && localStorage.getItem(key) === m.secret
+        && m.lastWriteHeader === m.secret && m.lastGetHeader === m.secret
+        && m.sessionBodies.length > 0 && m.sessionBodies.every((b) => !b.includes(m.secret) && !b.includes('session_secret')); })()`,
+  },
+  {
+    name: 'secret-sent-on-gets-and-live-stream',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0&mock_auth=1&mock_loggedin=1#/dashboard',
+    wait: 3000,
+    check: `(() => { const m = window.__woodpileMock; return !!m.secret && m.lastGetHeader === m.secret && m.lastLiveHeader === m.secret
+      && document.querySelectorAll('[role=log] .logline').length > 0; })()`,
+  },
+  {
+    name: 'cookie-without-header-gets-401-and-login',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0&mock_auth=1&mock_loggedin=1#/devices',
+    wait: 1500,
+    act: `window.__woodpileMock.cookieOnly = true;
+      await new Promise((r) => setTimeout(r, 6000));
+      if (!__field('Password') || document.querySelector('nav')) throw new Error('no login after a cookie-only 401');
+      if (localStorage.getItem('woodpile.session.' + location.origin)) throw new Error('secret not cleared on 401');
+      window.__woodpileMock.cookieOnly = false;
+      __set(__field('Password'), 'woodpile-demo'); await __tick(); __btn('Log in').click();`,
+    after: 1500,
+    check: `location.hash === '#/devices' && document.querySelectorAll('tbody tr').length > 5`,
+  },
+  {
+    name: 'logout-clears-secret',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0&mock_auth=1&mock_loggedin=1#/about',
+    wait: 1500,
+    act: `__btn('Log out').click();`,
+    after: 1200,
+    check: `!!__field('Password') && !localStorage.getItem('woodpile.session.' + location.origin)`,
   },
   {
     name: 'expired-session-401-shows-login',
@@ -534,7 +703,7 @@ const SHOTS = [
     name: 'settings-lan-on-dark',
     mode: 'dark',
     url: '/?mock_panel=0&mock_auth=1&mock_loggedin=1#/settings',
-    check: `!!__field('Current password') && !!__btn('Log out')`,
+    check: `!!__field('Current password') && !!__btn('Log out') && document.body.innerText.includes('Certificate fingerprint (SHA-256)')`,
   },
   { name: 'mock-panel-light', mode: 'light', url: '/#/dashboard', act: `__btn('Mock data ▸').click();`, after: 500 },
 ].filter((s) => s.name.includes(only));
@@ -627,6 +796,7 @@ try {
       if (s.check && !(await evaluate(`return !!(${s.check})`))) {
         failed++;
         console.error(`  ! ${s.name}: check failed: ${s.check}`);
+        if (s.report) console.error(`    ${await evaluate(`return ${s.report}`)}`);
       }
       const errs = events.filter((e) => e.method === 'Runtime.exceptionThrown');
       if (errs.length) {

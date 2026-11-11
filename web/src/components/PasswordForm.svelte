@@ -12,8 +12,8 @@
   let errs = $state<{ current?: string; new?: string; confirm?: string; form?: string }>({});
 
   const isSet = $derived(!!auth.session?.password_set);
-  // In localhost mode the server ignores `current` (docs/api.md), so only ask in LAN mode.
-  const needCurrent = $derived(isSet && auth.session?.mode === 'lan');
+  // docs/api.md: once a password is set, changing it needs the current one in both modes.
+  const needCurrent = $derived(isSet);
 
   async function submit() {
     if (busy) return;
