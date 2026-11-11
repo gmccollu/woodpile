@@ -44,7 +44,7 @@ proposal and can change.
 | Sizes | "GB" in this spec means GiB (1 GiB guard floor, 20 GiB cap) |
 | Low-disk reserve | max(1 GiB, min(5% of the volume, 10 GiB)): 1 GiB on a 10 GB volume, 5 GiB on 100 GB, 10 GiB on 460 GB and 4 TB (§3.4) **(decided, 2026-11-11)** |
 | Retention fairness | Over the size cap or the low-disk reserve, delete from the device using the most bytes on disk first (its oldest closed file); age retention is per file as before. A device sending over half of the last 24 h's bytes gets a warn event, at most hourly (§3.4) **(decided, 2026-11-11)** |
-| New-sender limits | At most 10,000 senders in memory (`max_devices`); senders with no logs yet also need a token (burst 1,000, then 100 a minute). Refused messages count as dropped and raise the `device_limit` banner. Idle senders with no open file are freed from memory after 1 min **(decided, 2026-11-11)** |
+| New-sender limits | At most 10,000 *active* senders (`max_devices`): a sender quiet for 10 min has its file closed early (its next message appends to the same file) and its memory freed, so the cap counts senders heard in about the last 10 min. Senders with no logs yet also need a token (burst 5,000, then 200 a minute), so a new install on a 5,000-device network admits everyone at once. All three are live settings. Refused messages count as dropped and raise the `device_limit` banner **(decided, 2026-11-11)** |
 | Checkpoints | Every 1 MiB, or every minute once 64 KiB has been written since the last one |
 | Durability | Plain `fsync` on every OS (on macOS that survives process and OS crashes, not necessarily power loss) |
 | Late messages | A message for a day that's already closed goes into the current file with its own timestamp; files never reopen |

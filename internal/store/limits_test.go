@@ -48,7 +48,7 @@ func countLines(t *testing.T, dir string) int {
 }
 
 // TestFiftyThousandNewSenders: 50,000 one-message senders with the default limits.
-// The burst admits 1,000; the rest are refused and counted; the heap stays small.
+// The burst admits 5,000; the rest are refused and counted; the heap stays small.
 func TestFiftyThousandNewSenders(t *testing.T) {
 	e := newEnv(t, nil)
 	before := heapInuse()
@@ -74,32 +74,33 @@ func TestFiftyThousandNewSenders(t *testing.T) {
 	}
 	e.maintain()
 	u := e.s.Usage()
-	if u.RefusedMsgs != 49000 || u.Dropped != 49000 || !u.DeviceLimited || u.DeviceLimitReason != "rate" ||
-		u.Devices != 1000 || u.MaxDevices != DefaultMaxDevices {
+	const burst, refusedN = DefaultNewDeviceBurst, 50000 - DefaultNewDeviceBurst
+	if u.RefusedMsgs != refusedN || u.Dropped != refusedN || !u.DeviceLimited || u.DeviceLimitReason != "rate" ||
+		u.Devices != burst || u.MaxDevices != DefaultMaxDevices {
 		t.Fatalf("usage %+v", u)
 	}
-	if c, _ := e.idx.TotalCounts(bg, time.Time{}, time.Time{}); c.Dropped != 49000 || c.Msgs != 1000 {
+	if c, _ := e.idx.TotalCounts(bg, time.Time{}, time.Time{}); c.Dropped != refusedN || c.Msgs != burst {
 		t.Fatalf("stats %+v", c)
 	}
-	if devs, _ := e.idx.ListDevices(bg); len(devs) != 1000 {
+	if devs, _ := e.idx.ListDevices(bg); len(devs) != burst {
 		t.Fatalf("%d device rows", len(devs))
 	}
 	evs := eventsOf(t, e.idx, index.KindDeviceLimit)
-	if len(evs) != 1 || evs[0].Level != index.LevelWarn || !strings.Contains(evs[0].Text, "refused 49000 messages") {
+	if len(evs) != 1 || evs[0].Level != index.LevelWarn || !strings.Contains(evs[0].Text, fmt.Sprintf("refused %d messages", refusedN)) {
 		t.Fatalf("events %+v", evs)
 	}
-	if n := countLines(t, e.dir); n != 1000 {
+	if n := countLines(t, e.dir); n != burst {
 		t.Fatalf("%d lines on disk", n)
 	}
-	// The bucket refills at 100 a minute; the event repeats at most once a minute.
+	// The bucket refills at 200 a minute; the event repeats at most once a minute.
 	e.clock.Add(time.Minute)
 	accepted = 0
-	for i := 50000; i < 50300; i++ {
+	for i := 50000; i < 50500; i++ {
 		if e.s.Write(model.Message{Received: e.clock.Now(), Sender: v6(i), Raw: []byte("later")}) == nil {
 			accepted++
 		}
 	}
-	if accepted != 100 {
+	if accepted != int(DefaultNewDevicesPerMinute) {
 		t.Fatalf("after a minute %d accepted", accepted)
 	}
 	e.maintain()

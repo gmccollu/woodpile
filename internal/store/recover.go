@@ -1,21 +1,18 @@
 package store
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
-	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/gmccollu/woodpile/internal/index"
-	"github.com/gmccollu/woodpile/internal/model"
 	"github.com/gmccollu/woodpile/internal/store/logfile"
 )
 
@@ -28,8 +25,9 @@ import (
 //  3. A torn last line (a partial write) in an uncompressed file is completed with a
 //     newline if its timestamp and sender survived, and cut off otherwise.
 //  4. The index is reconciled with the files (index.Reconcile).
-//  5. Each device's latest "<day>.log" for today (or later) becomes its active file
-//     again, appended to; every other uncompressed file is queued for compression.
+//  5. Each device's latest "<day>.log" for today (or later) is parked: the device
+//     appends to it on its next message. Every other uncompressed file is queued
+//     for compression.
 func (s *Store) recover(ctx context.Context) error {
 	entries, temps, err := logfile.List(s.dataDir)
 	if err != nil {
@@ -138,20 +136,18 @@ func (s *Store) recover(ctx context.Context) error {
 		s.devMu.Lock()
 		s.known[dev] = struct{}{} // has logs: exempt from the new-device rate
 		s.devMu.Unlock()
-		// Only devices with an active file need in-memory state now; the others are
-		// created on their next message (dayClosed keeps them off closed days).
-		var d *device
-		if active != nil {
-			if addr, ok := s.deviceAddr(ctx, dev, list); ok {
-				d, _ = s.device(addr, false)
-			}
-		}
-		if d == nil {
-			active = nil // without the sender's address we can't append; close it instead
-		}
-		minDay := ""
 		for _, e := range list {
 			if active != nil && e.Rel == active.Rel {
+				// Today's file: park it. The device gets in-memory state only when it
+				// sends again, and then appends to this file.
+				row, ok := rows[e.Rel]
+				ce, err := s.parkFromDisk(ctx, e, row, ok)
+				if err != nil {
+					return err
+				}
+				if ce != nil {
+					s.addClosed(ce)
+				}
 				continue
 			}
 			ce := &catEntry{deviceID: dev, name: e.Name, abs: e.Path, rel: e.Rel, size: e.Size}
@@ -168,23 +164,6 @@ func (s *Store) recover(ctx context.Context) error {
 				}
 			}
 			s.addClosed(ce)
-			if e.Name.Part == 0 && nextDay(e.Name.Day) > minDay {
-				minDay = nextDay(e.Name.Day)
-			}
-		}
-		if d != nil {
-			d.mu.Lock()
-			if minDay > d.minDay {
-				d.minDay = minDay
-			}
-			if active != nil {
-				row, ok := rows[active.Rel]
-				if err := d.loadActiveLocked(ctx, *active, row, ok); err != nil {
-					d.mu.Unlock()
-					return err
-				}
-			}
-			d.mu.Unlock()
 		}
 	}
 	if len(notes) > 0 {
@@ -196,83 +175,35 @@ func (s *Store) recover(ctx context.Context) error {
 	return nil
 }
 
-// loadActiveLocked makes an existing file the device's active file again.
-func (d *device) loadActiveLocked(ctx context.Context, e logfile.Entry, row index.File, hasRow bool) error {
-	d.startDayLocked(e.Name.Day)
-	d.needResync = true
-	if hasRow && row.Size == e.Size {
-		d.w = fileState{size: row.Size, lines: row.Lines, first: row.FirstReceived, last: row.LastReceived}
-		last, ok, err := d.s.idx.LastCheckpoint(ctx, row.ID)
+// parkFromDisk turns a device's file for today, found at startup, into a parked
+// catalog entry: its state comes from the index row and newest checkpoint when the
+// row matches the file, otherwise from a scan (and the row is rewritten).
+func (s *Store) parkFromDisk(ctx context.Context, e logfile.Entry, row index.File, hasRow bool) (*catEntry, error) {
+	ce := &catEntry{deviceID: e.DeviceID, name: e.Name, abs: e.Path, rel: e.Rel, size: e.Size, rawSize: e.Size, parked: true}
+	if hasRow && row.Size == e.Size && row.Lines > 0 {
+		last, ok, err := s.idx.LastCheckpoint(ctx, row.ID)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if ok {
-			d.wcp = logfile.ResumeCheckpointer(last, row.LastReceived)
-			d.needResync = false
+			ce.first, ce.last, ce.lines = row.FirstReceived, row.LastReceived, row.Lines
+			ce.cp = logfile.ResumeCheckpointer(last, row.LastReceived)
+			return ce, nil
 		}
 	}
-	if d.needResync {
-		d.w = fileState{}
-		if err := d.resyncLocked(); err != nil {
-			return err
-		}
-		if d.w.lines > 0 {
-			d.s.pushOps(index.FileOp{Kind: index.OpUpsert, File: d.fileRow(), Checkpoints: d.newCPs, ResetCheckpoints: true})
-		}
-		d.newCPs, d.resetCPs = nil, false
-	} else {
-		d.s.activeBytes.Add(d.w.size)
-	}
-	d.p, d.cp = d.w, d.wcp
-	return nil
-}
-
-// deviceAddr finds the sender address of a device directory: from the index, from
-// the directory name, or from the first line of one of its files.
-func (s *Store) deviceAddr(ctx context.Context, dev string, list []logfile.Entry) (netip.Addr, bool) {
-	try := func(ip string) (netip.Addr, bool) {
-		a, err := netip.ParseAddr(ip)
-		if err != nil {
-			return netip.Addr{}, false
-		}
-		a = a.Unmap()
-		return a, model.DeviceID(a) == dev
-	}
-	if dv, err := s.idx.Device(ctx, dev); err == nil {
-		if a, ok := try(dv.IP); ok {
-			return a, true
-		}
-	}
-	if a, ok := try(dev); ok {
-		return a, true
-	}
-	if a, ok := try(strings.ReplaceAll(dev, "_", ":")); ok {
-		return a, true
-	}
-	for _, e := range list {
-		if a, ok := firstSender(e.Path); ok {
-			if a, ok := try(a.String()); ok {
-				return a, true
-			}
-		}
-	}
-	return netip.Addr{}, false
-}
-
-func firstSender(path string) (netip.Addr, bool) {
-	rc, err := logfile.Open(path)
+	sum, err := logfile.ScanFile(e.Path)
 	if err != nil {
-		return netip.Addr{}, false
+		return nil, err
 	}
-	defer rc.Close()
-	sc := bufio.NewScanner(rc)
-	sc.Buffer(make([]byte, 64<<10), 1<<20)
-	for i := 0; i < 100 && sc.Scan(); i++ {
-		if l, err := logfile.ParseLine(sc.Bytes()); err == nil {
-			return l.Sender, true
-		}
+	if sum.Lines == 0 && sum.RawSize == 0 {
+		os.Remove(e.Path) // an empty file: nothing to keep
+		return nil, nil
 	}
-	return netip.Addr{}, false
+	ce.size, ce.rawSize, ce.lines, ce.first, ce.last, ce.cp = sum.RawSize, sum.RawSize, sum.Lines, sum.First, sum.Last, sum.Checkpointer
+	if sum.Lines > 0 {
+		s.pushOps(index.FileOp{Kind: index.OpUpsert, File: ce.row(), Checkpoints: sum.Checkpoints, ResetCheckpoints: true})
+	}
+	return ce, nil
 }
 
 // repairTail fixes a file whose last line has no newline (a write torn by a crash or

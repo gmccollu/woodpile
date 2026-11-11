@@ -119,6 +119,9 @@ func (d *device) appendLocked(rec time.Time, m *model.Message) error {
 			day = nextDay(day)
 		}
 		d.startDayLocked(day)
+		if e := d.s.takeParked(d.id, day); e != nil {
+			d.adoptLocked(e)
+		}
 	}
 	if d.buf == nil {
 		d.buf = d.newBuf()
@@ -577,4 +580,46 @@ func (d *device) idleLocked(now time.Time) bool {
 	dirty := d.dirty
 	d.fileMu.Unlock()
 	return !dirty
+}
+
+// parkLocked closes the active file early because the device went quiet
+// (IdleClose): the buffer is written, the handle closed and the file handed to the
+// closer pool to fsync, and the file stays in the catalog as parked with its state,
+// so the device can append to it again. Then IdleEvict can free the device.
+func (d *device) parkLocked() {
+	if d.needResync {
+		if err := d.resyncLocked(); err != nil {
+			return // try again next pass
+		}
+	}
+	if len(d.buf) > 0 {
+		return // flushLocked failed; try again next pass
+	}
+	d.detachFileLocked()
+	if d.w.size == 0 {
+		if st, err := os.Stat(d.abs); err == nil && st.Size() == 0 {
+			os.Remove(d.abs)
+		}
+	} else {
+		ce := &catEntry{deviceID: d.id, name: logfile.Name{Day: d.day}, abs: d.abs, rel: d.rel, first: d.w.first,
+			last: d.w.last, size: d.w.size, rawSize: d.w.size, lines: d.w.lines, parked: true, syncing: true, cp: d.wcp}
+		d.s.addClosed(ce)
+		d.s.activeBytes.Add(-d.w.size)
+		d.s.queueClose(closeJob{e: ce, path: d.abs, dir: d.dir})
+	}
+	d.day = ""
+	d.w, d.p = fileState{}, fileState{}
+	d.wcp, d.cp = logfile.Checkpointer{}, logfile.Checkpointer{}
+	d.newCPs, d.resetCPs, d.needResync = nil, false, false
+}
+
+// adoptLocked makes a parked file the active file again, resuming its line count and
+// checkpoint sequence; appends go to its end. (If the file changed on disk meanwhile,
+// ensureOpenLocked sees the size differ and re-reads it.)
+func (d *device) adoptLocked(e *catEntry) {
+	d.w = fileState{size: e.size, lines: e.lines, first: e.first, last: e.last}
+	d.wcp = e.cp
+	d.p, d.cp = d.w, d.wcp
+	d.needResync = false
+	d.s.activeBytes.Add(e.size)
 }

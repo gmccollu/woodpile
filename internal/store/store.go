@@ -45,8 +45,9 @@ const (
 	DefaultCloseWorkers   = 8
 
 	DefaultMaxDevices          = 10000
-	DefaultNewDeviceBurst      = 1000
-	DefaultNewDevicesPerMinute = 100.0
+	DefaultNewDeviceBurst      = 5000
+	DefaultNewDevicesPerMinute = 200.0
+	DefaultIdleClose           = 10 * time.Minute
 	DefaultIdleEvict           = time.Minute
 )
 
@@ -91,9 +92,12 @@ type Options struct {
 	MaxDevices          int
 	NewDeviceBurst      int
 	NewDevicesPerMinute float64
-	// IdleEvict frees a sender's in-memory state once it has no open file (its day
-	// was closed) and nothing was heard for this long. It's recreated on its next
-	// message; its index row is kept.
+	// IdleClose closes a quiet sender's file early, before midnight, once nothing was
+	// heard for this long; its next message appends to the same file. IdleEvict then
+	// frees the sender's in-memory state once it has no open file and nothing was
+	// heard for that long; it's recreated on its next message, and its index row is
+	// kept. So MaxDevices bounds the senders heard in about the last IdleClose.
+	IdleClose time.Duration
 	IdleEvict time.Duration
 
 	// CloseWorkers bounds how many closed files (yesterday's at midnight, or a full
@@ -121,6 +125,10 @@ type Limits struct {
 	RetentionDays  int
 	RetentionBytes int64
 	PartBytes      int64
+
+	MaxDevices          int
+	NewDeviceBurst      int
+	NewDevicesPerMinute float64
 }
 
 // Store writes messages to log files. It is safe for concurrent use.
@@ -143,6 +151,10 @@ type Store struct {
 	known   map[string]struct{}    // device IDs with logs on disk or seen since Open (devMu)
 	tokens  float64                // new-device bucket (devMu)
 	tokenAt time.Time
+	// The live new-sender limits (devMu); Options holds only the initial values.
+	maxDevices int
+	burst      int
+	perMinute  float64
 
 	refMu       sync.Mutex
 	refMinutes  map[int64]int64 // refused messages per unix minute, not yet in the index
@@ -203,6 +215,7 @@ type Store struct {
 
 	lastRollup     time.Time
 	lastFloodCheck time.Time
+	lastUnparkDay  string
 
 	// clockHW is the highest received time written (unix ms), to notice the
 	// received clock stepping back (watchClock).
@@ -262,6 +275,7 @@ func Open(opts Options) (*Store, error) {
 	setDefault(&opts.MaxDevices, DefaultMaxDevices)
 	setDefault(&opts.NewDeviceBurst, DefaultNewDeviceBurst)
 	setDefault(&opts.NewDevicesPerMinute, DefaultNewDevicesPerMinute)
+	setDefault(&opts.IdleClose, DefaultIdleClose)
 	setDefault(&opts.IdleEvict, DefaultIdleEvict)
 	if opts.Clock == nil {
 		opts.Clock = time.Now
@@ -292,6 +306,7 @@ func Open(opts Options) (*Store, error) {
 		refMinutes: map[int64]int64{},
 	}
 	s.tokens = float64(opts.NewDeviceBurst)
+	s.maxDevices, s.burst, s.perMinute = opts.MaxDevices, opts.NewDeviceBurst, opts.NewDevicesPerMinute
 	s.closeCond = sync.NewCond(&s.closeMu)
 	s.retentionDays.Store(int64(opts.RetentionDays))
 	s.retentionBytes.Store(opts.RetentionBytes)
@@ -331,8 +346,10 @@ func setDefault[T int | int64 | uint64 | float64 | time.Duration](v *T, def T) {
 	}
 }
 
-// SetLimits changes retention and the part size; zero fields are left unchanged.
-// The new limits apply from the next maintenance pass.
+// SetLimits changes retention, the part size and the new-sender limits while the
+// store runs; zero fields are left unchanged. Retention and part size apply from the
+// next maintenance pass, the sender limits to the next new sender. Raising the burst
+// adds the difference to the bucket at once, so senders refused a moment ago get in.
 func (s *Store) SetLimits(l Limits) {
 	if l.RetentionDays > 0 {
 		s.retentionDays.Store(int64(l.RetentionDays))
@@ -343,14 +360,34 @@ func (s *Store) SetLimits(l Limits) {
 	if l.PartBytes > 0 {
 		s.partBytes.Store(l.PartBytes)
 	}
+	s.devMu.Lock()
+	defer s.devMu.Unlock()
+	if l.MaxDevices > 0 {
+		s.maxDevices = l.MaxDevices
+	}
+	if l.NewDeviceBurst > 0 {
+		if d := l.NewDeviceBurst - s.burst; d > 0 {
+			s.tokens += float64(d)
+		}
+		s.burst = l.NewDeviceBurst
+		s.tokens = min(s.tokens, float64(s.burst))
+	}
+	if l.NewDevicesPerMinute > 0 {
+		s.perMinute = l.NewDevicesPerMinute
+	}
 }
 
 // Limits returns the limits in effect.
 func (s *Store) Limits() Limits {
+	s.devMu.Lock()
+	defer s.devMu.Unlock()
 	return Limits{
-		RetentionDays:  int(s.retentionDays.Load()),
-		RetentionBytes: s.retentionBytes.Load(),
-		PartBytes:      s.partBytes.Load(),
+		RetentionDays:       int(s.retentionDays.Load()),
+		RetentionBytes:      s.retentionBytes.Load(),
+		PartBytes:           s.partBytes.Load(),
+		MaxDevices:          s.maxDevices,
+		NewDeviceBurst:      s.burst,
+		NewDevicesPerMinute: s.perMinute,
 	}
 }
 
@@ -415,14 +452,14 @@ func (s *Store) device(addr netip.Addr, admit bool) (*device, error) {
 	}
 	id := model.DeviceID(addr)
 	if admit {
-		if len(s.devSet) >= s.opts.MaxDevices {
+		if len(s.devSet) >= s.maxDevices {
 			s.setRefuseReason("cap")
 			return nil, ErrDeviceLimit
 		}
 		if _, ok := s.known[id]; !ok {
 			now := s.clock()
 			if !s.tokenAt.IsZero() && now.After(s.tokenAt) {
-				s.tokens = min(float64(s.opts.NewDeviceBurst), s.tokens+now.Sub(s.tokenAt).Minutes()*s.opts.NewDevicesPerMinute)
+				s.tokens = min(float64(s.burst), s.tokens+now.Sub(s.tokenAt).Minutes()*s.perMinute)
 			}
 			s.tokenAt = now
 			if s.tokens < 1 {
@@ -480,6 +517,7 @@ func (s *Store) noteRefused(rec time.Time) {
 // collectRefused queues refused counts for the index and, at most once a minute, a
 // warn event.
 func (s *Store) collectRefused(now time.Time, force bool) {
+	lim := s.Limits() // before refMu: device() takes devMu then refMu
 	s.refMu.Lock()
 	mins := s.refMinutes
 	if len(mins) > 0 {
@@ -487,9 +525,9 @@ func (s *Store) collectRefused(now time.Time, force bool) {
 	}
 	var text string
 	if s.refPending > 0 && (force || now.Sub(s.lastRefEv) >= time.Minute) {
-		why := fmt.Sprintf("the device cap (%d senders) was reached", s.opts.MaxDevices)
+		why := fmt.Sprintf("the device cap (%d senders heard recently) was reached", lim.MaxDevices)
 		if s.refReason == "rate" {
-			why = fmt.Sprintf("new senders arrived faster than %g a minute (burst %d)", s.opts.NewDevicesPerMinute, s.opts.NewDeviceBurst)
+			why = fmt.Sprintf("new senders arrived faster than %g a minute (burst %d)", lim.NewDevicesPerMinute, lim.NewDeviceBurst)
 		}
 		text = fmt.Sprintf("refused %d messages from new senders: %s", s.refPending, why)
 		s.refPending, s.lastRefEv = 0, now
@@ -598,7 +636,7 @@ func (s *Store) Usage() Usage {
 	s.devMu.Lock()
 	u.Devices = len(s.devSet)
 	s.devMu.Unlock()
-	u.MaxDevices = s.opts.MaxDevices
+	u.MaxDevices = s.Limits().MaxDevices
 	u.RefusedMsgs = s.refusedMsgs.Load()
 	if ms := s.lastRefused.Load(); ms != 0 {
 		u.LastRefused = time.UnixMilli(ms).UTC()
@@ -616,7 +654,7 @@ func (s *Store) Usage() Usage {
 	u.BytesOnDisk = s.catBytes
 	u.Files = len(s.cat)
 	for _, e := range s.cat {
-		if !e.name.Compressed {
+		if !e.name.Compressed && !e.parked {
 			u.PendingCompression++
 		}
 		if oldestDay == "" || e.name.Day < oldestDay {

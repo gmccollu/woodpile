@@ -25,8 +25,14 @@ type catEntry struct {
 	rawSize     int64
 	lines       int64
 
-	busy     bool // being compressed
-	syncing  bool // just closed; the closer pool hasn't fsynced it yet
+	busy    bool // being compressed
+	syncing bool // just closed; the closer pool hasn't fsynced it yet
+	// parked: a device's file for today, closed early because the device went quiet
+	// (IdleClose) or found at startup. It's still that day's active file: never
+	// compressed or deleted, and the device appends to it again on its next message.
+	// At midnight it becomes an ordinary closed file.
+	parked   bool
+	cp       logfile.Checkpointer // checkpoint state to resume a parked file
 	failures int
 	nextTry  time.Time
 }
@@ -143,6 +149,8 @@ func (s *Store) flushAll(midnight bool) error {
 				d.rotateLocked(rotMidnight)
 			} else if err := d.flushLocked(); err != nil && first == nil {
 				first = err
+			} else if midnight && d.day != "" && now.Sub(d.lastHeard) >= s.opts.IdleClose {
+				d.parkLocked()
 			}
 		}
 		d.collectLocked()
@@ -152,6 +160,10 @@ func (s *Store) flushAll(midnight bool) error {
 		d.mu.Unlock()
 	}
 	s.collectRefused(now, false)
+	if midnight && today != s.lastUnparkDay {
+		s.lastUnparkDay = today
+		s.unparkBefore(today)
+	}
 	return first
 }
 
@@ -162,7 +174,44 @@ func (s *Store) dayClosed(id, day string) bool {
 	gz := logfile.Name{Day: day, Compressed: true}
 	s.catMu.Lock()
 	defer s.catMu.Unlock()
-	return s.cat[logfile.RelPath(id, n)] != nil || s.cat[logfile.RelPath(id, gz)] != nil
+	if e := s.cat[logfile.RelPath(id, n)]; e != nil && !e.parked {
+		return true
+	}
+	return s.cat[logfile.RelPath(id, gz)] != nil
+}
+
+// takeParked removes and returns a device's parked file for day, if any.
+func (s *Store) takeParked(id, day string) *catEntry {
+	rel := logfile.RelPath(id, logfile.Name{Day: day})
+	s.catMu.Lock()
+	defer s.catMu.Unlock()
+	e := s.cat[rel]
+	if e == nil || !e.parked {
+		return nil
+	}
+	delete(s.cat, rel)
+	s.catBytes -= e.size
+	return e
+}
+
+// unparkBefore turns parked files of days before today into ordinary closed files
+// (compressible), as the midnight close does for live devices.
+func (s *Store) unparkBefore(today string) {
+	var done []*catEntry
+	s.catMu.Lock()
+	for _, e := range s.cat {
+		if e.parked && e.name.Day < today {
+			e.parked = false
+			done = append(done, e)
+		}
+	}
+	s.catMu.Unlock()
+	for _, e := range done {
+		s.event(index.LevelInfo, index.KindRotate, e.deviceID, fmt.Sprintf("closed %s (end of day, %d lines, %d bytes)", e.rel, e.lines, e.size))
+	}
+	if len(done) > 0 {
+		s.kickCompress()
+	}
 }
 
 // syncAll fsyncs every file written since the last pass, a few at a time.
@@ -235,7 +284,7 @@ func (s *Store) sortedClosed(keep func(*catEntry) bool) []*catEntry {
 	s.catMu.Lock()
 	var out []*catEntry
 	for _, e := range s.cat {
-		if !e.busy && !e.syncing && keep(e) {
+		if !e.busy && !e.syncing && !e.parked && keep(e) {
 			out = append(out, e)
 		}
 	}
@@ -332,7 +381,7 @@ func (s *Store) deleteLargestFirst(now time.Time, reason index.Reason, uncompres
 // deleteEntry removes a closed file and records the deletion.
 func (s *Store) deleteEntry(e *catEntry, reason index.Reason, now time.Time) bool {
 	s.catMu.Lock()
-	if e.busy || e.syncing || s.cat[e.rel] != e {
+	if e.busy || e.syncing || e.parked || s.cat[e.rel] != e {
 		s.catMu.Unlock()
 		return false
 	}
