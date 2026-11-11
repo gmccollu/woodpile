@@ -49,6 +49,9 @@ type Options struct {
 	Static fs.FS
 	// Logger defaults to slog.Default().
 	Logger *slog.Logger
+	// PortHolder, if set, names the process holding a TCP port ("" if unknown),
+	// for the error when the UI port is taken.
+	PortHolder func(port int) string
 
 	// Test hooks (zero values are the real thing).
 	now        func() time.Time
@@ -262,6 +265,11 @@ func (s *Server) Run(ctx context.Context) error {
 		}
 		if err != nil {
 			msg := fmt.Sprintf("UI server can't listen on port %d: %v", cfg.Port, err)
+			if s.opts.PortHolder != nil && isListenError(err) {
+				if h := s.opts.PortHolder(cfg.Port); h != "" {
+					msg += " (held by " + h + ")"
+				}
+			}
 			if msg != lastErr {
 				s.event(LevelError, EventKindUI, msg)
 				lastErr = msg

@@ -73,5 +73,10 @@ func serve(ctx context.Context, cfgPath string, log *slog.Logger, hello io.Write
 	if hello != nil {
 		fmt.Fprintf(hello, "Woodpile %s: config %s, data in %s. Press Ctrl-C to stop.\n", version, srv.ConfigPath(), srv.DataDir())
 	}
+	if !so.service { // a copy started by hand: warn if the installed service runs (it's logged too)
+		if w := srv.PeerWarning(ctx); w != "" && hello != nil {
+			fmt.Fprintln(hello, "Warning: "+w)
+		}
+	}
 	return srv.Run(ctx)
 }

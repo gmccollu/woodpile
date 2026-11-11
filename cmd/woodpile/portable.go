@@ -321,6 +321,9 @@ func runPortable(o portableOpts, stdout, stderr io.Writer) (code int) {
 	if runtime.GOOS == "windows" && cfg.Listeners.UDP.Enabled {
 		fmt.Fprint(stdout, windowsFirewallNotes(cfg.Listeners.UDP.Port))
 	}
+	if w := srv.PeerWarning(ctx); w != "" {
+		fmt.Fprintln(stdout, "\nWarning: "+w)
+	}
 	fmt.Fprintf(stdout, "\nPress Ctrl-C or close this window to stop. Your logs stay in %s\n\n", dir)
 
 	if !o.noBrowser && hasDisplay() {

@@ -197,9 +197,13 @@ func Open(cfgPath string, opts Options) (*Server, error) {
 		DataDir: dataDir,
 		UI:      uiConfig(cfg.UI),
 		Logger:  log,
+		// When the UI port is taken, say who holds it (as the service, it can see).
+		PortHolder: func(port int) string { return listen.PortHolder("tcp", port) },
 	}); err != nil {
 		return nil, fmt.Errorf("prepare the UI server: %w", err)
 	}
+	s.be.isService = opts.Service
+	s.be.uiListening = func() bool { return s.api.State().Listening }
 	ok = true
 	return s, nil
 }

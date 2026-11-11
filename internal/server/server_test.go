@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/gmccollu/woodpile/internal/peer"
 	"io"
 	"log/slog"
 	"net"
@@ -83,6 +84,9 @@ func start(t *testing.T, cfgPath string) *running {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// No real peer lookup: a Woodpile service installed on the test machine
+	// would change the banners (peer_test.go covers that path with fakes).
+	srv.be.peers.find = func(context.Context, peer.Options) (peer.Info, bool) { return peer.Info{}, false }
 	ctx, cancel := context.WithCancel(context.Background())
 	r := &running{srv: srv, cancel: cancel, done: make(chan error, 1)}
 	go func() { r.done <- srv.Run(ctx) }()

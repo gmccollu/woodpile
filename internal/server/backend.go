@@ -31,6 +31,13 @@ type backend struct {
 	// startupBanners are shown for the whole run (a data folder others can read).
 	startupBanners []api.Banner
 
+	// isService is set when this process is the installed service (it never
+	// reports itself as a peer); peers caches the lookup of another Woodpile;
+	// uiListening reports whether this process's UI is up.
+	isService   bool
+	peers       peerCache
+	uiListening func() bool
+
 	cfgPath string
 	idx     *index.DB
 	store   *store.Store
@@ -240,6 +247,18 @@ func (b *backend) Status(ctx context.Context) (api.Status, error) {
 		})
 	}
 	st.Banners = append(buildBanners(ls.Listeners, b.store.Usage(), cfg.Storage.DataDir), b.startupBanners...)
+	// Another Woodpile on this machine (usually the installed service): name it
+	// as the holder and say what to do.
+	if !b.isService {
+		p, ok := b.peer(ctx)
+		annotateHolders(st.Listeners, p, ok)
+		if pb := peerBanners(st.Listeners, p, ok, cfg.UI.Port, b.uiListening()); len(pb) > 0 {
+			if pb[0].Kind == "listener_bind" {
+				st.Banners = slices.DeleteFunc(st.Banners, func(x api.Banner) bool { return x.Kind == "listener_bind" })
+			}
+			st.Banners = append(st.Banners, pb...)
+		}
+	}
 	return st, nil
 }
 

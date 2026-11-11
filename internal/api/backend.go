@@ -171,6 +171,11 @@ type Listener struct {
 	OK     bool   `json:"ok"`
 	Error  string `json:"error"`
 	Holder string `json:"holder,omitempty"` // the process holding the port, when the OS tells us
+	// Another Woodpile holding (probably) the port: "woodpile_service" or
+	// "woodpile", its PID and UI address, when known (docs/api.md).
+	HolderKind  string `json:"holder_kind,omitempty"`
+	HolderPID   int    `json:"holder_pid,omitempty"`
+	HolderUIURL string `json:"holder_ui_url,omitempty"`
 }
 
 // Banner is a message the UI shows at the top of every page.
