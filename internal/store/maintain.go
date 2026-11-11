@@ -318,7 +318,7 @@ func (s *Store) enforceRetention(now time.Time) {
 	if !over() {
 		return
 	}
-	s.fairDelete(now, index.ReasonCap, false, false, s.firstSeenMap(), func(uint64) bool { return !over() })
+	s.fairDelete(now, index.ReasonCap, false, false, s.fairInfoAt(now), func(uint64) bool { return !over() })
 }
 
 // deviceBytes returns each device's bytes on disk: closed files plus its active file.
@@ -429,9 +429,9 @@ func (s *Store) guardDisk(now time.Time) {
 	// then anyone's open files, largest first. Open files are closed only if that can
 	// reach the reserve: otherwise it would throw away today's logs and pause anyway.
 	short := func() bool { return diskOK && free < thr }
-	var seen map[string]time.Time
+	var seen *fairInfo
 	if short() {
-		seen = s.firstSeenMap()
+		seen = s.fairInfoAt(now)
 		s.fairDelete(now, index.ReasonLowDisk, true, false, seen, enough)
 	}
 	canReach := short() && uint64(s.deletableBytes()) >= thr-free
@@ -586,24 +586,27 @@ func (s *Store) pruneDevices(now time.Time) {
 	if len(ids) == 0 {
 		return
 	}
-	live := map[string]bool{}
-	for _, d := range s.allDevices() {
-		live[d.id] = true
-	}
 	onDisk := s.deviceBytes()
 	removed := 0
+	// The residency check, the remove and the known-sender delete happen under devMu,
+	// the lock under which a returning sender is registered before its first flush
+	// recreates the folder. So the folder can't vanish under a sender that's opening
+	// its file. (os.Remove also only deletes an empty folder.)
+	s.devMu.Lock()
+	resident := make(map[string]bool, len(s.devSet))
+	for _, d := range s.devSet {
+		resident[d.id] = true
+	}
 	for _, id := range ids {
-		if live[id] || onDisk[id] > 0 {
-			continue // heard or written since the query; keep its folder
+		if resident[id] || onDisk[id] > 0 {
+			continue // back already; keep its folder and exemption
 		}
-		// os.Remove only deletes an empty directory, so a file that appeared since is kept.
 		if err := os.Remove(filepath.Join(s.logsDir, id)); err == nil || errors.Is(err, fs.ErrNotExist) {
-			s.devMu.Lock()
 			delete(s.known, id)
-			s.devMu.Unlock()
 			removed++
 		}
 	}
+	s.devMu.Unlock()
 	s.log.Info("store: forgot devices with no logs left", "devices", len(ids), "folders_removed", removed)
 }
 

@@ -59,12 +59,17 @@ type device struct {
 	bufAct   []actAcc // counters of the buffered messages
 	act      []actAcc // counters of flushed (or dropped) messages, not yet collected
 
-	renameRetry time.Time    // don't retry a failed part rename before this
-	needResync  bool         // re-read the file before the next write
-	evicted     bool         // removed from the store; writers must look the device up again
-	lastHeard   time.Time    // received time of the latest message (for idle eviction)
-	heardMs     atomic.Int64 // the same, readable without mu (for makeRoomLocked)
-	lastFlush   int          // bytes in the last flushed buffer (sizes the next one)
+	renameRetry time.Time     // don't retry a failed part rename before this
+	needResync  bool          // re-read the file before the next write
+	evicted     bool          // removed from the store; writers must look the device up again
+	lastHeard   time.Time     // received time of the latest message (for idle eviction)
+	heardMs     atomic.Int64  // the same, readable without mu
+	writeSeq    atomic.Uint64 // messages taken, for finishEvict to see a write after the mark
+	leaving     atomic.Bool   // marked for eviction by makeRoomLocked
+	leaveSeq    atomic.Uint64 // writeSeq when marked
+	resTouch    int64         // last move to the front of the resident list, unix ms (mu)
+	resElem     *list.Element // in Store.resident (Store.resMu)
+	lastFlush   int           // bytes in the last flushed buffer (sizes the next one)
 
 	fileMu    sync.Mutex
 	dirty     bool   // written since the last fsync (fileMu)

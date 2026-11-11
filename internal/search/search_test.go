@@ -513,7 +513,9 @@ func TestSearchWhileWriting(t *testing.T) {
 	// each page the searches read lets the writer write a batch (rotating parts,
 	// compressing, deleting by retention), and the writer stops once retention
 	// has deleted wantDeleted files. A slow disk (fsync on Windows) only makes
-	// the test take more pages.
+	// the test take more pages. Each batch moves the fake clock 6 hours on, so the
+	// writes span days: the size cap never takes an established device's last two
+	// days, so it needs older days to delete.
 	const wantDeleted = 60
 	grant := make(chan struct{}, 1)
 	done := make(chan struct{})
@@ -531,6 +533,7 @@ func TestSearchWhileWriting(t *testing.T) {
 					seq++
 				}
 			}
+			at = at.Add(6 * time.Hour)
 			f.clock.Set(at)
 			f.st.Maintain()
 			if hist, err := f.idx.Deletions(bg, time.Time{}, time.Time{}, 0); err != nil {
@@ -553,7 +556,7 @@ func TestSearchWhileWriting(t *testing.T) {
 	rounds := 0
 	for writing() {
 		for _, asc := range []bool{false, true} {
-			q := Query{Filter: Filter{From: f.day0, To: f.day0.Add(72 * time.Hour)}, Asc: asc, Limit: 37}
+			q := Query{Filter: Filter{From: f.day0, To: f.day0.Add(60 * 24 * time.Hour)}, Asc: asc, Limit: 37}
 			seen := map[string]bool{}
 			last := map[string]int64{}
 			for n := 0; ; n++ {

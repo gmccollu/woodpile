@@ -337,12 +337,12 @@ func TestRetentionByCap(t *testing.T) {
 			t.Fatalf("kept %s but deleted a file from %s", f.Path, newestDeleted)
 		}
 	}
-	// Far over the cap every device is over its share, so even its newest day of
-	// closed files goes; active files are never deleted.
+	// Far over the cap, each established device still keeps its newest two days
+	// (today's active file and yesterday's): the size cap never takes those.
 	e.s.SetLimits(Limits{RetentionBytes: 1})
 	e.maintain()
 	for _, a := range addrs {
-		if got := strings.Join(e.files(a), ","); got != "2026-11-10.log" {
+		if got := strings.Join(e.files(a), ","); got != "2026-11-09.log.gz,2026-11-10.log" {
 			t.Fatalf("files %s", got)
 		}
 	}

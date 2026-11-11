@@ -69,52 +69,69 @@ func TestFairShareManySmallSenders(t *testing.T) {
 	}
 }
 
-// TestCapNearlyHard: many established devices within their share and one over it.
-// The size cap holds to within one part's size, the over-share device paying with
-// its newest day too, and every quiet device keeps its newest day.
-func TestCapNearlyHard(t *testing.T) {
+// TestCapAndGuaranteedDays: many established quiet devices and one heavy one. When
+// the cap can be met without anyone's newest two days, it holds to within one part's
+// size; when it can't, everything older goes and those two days stay for everyone.
+func TestCapAndGuaranteedDays(t *testing.T) {
 	const part = 16 << 10
-	e := newEnv(t, func(o *Options) { o.PartBytes = part })
-	r := rand.New(rand.NewSource(11))
-	var quiet []netip.Addr
-	for i := 0; i < 30; i++ {
-		quiet = append(quiet, netip.AddrFrom4([4]byte{198, 51, 100, byte(i)}))
-	}
-	heavy := ip(1)
-	end := e.clock.Now()
-	for d := 3; d >= 0; d-- { // three closed days and today for every device
-		e.clock.Set(end.Add(-time.Duration(d) * 24 * time.Hour))
-		for _, q := range quiet {
-			e.write(q, fmt.Sprintf("quiet day -%d %s", d, randText(r, 300)))
+	setup := func(t *testing.T) (*env, []netip.Addr, netip.Addr) {
+		e := newEnv(t, func(o *Options) { o.PartBytes = part })
+		r := rand.New(rand.NewSource(11))
+		var quiet []netip.Addr
+		for i := 0; i < 30; i++ {
+			quiet = append(quiet, netip.AddrFrom4([4]byte{198, 51, 100, byte(i)}))
 		}
-		for i := 0; i < 150; i++ { // ~150 KB a day: many parts, most of it today and yesterday
-			e.write(heavy, fmt.Sprintf("heavy day -%d %s", d, randText(r, 1000)))
+		heavy := ip(1)
+		end := e.clock.Now()
+		for d := 5; d >= 0; d-- { // five closed days and today for every device
+			e.clock.Set(end.Add(-time.Duration(d) * 24 * time.Hour))
+			for _, q := range quiet {
+				e.write(q, fmt.Sprintf("quiet day -%d %s", d, randText(r, 300)))
+			}
+			for i := 0; i < 100; i++ {
+				e.write(heavy, fmt.Sprintf("heavy day -%d %s", d, randText(r, 1000)))
+			}
+			e.maintain()
 		}
+		e.clock.Set(end)
 		e.maintain()
+		return e, quiet, heavy
 	}
-	e.clock.Set(end)
-	e.maintain()
-	limit := duLogs(e.dir) / 3
-	e.s.SetLimits(Limits{RetentionBytes: limit})
-	e.maintain()
-	if got := duLogs(e.dir); got > limit+part {
-		t.Fatalf("%d bytes on disk, cap %d (+ one part %d)", got, limit, part)
-	}
-	for _, q := range quiet {
-		if got := e.files(q); !contains(got, "2026-11-09.log.gz") || !contains(got, "2026-11-10.log") {
-			t.Fatalf("%v lost its newest day: %v", q, got)
+	keepsTwoDays := func(t *testing.T, e *env, devs ...netip.Addr) {
+		t.Helper()
+		for _, a := range devs {
+			got := e.files(a)
+			has09 := false
+			for _, f := range got {
+				has09 = has09 || strings.HasPrefix(f, "2026-11-09")
+			}
+			if !has09 || !contains(got, "2026-11-10.log") {
+				t.Fatalf("%v lost one of its newest two days: %v", a, got)
+			}
 		}
 	}
-	var heavyNewest int
-	hist, _ := e.idx.Deletions(bg, time.Time{}, time.Time{}, 0)
-	for _, h := range hist {
-		if h.DeviceID == "192.0.2.1" && strings.Contains(h.File, "2026-11-09") {
-			heavyNewest++
+	t.Run("reachable", func(t *testing.T) {
+		e, quiet, heavy := setup(t)
+		limit := duLogs(e.dir) * 3 / 4
+		e.s.SetLimits(Limits{RetentionBytes: limit})
+		e.maintain()
+		if got := duLogs(e.dir); got > limit+part {
+			t.Fatalf("%d bytes on disk, cap %d (+ one part %d)", got, limit, part)
 		}
-	}
-	if heavyNewest == 0 {
-		t.Fatal("the over-share device kept its newest day while the store was over the cap")
-	}
+		keepsTwoDays(t, e, append(quiet, heavy)...)
+	})
+	t.Run("below the guaranteed days", func(t *testing.T) {
+		e, quiet, heavy := setup(t)
+		e.s.SetLimits(Limits{RetentionBytes: duLogs(e.dir) / 10})
+		e.maintain()
+		keepsTwoDays(t, e, append(quiet, heavy)...)
+		files, _ := e.idx.Files(bg, "")
+		for _, f := range files {
+			if f.Day < "2026-11-09" {
+				t.Fatalf("%s kept although the store is over its cap", f.Path)
+			}
+		}
+	})
 }
 
 func contains(list []string, s string) bool {
@@ -293,5 +310,120 @@ func TestLowDiskFairOrderForOpenFiles(t *testing.T) {
 		if h.DeviceID == "192.0.2.1" && strings.Contains(h.File, "2026-11-10") && !named["192.0.2.1"] {
 			t.Fatal("the real device's today file went without a warn event")
 		}
+	}
+}
+
+// TestSpreadFloodReviewerScenarios is the second re-test's N7 case: a busy,
+// long-established target with a few days of files and a week of stats, and 200
+// small attackers, either new today or seeded two days earlier. With the cap at 90%
+// or 75% of the data, the attackers lose files first and the target keeps its newest
+// two days (yesterday's file and today's).
+func TestSpreadFloodReviewerScenarios(t *testing.T) {
+	for _, seeded := range []bool{false, true} {
+		for _, pct := range []int64{90, 75} {
+			t.Run(fmt.Sprintf("seeded=%v cap=%d%%", seeded, pct), func(t *testing.T) {
+				e := newEnv(t, func(o *Options) { o.PartBytes = 8 << 10; o.RetentionDays = 3 })
+				r := rand.New(rand.NewSource(13))
+				target := ip(1)
+				for d := 6; d >= 0; d-- { // a week of steady traffic; age retention keeps three days of files
+					e.clock.Set(day0.Add(-time.Duration(d) * 24 * time.Hour))
+					for i := 0; i < 300; i++ {
+						e.write(target, fmt.Sprintf("target day -%d %s", d, randText(r, 1000)))
+					}
+					if seeded && d == 2 {
+						for i := 0; i < 200; i++ {
+							e.s.Write(model.Message{Received: e.clock.Now(), Sender: spread(i), Raw: []byte("seed " + randText(r, 1000))})
+						}
+					}
+					e.maintain()
+				}
+				for i := 0; i < 200; i++ { // today: a little over one part each
+					for j := 0; j < 12; j++ {
+						e.s.Write(model.Message{Received: e.clock.Now(), Sender: spread(i), Raw: []byte(randText(r, 1000))})
+					}
+				}
+				e.maintain()
+				before := daysOf(e.files(target))
+				if before != "2026-11-07,2026-11-08,2026-11-09,2026-11-10" {
+					t.Fatalf("setup: target has days %s", before)
+				}
+				e.s.SetLimits(Limits{RetentionBytes: duLogs(e.dir) * pct / 100})
+				e.maintain()
+				after := daysOf(e.files(target))
+				if !strings.HasSuffix(after, "2026-11-09,2026-11-10") || !contains(e.files(target), "2026-11-10.log") {
+					t.Fatalf("the target lost one of its newest two days: %s -> %s", before, after)
+				}
+				hist, _ := e.idx.Deletions(bg, time.Time{}, time.Time{}, 0)
+				var cap []index.Deletion
+				for i := len(hist) - 1; i >= 0; i-- { // oldest first
+					if hist[i].Reason == index.ReasonCap {
+						cap = append(cap, hist[i])
+					}
+				}
+				attackers := 0
+				for _, h := range cap {
+					if h.DeviceID != "192.0.2.1" {
+						attackers++
+					}
+				}
+				t.Logf("target %v -> %v; %d cap deletions, %d of them attackers'", before, after, len(cap), attackers)
+				if len(cap) == 0 || cap[0].DeviceID == "192.0.2.1" || attackers == 0 {
+					t.Fatalf("attackers didn't lose files first: %+v", cap[:min(3, len(cap))])
+				}
+			})
+		}
+	}
+}
+
+// daysOf returns the distinct days of a device's file names, comma-separated.
+func daysOf(files []string) string {
+	var out []string
+	for _, f := range files {
+		if d := f[:10]; len(out) == 0 || out[len(out)-1] != d {
+			out = append(out, d)
+		}
+	}
+	return strings.Join(out, ",")
+}
+
+// TestPruneKeepsReturningSender is L-c: a device whose logs retention deleted comes
+// back just as the hourly prune runs. Registered (resident) before its first flush,
+// it keeps its folder and its known-sender exemption, and its write lands on disk.
+func TestPruneKeepsReturningSender(t *testing.T) {
+	e := newEnv(t, func(o *Options) { o.RetentionDays = 2 })
+	a := ip(1)
+	e.write(a, "first")
+	e.maintain()
+	for i := 0; i < 5; i++ { // its files age out
+		e.clock.Add(24 * time.Hour)
+		e.maintain()
+	}
+	if files, _ := e.idx.Files(bg, "192.0.2.1"); len(files) != 0 {
+		t.Fatalf("files left %+v", files)
+	}
+	dir := filepath.Join(e.dir, "logs", "192.0.2.1")
+	if err := os.MkdirAll(dir, 0o750); err != nil { // an empty folder, as retention leaves it
+		t.Fatal(err)
+	}
+	// The sender is back: resident, not flushed yet. Then the prune runs.
+	if _, err := e.s.device(a, true); err != nil {
+		t.Fatal(err)
+	}
+	e.s.pruneDevices(e.clock.Now())
+	if _, err := os.Stat(dir); err != nil {
+		t.Fatalf("the returning sender's folder was removed: %v", err)
+	}
+	e.s.devMu.Lock()
+	_, known := e.s.known["192.0.2.1"]
+	e.s.devMu.Unlock()
+	if !known {
+		t.Fatal("the returning sender lost its exemption")
+	}
+	e.write(a, "back")
+	if err := e.s.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	if got := rawStrings(readLines(t, e.dir, "192.0.2.1")); strings.Join(got, "|") != "back" {
+		t.Fatalf("lines %q", got)
 	}
 }

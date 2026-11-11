@@ -97,6 +97,10 @@ type Options struct {
 	// bucket empty. Defaults 256 and 20.
 	PrefixBurst     float64
 	PrefixPerMinute float64
+	// ReadmitPerSecond limits how many known senders that aren't resident are
+	// readmitted a second while the cap is full (each one evicts the least recently
+	// heard resident). Beyond it they're refused (reason "churn"). Default 500.
+	ReadmitPerSecond float64
 	// IdleClose closes a quiet sender's file early, before midnight, once nothing was
 	// heard for this long; its next message appends to the same file. IdleEvict then
 	// frees the sender's in-memory state once it has no open file and nothing was
@@ -154,6 +158,10 @@ type Store struct {
 	devMu    sync.Mutex
 	devSet   map[netip.Addr]*device   // the same devices, authoritative (devMu)
 	known    map[string]struct{}      // device IDs with logs on disk or seen since Open (devMu)
+	leavingN int                      // residents marked for eviction (devMu)
+	readmit  bucket                   // re-admissions at the cap (devMu)
+	resMu    sync.Mutex               // guards resident and device.resElem (a leaf lock)
+	resident list.List                // resident devices, most recently heard first
 	global   bucket                   // new-sender bucket (devMu)
 	prefixes map[netip.Prefix]*bucket // per-network new-sender buckets (devMu)
 	// The live new-sender limits (devMu); Options holds only the initial values.
@@ -283,6 +291,7 @@ func Open(opts Options) (*Store, error) {
 	setDefault(&opts.IdleClose, DefaultIdleClose)
 	setDefault(&opts.PrefixBurst, DefaultPrefixBurst)
 	setDefault(&opts.PrefixPerMinute, DefaultPrefixPerMinute)
+	setDefault(&opts.ReadmitPerSecond, DefaultReadmitPerSecond)
 	setDefault(&opts.IdleEvict, DefaultIdleEvict)
 	if opts.Clock == nil {
 		opts.Clock = time.Now
@@ -314,6 +323,7 @@ func Open(opts Options) (*Store, error) {
 		refMinutes: map[int64]int64{},
 	}
 	s.global.tokens = float64(opts.NewDeviceBurst)
+	s.readmit.tokens = opts.ReadmitPerSecond
 	s.maxDevices, s.burst, s.perMinute = opts.MaxDevices, opts.NewDeviceBurst, opts.NewDevicesPerMinute
 	s.closeCond = sync.NewCond(&s.closeMu)
 	s.retentionDays.Store(int64(opts.RetentionDays))
@@ -440,7 +450,17 @@ func (s *Store) writeTo(d *device, rec time.Time, m *model.Message) (err error, 
 		return ErrClosed, false
 	}
 	d.lastHeard = rec
-	d.heardMs.Store(rec.UnixMilli())
+	ms := rec.UnixMilli()
+	d.heardMs.Store(ms)
+	d.writeSeq.Add(1)
+	if ms-d.resTouch >= 1000 || ms < d.resTouch { // keep the resident list roughly LRU, cheaply
+		d.resTouch = ms
+		s.resMu.Lock()
+		if d.resElem != nil {
+			s.resident.MoveToFront(d.resElem)
+		}
+		s.resMu.Unlock()
+	}
 	if s.paused.Load() {
 		d.dropLocked(rec, 1)
 		return ErrPaused, false
@@ -466,12 +486,21 @@ func (s *Store) device(addr netip.Addr, admit bool) (*device, error) {
 	id := model.DeviceID(addr)
 	now := s.clock()
 	if admit {
+		full := len(s.devSet)-s.leavingN >= s.maxDevices
 		if _, known := s.known[id]; known {
-			if len(s.devSet) >= s.maxDevices {
+			if full {
+				// Re-admissions at the cap are rate limited, so cycling through many
+				// known senders can't turn every message into an eviction.
+				s.readmit.refill(now, s.opts.ReadmitPerSecond, s.opts.ReadmitPerSecond*60)
+				if s.readmit.tokens < 1 {
+					s.setRefuseReason("churn")
+					return nil, ErrDeviceLimit
+				}
+				s.readmit.tokens--
 				s.makeRoomLocked()
 			}
 		} else {
-			if len(s.devSet) >= s.maxDevices {
+			if full {
 				s.setRefuseReason("cap")
 				return nil, ErrDeviceLimit
 			}
@@ -483,6 +512,10 @@ func (s *Store) device(addr netip.Addr, admit bool) (*device, error) {
 	}
 	d := newDevice(s, addr)
 	d.heardMs.Store(now.UnixMilli())
+	d.resTouch = now.UnixMilli()
+	s.resMu.Lock()
+	d.resElem = s.resident.PushFront(d)
+	s.resMu.Unlock()
 	s.devSet[addr] = d
 	s.known[id] = struct{}{}
 	s.devices.Store(addr, d)
@@ -491,9 +524,10 @@ func (s *Store) device(addr netip.Addr, admit bool) (*device, error) {
 
 // Per-network new-sender buckets: one network can't drain the global bucket.
 const (
-	DefaultPrefixBurst     = 256
-	DefaultPrefixPerMinute = 20.0
-	maxPrefixBuckets       = 1 << 16
+	DefaultReadmitPerSecond = 500.0
+	DefaultPrefixBurst      = 256
+	DefaultPrefixPerMinute  = 20.0
+	maxPrefixBuckets        = 1 << 16
 )
 
 type bucket struct {
@@ -560,39 +594,46 @@ func (s *Store) prunePrefixesLocked(now time.Time) {
 	}
 }
 
-// makeRoomLocked frees one slot for a known sender at the cap: the least recently
-// heard sender whose lock is free is flushed, its file parked, and its state freed.
-// The caller holds devMu; device locks are only tried, so this can't deadlock with
-// a device holding its lock while it takes devMu. If every candidate is busy the
-// cap is exceeded by one instead.
-func (s *Store) makeRoomLocked() {
-	skip := map[*device]bool{}
-	for attempt := 0; attempt < 8; attempt++ {
-		var victim *device
-		for _, d := range s.devSet {
-			if !skip[d] && (victim == nil || d.heardMs.Load() < victim.heardMs.Load()) {
-				victim = d
-			}
-		}
-		if victim == nil {
-			return
-		}
-		skip[victim] = true
-		if !victim.mu.TryLock() {
+// makeRoomLocked frees a slot for a known sender at the cap: the least recently
+// heard resident (the back of the resident list, O(1)) is marked as leaving, which
+// frees its slot at once, and the closer pool flushes and parks it later, off devMu.
+// It reports false if no resident can be marked.
+func (s *Store) makeRoomLocked() bool {
+	s.resMu.Lock()
+	defer s.resMu.Unlock()
+	for e := s.resident.Back(); e != nil; e = e.Prev() {
+		v := e.Value.(*device)
+		if v.leaving.Load() {
 			continue
 		}
-		ok := !victim.closed && !victim.evicted && victim.flushLocked() == nil && (victim.day == "" || victim.parkLocked())
-		if ok {
-			victim.collectLocked()
-			victim.evicted = true
-			delete(s.devSet, victim.addr)
-			s.devices.CompareAndDelete(victim.addr, victim)
-		}
-		victim.mu.Unlock()
-		if ok {
-			return
-		}
+		v.leaving.Store(true)
+		v.leaveSeq.Store(v.writeSeq.Load())
+		s.leavingN++
+		s.resident.MoveToFront(e) // so the next search starts at the next-oldest
+		s.queueClose(closeJob{evict: v})
+		return true
 	}
+	return false
+}
+
+// finishEvict carries out a makeRoomLocked eviction. If the device was written to
+// after it was marked, it stays: a resident sender is never refused.
+func (s *Store) finishEvict(v *device) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if v.evicted || v.closed || !v.leaving.Load() {
+		return
+	}
+	if v.writeSeq.Load() != v.leaveSeq.Load() || v.flushLocked() != nil || (v.day != "" && !v.parkLocked()) {
+		s.devMu.Lock()
+		if v.leaving.Swap(false) {
+			s.leavingN--
+		}
+		s.devMu.Unlock()
+		return
+	}
+	v.collectLocked()
+	s.evictLocked(v)
 }
 
 // evictLocked frees an idle device's in-memory state; the caller holds d.mu.
@@ -602,6 +643,15 @@ func (s *Store) evictLocked(d *device) {
 	if s.devSet[d.addr] == d {
 		delete(s.devSet, d.addr)
 	}
+	if d.leaving.Swap(false) {
+		s.leavingN--
+	}
+	s.resMu.Lock()
+	if d.resElem != nil {
+		s.resident.Remove(d.resElem)
+		d.resElem = nil
+	}
+	s.resMu.Unlock()
 	s.devMu.Unlock()
 	s.devices.CompareAndDelete(d.addr, d)
 }
@@ -651,6 +701,9 @@ func (s *Store) collectRefused(now time.Time, force bool) {
 				s.opts.PrefixPerMinute, s.opts.PrefixBurst)
 		case "rate":
 			why = fmt.Sprintf("new senders arrived faster than %g a minute (burst %d)", lim.NewDevicesPerMinute, lim.NewDeviceBurst)
+		case "churn":
+			why = fmt.Sprintf("the device cap (%d) is full and known senders came back faster than %g a second",
+				lim.MaxDevices, s.opts.ReadmitPerSecond)
 		default:
 			why = fmt.Sprintf("the device cap (%d senders heard in the last few minutes) was reached", lim.MaxDevices)
 		}
@@ -741,7 +794,7 @@ type Usage struct {
 	RefusedMsgs       int64     // messages from refused new senders since Open (included in Dropped)
 	LastRefused       time.Time // zero if none
 	DeviceLimited     bool      // a new sender was refused in the last DeviceLimitWindow (device_limit banner)
-	DeviceLimitReason string    // "cap", "rate" or "prefix": why the latest one was refused
+	DeviceLimitReason string    // "cap", "rate", "prefix" or "churn": why the latest one was refused
 }
 
 // DeviceLimitWindow is how long Usage.DeviceLimited stays set after a refusal.
@@ -760,7 +813,7 @@ func (s *Store) Usage() Usage {
 		u.PausedSince = time.UnixMilli(s.pausedSince.Load()).UTC()
 	}
 	s.devMu.Lock()
-	u.Devices = len(s.devSet)
+	u.Devices = len(s.devSet) - s.leavingN // marked senders have given up their slot
 	s.devMu.Unlock()
 	u.MaxDevices = s.Limits().MaxDevices
 	u.RefusedMsgs = s.refusedMsgs.Load()

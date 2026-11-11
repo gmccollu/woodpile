@@ -92,19 +92,24 @@ func TestPruneDevices(t *testing.T) {
 	for _, x := range []struct {
 		id    string
 		heard time.Time
-	}{{"192.0.2.1", old}, {"192.0.2.2", old}, {"192.0.2.3", old}, {"192.0.2.4", recent}, {"192.0.2.5", old}} {
+	}{{"192.0.2.1", old}, {"192.0.2.2", old}, {"192.0.2.3", old}, {"192.0.2.4", recent}, {"192.0.2.5", old}, {"192.0.2.6", old}} {
 		d.Apply(ctx, Batch{Activity: []Activity{{DeviceID: x.id, IP: x.id, Minute: x.heard, LastHeard: x.heard, Counts: Counts{Msgs: 1}}}})
 	}
 	name, group := "kept", "HQ"
 	d.UpdateDevice(ctx, "192.0.2.2", DeviceUpdate{Name: &name})
 	d.UpdateDevice(ctx, "192.0.2.3", DeviceUpdate{Group: &group})
+	hidden := true
+	d.UpdateDevice(ctx, "192.0.2.6", DeviceUpdate{Hidden: &hidden}) // hidden, no name: kept too
 	d.Apply(ctx, Batch{Files: []FileOp{{Kind: OpUpsert, File: fileRow("192.0.2.5", "2026-11-08.log.gz", old, old, 1)}}})
 	ids, err := d.PruneDevices(ctx, t0.Add(-24*time.Hour))
 	if err != nil || strings.Join(ids, ",") != "192.0.2.1" {
 		t.Fatalf("pruned %v %v", ids, err)
 	}
 	devs, _ := d.ListDevices(ctx)
-	if len(devs) != 4 {
+	if len(devs) != 5 {
 		t.Fatalf("%d devices left", len(devs))
+	}
+	if dv, err := d.Device(ctx, "192.0.2.6"); err != nil || !dv.Hidden {
+		t.Fatalf("hidden device: %+v %v", dv, err)
 	}
 }

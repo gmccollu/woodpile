@@ -242,9 +242,9 @@ func TestIdleEviction(t *testing.T) {
 	}
 }
 
-// TestRetentionFairness: one device floods, five are quiet. The storage cap and the
-// low-disk guard delete the flooder's oldest files; the quiet devices keep all of
-// theirs, and the flood is reported.
+// TestRetentionFairness: one device floods, five are quiet. The storage cap deletes
+// the flooder's oldest files and the quiet devices keep all of theirs; the flood is
+// reported; and under low disk nobody loses their guaranteed days.
 func TestRetentionFairness(t *testing.T) {
 	e := newEnv(t, func(o *Options) { o.MinFreeBytes = 1 << 20; o.MinFreePercent = 1 })
 	flood := ip(100)
@@ -300,19 +300,20 @@ func TestRetentionFairness(t *testing.T) {
 			t.Fatalf("deleted %+v", h)
 		}
 	}
-	// The low-disk guard takes from the flooder too (still over its share of the cap),
-	// while it has closed files.
+	// Under low disk with the flooder within its share, the order is oldest-first
+	// across everyone, but no established device loses its guaranteed days (today
+	// and yesterday) while anything older is left.
 	e.disk.total = 1 << 30
 	used := uint64(duLogs(e.dir))
 	e.disk.setOther(1<<30 - used - (10<<20 - 100<<10)) // 100 KiB under the 10 MiB reserve
 	e.maintain()
-	for _, q := range quiet {
-		if n := len(e.files(q)); n != days {
-			t.Fatalf("low disk: %v kept %d files", q, n)
+	for _, q := range append(quiet, flood) {
+		if got := daysOf(e.files(q)); !strings.HasSuffix(got, "2026-11-09,2026-11-10") {
+			t.Fatalf("low disk: %v kept days %s", q, got)
 		}
 	}
 	hist, _ = e.idx.Deletions(bg, time.Time{}, time.Time{}, 0)
-	if hist[0].Reason != index.ReasonLowDisk || hist[0].DeviceID != "192.0.2.100" {
+	if hist[0].Reason != index.ReasonLowDisk {
 		t.Fatalf("low-disk deletion %+v", hist[0])
 	}
 }

@@ -11,6 +11,7 @@ import (
 // closeJob is a file that was just closed (rotated): its handle is gone, but its data
 // still has to be fsynced before it may be compressed or deleted.
 type closeJob struct {
+	evict   *device // instead: carry out a makeRoomLocked eviction
 	e       *catEntry
 	path    string
 	dir     string
@@ -81,6 +82,10 @@ func (s *Store) drainClose() {
 // retention. If the fsync fails the file is released anyway (its data is in the OS
 // cache, and compression fsyncs its own output), with a warning event.
 func (s *Store) finishClose(j closeJob) {
+	if j.evict != nil {
+		s.finishEvict(j.evict)
+		return
+	}
 	err := s.syncPath(j.path)
 	if errors.Is(err, fs.ErrNotExist) {
 		err = nil

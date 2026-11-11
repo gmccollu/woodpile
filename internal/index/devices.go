@@ -152,11 +152,12 @@ func (d *DB) Groups(ctx context.Context) ([]GroupCount, error) {
 	return out, rows.Err()
 }
 
-// PruneDevices deletes devices that have no files left, no name and no group, and
-// weren't heard since heardBefore, and returns their IDs (so the store can remove
-// their empty folders). Named or grouped devices are always kept.
+// PruneDevices deletes devices that have no files left, no name, no group and aren't
+// hidden, and weren't heard since heardBefore, and returns their IDs (so the store
+// can remove their empty folders). Named, grouped or hidden devices are always kept:
+// each is a choice the user made.
 func (d *DB) PruneDevices(ctx context.Context, heardBefore time.Time) ([]string, error) {
-	rows, err := d.db.QueryContext(ctx, `DELETE FROM devices WHERE name = '' AND grp = '' AND last_heard < ?
+	rows, err := d.db.QueryContext(ctx, `DELETE FROM devices WHERE name = '' AND grp = '' AND hidden = 0 AND last_heard < ?
 		AND NOT EXISTS (SELECT 1 FROM files f WHERE f.device_id = devices.id) RETURNING id`, ms(heardBefore))
 	if err != nil {
 		return nil, err

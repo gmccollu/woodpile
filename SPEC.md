@@ -43,10 +43,10 @@ proposal and can change.
 | Rotation | Close at 100 MiB or midnight UTC, gzip, keep 30 days / 20 GB (§3.4) **(decided)** |
 | Sizes | "GB" in this spec means GiB (1 GiB guard floor, 20 GiB cap) |
 | Low-disk reserve | max(1 GiB, min(5% of the volume, 10 GiB)): 1 GiB on a 10 GB volume, 5 GiB on 100 GB, 10 GiB on 460 GB and 4 TB (§3.4) **(decided, 2026-11-11)** |
-| Retention fairness | Fair shares: over the size cap or under the low-disk reserve, delete first from devices over their share (budget / devices with data), then from devices first seen in the last 24 h, then oldest-first. A device within its share keeps its newest day of closed files unless the low-disk guard has nothing else; a device over its share doesn't, so the cap holds to within about one part's size. Age retention is per file as before. A device sending over half of the last 24 h's bytes gets a warn event, at most hourly (§3.4) **(decided, 2026-11-11, revised after the security re-test)** |
-| Devices cleanup | A device with no files left, no name and no group, quiet for 24 h, is forgotten: index row, folder, and its exemption from the new-sender rate **(decided, 2026-11-11)** |
+| Retention fairness | Over the size cap or under the low-disk reserve, delete first from devices first seen in the last 24 h, then from established devices over their share, then oldest-first. Shares split the cap by each device's average bytes a day over the last 7 days (1 KiB floor; no share below a tenth of an equal split). Every device established for over 24 h keeps its last min(retention days, 2) calendar days; the size cap never takes them, the low-disk guard only once every newer device's data is gone. A device sending over half of the last 24 h's bytes gets a warn event, at most hourly (§3.4) **(decided, 2026-11-11, revised for rc2)** |
+| Devices cleanup | A device with no files left, no name, no group and not hidden, quiet for 24 h, is forgotten: index row, folder, and its exemption from the new-sender rate **(decided, 2026-11-11)** |
 | `reindex` as root | Refused when the data folder belongs to another user; run it as that user (`sudo -u woodpile woodpile reindex`). Index files that are links or not regular files are refused **(decided, 2026-11-11)** |
-| New-sender limits | At most 10,000 *active* senders (`max_devices`): a sender quiet for 10 min has its file closed early (its next message appends to the same file) and its memory freed, so the cap counts senders heard in about the last 10 min. Senders with no logs yet also need a token, first from their network's bucket (a /24, or a /48 for IPv6: burst 256, then 20 a minute), then from the global one (burst 5,000, then 200 a minute), so one network can't keep everyone else out and a new install on a 5,000-device network admits everyone at once; random sources spread over many networks can still drain the global bucket, and the sender allowlist is the answer to that. A sender with logs on disk is always admitted: at the cap it takes the least recently heard sender's slot (that sender's file is parked, not lost). The cap and the global bucket are live settings. Refused messages count as dropped and raise the `device_limit` banner **(decided, 2026-11-11)** |
+| New-sender limits | At most 10,000 *active* senders (`max_devices`): a sender quiet for 10 min has its file closed early (its next message appends to the same file) and its memory freed, so the cap counts senders heard in about the last 10 min. Senders with no logs yet also need a token, first from their network's bucket (a /24, or a /48 for IPv6: burst 256, then 20 a minute), then from the global one (burst 5,000, then 200 a minute), so one network can't keep everyone else out and a new install on a 5,000-device network admits everyone at once; random sources spread over many networks can still drain the global bucket, and the sender allowlist is the answer to that. A sender with logs on disk is always admitted: at the cap it takes the least recently heard sender's slot (that sender's file is parked, not lost). While the cap is full, known senders that aren't in memory are readmitted at up to 500 a second (each evicts the least recently heard sender, whose file is parked); beyond that they're refused (reason `churn`); a sender already in memory is never refused. The cap and the global bucket are live settings. Refused messages count as dropped and raise the `device_limit` banner **(decided, 2026-11-11)** |
 | Checkpoints | Every 1 MiB, or every minute once 64 KiB has been written since the last one |
 | Durability | Plain `fsync` on every OS (on macOS that survives process and OS crashes, not necessarily power loss) |
 | Late messages | A message for a day that's already closed goes into the current file with its own timestamp; files never reopen |
@@ -138,16 +138,18 @@ frontend install.
   original. Only the active file per device is uncompressed.
 - Retention applies to the compressed files. Defaults: **30 days or 20 GB total on disk, whichever comes first**
   **(decided)**. Age: every compressed file older than 30 days goes. Size: while all logs exceed the cap, delete
-  in **fair-share** order. Each device's share is the budget (the cap, or what's on disk if less) divided by the
-  devices with data.
-  1. Devices over their share, the most over first, oldest file first, their newest day included.
-  2. Devices first seen in the last 24 h, oldest file first.
-  3. Everyone, oldest file first, except each device's newest day of closed files.
+  in **fair-share** order.
+  1. Devices first seen in the last 24 h, oldest file first: a flood of new senders pays first, however it's spread.
+  2. Established devices over their share, the most over first, oldest file first. Shares split the cap by each
+     device's average bytes a day over the last 7 days (from the stats, which outlive the files; 1 KiB floor, and no
+     share below a tenth of an equal split), so a long-established busy device gets a large share and junk senders
+     little.
+  3. Everyone, oldest file first.
 
-  So the cap holds to within about one part's size, and a device within its share keeps its newest day of closed
-  files (only the low-disk guard may take it, and only when nothing else is left). So neither one device flooding at debug level nor a flood spread over many new senders
-  wipes an established device's recent history. Active (and parked) files are never deleted by the size cap. A
-  device that sent more than half of the last 24 h's bytes is reported with a warn event, at most once an hour.
+  Every device established for over 24 h keeps its last min(retention days, 2) calendar days (today included): the
+  size cap never takes them, so it can be exceeded by them; the low-disk guard takes them only once every newer
+  device's data is gone. Active (and parked) files are never deleted by the size cap. A device that sent more than
+  half of the last 24 h's bytes is reported with a warn event, at most once an hour.
 - Rotated files use gzip (`.log.gz`) rather than `.zip`. gzip streams, so search reads it without unpacking, and
   it's the standard for rotated logs. Exports are `.zip` (§4.1) because that's what people open by
   double-clicking.
