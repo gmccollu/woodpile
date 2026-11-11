@@ -95,8 +95,9 @@ function Check-Running {
         if ($port.LocalPort -ne "514") { Die "firewall rule for $p opens $($port.LocalPort)" }
     }
     Ok "firewall rules allow UDP and TCP 514 inbound"
-    $ui = Get-NetFirewallRule | Where-Object { $_.DisplayName -like "*Woodpile*8514*" }
-    if ($ui) { Die "a firewall rule opens the UI port" }
+    # (PowerShell names are case-insensitive: don't reuse $Ui here.)
+    $uiRule = Get-NetFirewallRule | Where-Object { $_.DisplayName -like "*Woodpile*8514*" }
+    if ($uiRule) { Die "a firewall rule opens the UI port" }
 
     $udp = Get-NetUDPEndpoint -LocalPort 514 -ErrorAction SilentlyContinue | Where-Object OwningProcess -eq $svc.ProcessId
     $tcp = Get-NetTCPConnection -LocalPort 514 -State Listen -ErrorAction SilentlyContinue | Where-Object OwningProcess -eq $svc.ProcessId
