@@ -37,6 +37,8 @@ Examples:
 	size := fs.Int("size", loadgen.DefaultSize, "approximate message size in `bytes` when --message isn't set")
 	source := fs.String("source", "", "local `IP` to send from (default: chosen by the OS)")
 	hostname := fs.String("hostname", loadgen.DefaultHostname, "the messages' HOSTNAME `field`")
+	runID := fs.String("run", "", "run `id` carried in every message (default: random); with --first-seq, lets several sends share one numbered run")
+	firstSeq := fs.Int("first-seq", 0, "sequence `number` of the first message")
 	if code, done := parse(fs, args, stdout); done {
 		return code
 	}
@@ -71,6 +73,10 @@ Examples:
 		Addr: net.JoinHostPort(*host, strconv.Itoa(*port)), Proto: *proto, Framing: *framing,
 		Count: *count, Rate: *rate, Duration: *duration, Size: *size,
 		Message: *message, Source: *source, Hostname: *hostname,
+		RunID: *runID, FirstSeq: *firstSeq,
+	}
+	if *firstSeq < 0 {
+		return usageErr(errors.New("--first-seq can't be negative"))
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
