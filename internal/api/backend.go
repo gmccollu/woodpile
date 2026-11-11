@@ -230,24 +230,29 @@ type RejectedSender struct {
 
 // Device is one sender.
 type Device struct {
-	ID          string    `json:"id"`
-	IP          string    `json:"ip"`
-	Name        string    `json:"name"`
-	Group       string    `json:"group"`
-	Hidden      bool      `json:"hidden"`
-	FirstSeen   time.Time `json:"first_seen"`
-	LastHeard   time.Time `json:"last_heard"`
-	Status      string    `json:"status"` // online, quiet, offline
-	MsgsPerMin  int64     `json:"msgs_per_min"`
-	TotalMsgs   int64     `json:"total_msgs"`
-	BytesOnDisk int64     `json:"bytes_on_disk"`
+	ID        string    `json:"id"`
+	IP        string    `json:"ip"`
+	Name      string    `json:"name"`
+	Group     string    `json:"group"`
+	Hidden    bool      `json:"hidden"`
+	FirstSeen time.Time `json:"first_seen"`
+	LastHeard time.Time `json:"last_heard"`
+	Status    string    `json:"status"` // online, quiet, offline, blocked
+	Blocked   bool      `json:"blocked"`
+	// BlockedBy is set on a PATCH that unblocked the device's own address while
+	// a broader blocklist entry still covers it.
+	BlockedBy   string `json:"blocked_by,omitempty"`
+	MsgsPerMin  int64  `json:"msgs_per_min"`
+	TotalMsgs   int64  `json:"total_msgs"`
+	BytesOnDisk int64  `json:"bytes_on_disk"`
 }
 
 // DevicePatch is the body of PATCH /api/devices/{id}; nil fields are left alone.
 type DevicePatch struct {
-	Name   *string `json:"name,omitempty"`
-	Group  *string `json:"group,omitempty"`
-	Hidden *bool   `json:"hidden,omitempty"`
+	Name    *string `json:"name,omitempty"`
+	Group   *string `json:"group,omitempty"`
+	Hidden  *bool   `json:"hidden,omitempty"`
+	Blocked *bool   `json:"blocked,omitempty"` // add or remove the device's exact address on listeners.blocklist
 }
 
 // ---- /api/settings ----
@@ -265,6 +270,7 @@ type ListenersSettings struct {
 	UDP       ListenerSettings `json:"udp"`
 	TCP       ListenerSettings `json:"tcp"`
 	Allowlist []string         `json:"allowlist"`
+	Blocklist []string         `json:"blocklist"`
 	// New-sender limits (the device_limit banner).
 	MaxDevices          int `json:"max_devices"`
 	NewDeviceBurst      int `json:"new_device_burst"`
@@ -366,7 +372,10 @@ func (d *Device) normalize() {
 	d.LastHeard = d.LastHeard.UTC()
 }
 
-func (s *Settings) normalize() { s.Listeners.Allowlist = nonNil(s.Listeners.Allowlist) }
+func (s *Settings) normalize() {
+	s.Listeners.Allowlist = nonNil(s.Listeners.Allowlist)
+	s.Listeners.Blocklist = nonNil(s.Listeners.Blocklist)
+}
 
 func nonNil[T any](s []T) []T {
 	if s == nil {

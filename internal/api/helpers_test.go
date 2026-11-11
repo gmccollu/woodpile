@@ -163,6 +163,12 @@ func (b *fakeBackend) UpdateDevice(ctx context.Context, id string, p DevicePatch
 	if p.Hidden != nil {
 		d.Hidden = *p.Hidden
 	}
+	if p.Blocked != nil {
+		d.Blocked = *p.Blocked
+		if d.Blocked {
+			d.Status = "blocked"
+		}
+	}
 	b.devices[id] = d
 	return d, nil
 }
@@ -540,6 +546,8 @@ func pageDevices(ds []Device, q DeviceQuery) DevicePage {
 	for _, d := range ds {
 		switch {
 		case q.Hidden == "only" && !d.Hidden, q.Hidden == "exclude" && d.Hidden:
+			continue
+		case q.Blocked == "only" && !d.Blocked, q.Blocked == "exclude" && d.Blocked:
 			continue
 		case q.Group != "" && d.Group != q.Group, q.Ungrouped && d.Group != "":
 			continue

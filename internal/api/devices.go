@@ -22,6 +22,7 @@ type DeviceQuery struct {
 	Group         string
 	Ungrouped     bool
 	Hidden        string // include, only, exclude
+	Blocked       string // include, only, exclude
 }
 
 // DevicePage is the body of GET /api/devices.
@@ -32,7 +33,7 @@ type DevicePage struct {
 
 // ParseDeviceQuery reads GET /api/devices' query string.
 func ParseDeviceQuery(v url.Values) (DeviceQuery, error) {
-	q := DeviceQuery{Limit: defaultDeviceLimit, Sort: "rate", Hidden: "include", Q: v.Get("q"), Group: v.Get("group")}
+	q := DeviceQuery{Limit: defaultDeviceLimit, Sort: "rate", Hidden: "include", Blocked: "include", Q: v.Get("q"), Group: v.Get("group")}
 	for _, p := range []struct {
 		name string
 		dst  *int
@@ -55,12 +56,17 @@ func ParseDeviceQuery(v url.Values) (DeviceQuery, error) {
 			return q, fmt.Errorf("sort must be rate, name, last_heard or first_seen, not %q", s)
 		}
 	}
-	if s := v.Get("hidden"); s != "" {
-		switch s {
-		case "include", "only", "exclude":
-			q.Hidden = s
-		default:
-			return q, fmt.Errorf("hidden must be include, only or exclude, not %q", s)
+	for _, f := range []struct {
+		name string
+		dst  *string
+	}{{"hidden", &q.Hidden}, {"blocked", &q.Blocked}} {
+		if s := v.Get(f.name); s != "" {
+			switch s {
+			case "include", "only", "exclude":
+				*f.dst = s
+			default:
+				return q, fmt.Errorf("%s must be include, only or exclude, not %q", f.name, s)
+			}
 		}
 	}
 	var err error

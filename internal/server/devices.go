@@ -18,13 +18,28 @@ import (
 func (b *backend) QueryDevices(ctx context.Context, q api.DeviceQuery) (api.DevicePage, error) {
 	now := b.now()
 	minute := now.UTC().Truncate(time.Minute)
+	k := b.blocker()
 	if (q.Sort == "" || q.Sort == "rate") && q.Q == "" {
-		return b.devicesByLiveRate(ctx, q, now)
+		page, err := b.devicesByLiveRate(ctx, q, now, k)
+		k.mark(page.Devices)
+		return page, err
 	}
-	page, err := b.idx.QueryDevices(ctx, index.DeviceQuery{
+	iq := index.DeviceQuery{
 		Limit: q.Limit, Offset: q.Offset, Sort: index.DeviceSort(q.Sort), Q: q.Q, Group: q.Group, Ungrouped: q.Ungrouped,
 		Hidden: index.HiddenFilter(q.Hidden), RateFrom: minute.Add(-time.Minute),
-	})
+	}
+	if q.Blocked == "only" || (q.Blocked == "exclude" && !k.empty()) {
+		ids, err := b.idx.DeviceIDs(ctx)
+		if err != nil {
+			return api.DevicePage{}, err
+		}
+		if bl := k.blockedIDs(ids); q.Blocked == "only" {
+			iq.OnlyIDs = bl
+		} else {
+			iq.NotIDs = bl
+		}
+	}
+	page, err := b.idx.QueryDevices(ctx, iq)
 	if err != nil {
 		return api.DevicePage{}, err
 	}
@@ -45,6 +60,7 @@ func (b *backend) QueryDevices(ctx context.Context, q api.DeviceQuery) (api.Devi
 		}
 		out.Devices = append(out.Devices, withLive(d, live, rates, now, quiet))
 	}
+	k.mark(out.Devices)
 	return out, nil
 }
 
@@ -67,7 +83,7 @@ func (b *backend) Groups(ctx context.Context) ([]api.Group, error) {
 // shown) and filters by the group and hidden caches the live tail keeps, then
 // reads only the page's rows. A search (q) needs names, so it goes through
 // QueryDevices.
-func (b *backend) devicesByLiveRate(ctx context.Context, q api.DeviceQuery, now time.Time) (api.DevicePage, error) {
+func (b *backend) devicesByLiveRate(ctx context.Context, q api.DeviceQuery, now time.Time, k blocker) (api.DevicePage, error) {
 	ids, err := b.idx.DeviceIDs(ctx)
 	if err != nil {
 		return api.DevicePage{}, err
@@ -81,6 +97,7 @@ func (b *backend) devicesByLiveRate(ctx context.Context, q api.DeviceQuery, now 
 		case id == index.RefusedDeviceID:
 		case q.Hidden == "only" && !h, q.Hidden == "exclude" && h:
 		case q.Group != "" && g != q.Group, q.Ungrouped && g != "":
+		case q.Blocked == "only" && !k.blocked(id), q.Blocked == "exclude" && k.blocked(id):
 		default:
 			match = append(match, id)
 		}

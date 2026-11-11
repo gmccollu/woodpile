@@ -41,6 +41,9 @@ type DeviceQuery struct {
 	Group     string // only this group
 	Ungrouped bool   // only devices without a group (ignored if Group is set)
 	Hidden    HiddenFilter
+	// OnlyIDs, if set, limits the page to these devices; NotIDs leaves these
+	// out (for filters the index can't compute, such as the blocklist's CIDRs).
+	OnlyIDs, NotIDs []string
 	// RateFrom and RateTo bound the stats summed into Device.RecentMsgs, which
 	// SortRate orders by. The API uses the last full minute for msgs_per_min.
 	RateFrom, RateTo time.Time
@@ -77,6 +80,19 @@ func (d *DB) QueryDevices(ctx context.Context, q DeviceQuery) (DevicePage, error
 		args = append(args, q.Group)
 	case q.Ungrouped:
 		where = append(where, `d.grp = ''`)
+	}
+	if q.OnlyIDs != nil {
+		if len(q.OnlyIDs) == 0 {
+			return DevicePage{}, nil
+		}
+		in, a := inList(q.OnlyIDs)
+		where = append(where, `d.id IN `+in)
+		args = append(args, a...)
+	}
+	if len(q.NotIDs) > 0 {
+		in, a := inList(q.NotIDs)
+		where = append(where, `d.id NOT IN `+in)
+		args = append(args, a...)
 	}
 	switch q.Hidden {
 	case HiddenOnly:

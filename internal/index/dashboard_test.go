@@ -50,3 +50,30 @@ func TestStatusCounts(t *testing.T) {
 		t.Errorf("online %d quiet %d offline %d (%v)", on, q, off, err)
 	}
 }
+
+func TestQueryDevicesOnlyAndNotIDs(t *testing.T) {
+	d := openIn(t, t.TempDir())
+	var acts []Activity
+	for _, id := range []string{"a", "b", "c", "d"} {
+		acts = append(acts, Activity{DeviceID: id, IP: id, Minute: t0, FirstHeard: t0, LastHeard: t0, Counts: Counts{Msgs: 1}})
+	}
+	d.Apply(ctx, Batch{Activity: acts})
+	ids := func(p DevicePage) string {
+		var out []string
+		for _, dv := range p.Devices {
+			out = append(out, dv.ID)
+		}
+		return strings.Join(out, ",")
+	}
+	p, _ := d.QueryDevices(ctx, DeviceQuery{Sort: SortName, OnlyIDs: []string{"b", "d", "zz"}})
+	if ids(p) != "b,d" || p.Total != 2 {
+		t.Errorf("only %q %d", ids(p), p.Total)
+	}
+	p, _ = d.QueryDevices(ctx, DeviceQuery{Sort: SortName, NotIDs: []string{"b"}})
+	if ids(p) != "a,c,d" || p.Total != 3 {
+		t.Errorf("not %q %d", ids(p), p.Total)
+	}
+	if p, _ := d.QueryDevices(ctx, DeviceQuery{OnlyIDs: []string{}}); p.Total != 0 || len(p.Devices) != 0 {
+		t.Errorf("empty only: %+v", p)
+	}
+}

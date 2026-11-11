@@ -695,3 +695,26 @@ func TestGroups(t *testing.T) {
 		t.Errorf("no groups: %s", r.body)
 	}
 }
+
+func TestPatchBlockedAndFilter(t *testing.T) {
+	srv := startServer(t, nil, UIConfig{})
+	c := httpClient()
+	r := do(t, c, "PATCH", srv.url("/api/devices/10.1.0.2"), `{"blocked": true}`)
+	if r.code != 200 || !strings.Contains(string(r.body), `"blocked":true`) || !strings.Contains(string(r.body), `"status":"blocked"`) {
+		t.Fatalf("%d %s", r.code, r.body)
+	}
+	if p := srv.b.patches[len(srv.b.patches)-1]; p.Blocked == nil || !*p.Blocked || p.Name != nil {
+		t.Errorf("patch %+v", p)
+	}
+	var page DevicePage
+	json.Unmarshal(do(t, c, "GET", srv.url("/api/devices?blocked=only"), "").body, &page)
+	if page.Total != 1 || page.Devices[0].ID != "10.1.0.2" {
+		t.Errorf("only %+v", page)
+	}
+	json.Unmarshal(do(t, c, "GET", srv.url("/api/devices?blocked=exclude"), "").body, &page)
+	if page.Total != 2 {
+		t.Errorf("exclude %d", page.Total)
+	}
+	wantError(t, do(t, c, "GET", srv.url("/api/devices?blocked=sure"), ""), 400, "blocked")
+	wantError(t, do(t, c, "PATCH", srv.url("/api/devices/10.1.0.2"), `{"blocked": "yes"}`), 400, "")
+}

@@ -134,6 +134,7 @@ const (
 	KindAuth     Kind = "auth"
 	KindExport   Kind = "export"
 	KindClock    Kind = "clock"
+	KindDevice   Kind = "device" // the admin blocked or unblocked a device
 	// KindDeviceLimit: new senders refused by the device cap or new-device rate.
 	KindDeviceLimit Kind = "device_limit"
 	// KindFlood: one device sent more than half of the last 24 h's bytes.

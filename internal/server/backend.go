@@ -391,6 +391,14 @@ func (b *backend) Stats(ctx context.Context) (api.Stats, error) {
 	if err != nil {
 		return st, err
 	}
+	// Blocked devices count in none of them.
+	onlineSince := now.Add(-time.Duration(q.QuietAfterSeconds) * time.Second).UnixMilli()
+	quietSince := now.Add(-time.Duration(q.OfflineAfterSeconds) * time.Second).UnixMilli()
+	bOn, bQuiet, bOff, err := b.blockedCounts(ctx, b.blocker(), onlineSince, quietSince)
+	if err != nil {
+		return st, err
+	}
+	on, quiet, off = on-bOn, quiet-bQuiet, off-bOff
 	st.Devices = api.DeviceCounts{Total: on + quiet + off, Online: on, Quiet: quiet, Offline: off}
 
 	u := b.store.Usage()
@@ -431,6 +439,7 @@ const (
 	statusOnline  = "online"
 	statusQuiet   = "quiet"
 	statusOffline = "offline"
+	statusBlocked = "blocked" // on the blocklist (whatever its last-heard time)
 )
 
 // deviceStatus is online when heard within quiet_after_seconds, quiet up to
@@ -472,6 +481,7 @@ func (b *backend) Devices(ctx context.Context) ([]api.Device, error) {
 	for i, d := range ds {
 		out[i] = withLive(d, live, rates, now, q)
 	}
+	b.blocker().mark(out)
 	return out, nil
 }
 
@@ -544,6 +554,12 @@ func (b *backend) UpdateDevice(ctx context.Context, id string, p api.DevicePatch
 		return api.Device{}, err
 	}
 	b.setCaches(d)
+	var blockedBy string
+	if p.Blocked != nil {
+		if blockedBy, err = b.setBlocked(ctx, d, *p.Blocked); err != nil {
+			return api.Device{}, err
+		}
+	}
 	now := b.now()
 	from := now.UTC().Truncate(time.Minute).Add(-time.Minute)
 	c, err := b.idx.Counts(ctx, []string{d.ID}, from, time.Time{})
@@ -551,7 +567,10 @@ func (b *backend) UpdateDevice(ctx context.Context, id string, p api.DevicePatch
 		return api.Device{}, err
 	}
 	rs := rates{from: from, counts: map[string]index.Counts{d.ID: c}}
-	return withLive(d, b.live.subset([]string{d.ID}, now), rs, now, b.config().Quiet), nil
+	out := []api.Device{withLive(d, b.live.subset([]string{d.ID}, now), rs, now, b.config().Quiet)}
+	b.blocker().mark(out)
+	out[0].BlockedBy = blockedBy
+	return out[0], nil
 }
 
 func (b *backend) Settings(ctx context.Context) (api.Settings, error) {
@@ -624,15 +643,7 @@ func listenersEqual(a, b config.Listeners) bool {
 	if a.UDP != b.UDP || a.TCP != b.TCP || a.UDPRcvbufBytes != b.UDPRcvbufBytes || a.MaxMessageBytes != b.MaxMessageBytes {
 		return false
 	}
-	if len(a.Allowlist) != len(b.Allowlist) {
-		return false
-	}
-	for i := range a.Allowlist {
-		if a.Allowlist[i] != b.Allowlist[i] {
-			return false
-		}
-	}
-	return true
+	return slices.Equal(a.Allowlist, b.Allowlist) && slices.Equal(a.Blocklist, b.Blocklist)
 }
 
 func (b *backend) RetryListeners(ctx context.Context) error {
