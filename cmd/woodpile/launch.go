@@ -1,7 +1,6 @@
 package main
 
 import (
-	"os"
 	"os/exec"
 	"runtime"
 )
@@ -45,10 +44,6 @@ func classifyLaunch(p launchProbe) launch {
 	return launchTerminal
 }
 
-func stdinIsTerminal() bool {
-	fi, err := os.Stdin.Stat()
-	return err == nil && fi.Mode()&os.ModeCharDevice != 0
-}
 
 // openBrowser opens url in the default browser without waiting for it.
 func openBrowser(url string) error {
