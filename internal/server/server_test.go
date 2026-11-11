@@ -260,8 +260,16 @@ func TestServerEndToEndInProcess(t *testing.T) {
 	if inUse, err := DataDirInUse(filepath.Join(dir, "data")); err != nil || !inUse {
 		t.Errorf("DataDirInUse = %v, %v", inUse, err)
 	}
-	if rs, err := ReadState(filepath.Join(dir, "data")); err != nil || rs.PID != os.Getpid() || !rs.UI.Listening {
-		t.Errorf("run state = %+v, %v", rs, err)
+	// The run-state file is written by its own goroutine when the UI's state
+	// changes, so wait for it rather than race it.
+	var rs RunState
+	waitFor(t, "the run-state file to show the UI listening", func() bool {
+		var err error
+		rs, err = ReadState(filepath.Join(dir, "data"))
+		return err == nil && rs.UI.Listening
+	})
+	if rs.PID != os.Getpid() {
+		t.Errorf("run state = %+v", rs)
 	}
 
 	r.stop(t)

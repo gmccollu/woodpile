@@ -78,9 +78,10 @@ type Server struct {
 
 	reconf chan struct{}
 
-	mu    sync.Mutex
-	want  UIConfig // the configured UI
-	state State
+	mu      sync.Mutex
+	want    UIConfig // the configured UI
+	state   State
+	changed chan struct{} // signalled (without blocking) when state changes
 
 	lan  atomic.Bool  // the running server is in LAN mode
 	port atomic.Int64 // the running server's port
@@ -129,6 +130,7 @@ func New(opts Options) (*Server, error) {
 		static:  st,
 		opts:    opts,
 		reconf:  make(chan struct{}, 1),
+		changed: make(chan struct{}, 1),
 		want:    opts.UI,
 	}
 	s.auth, err = newAuth(opts.DataDir, opts.argon, opts.now, func(e Event) { s.event(e.Level, e.Kind, e.Text) })
@@ -166,6 +168,21 @@ func (s *Server) currentUI() UIConfig {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.want
+}
+
+// StateChanged is signalled whenever State changes (it holds at most one
+// pending signal; read State after receiving).
+func (s *Server) StateChanged() <-chan struct{} { return s.changed }
+
+// setState sets the state and signals StateChanged.
+func (s *Server) setState(st State) {
+	s.mu.Lock()
+	s.state = st
+	s.mu.Unlock()
+	select {
+	case s.changed <- struct{}{}:
+	default:
+	}
 }
 
 // State returns what the UI server is doing now.
@@ -229,9 +246,7 @@ func (s *Server) Run(ctx context.Context) error {
 				s.event(LevelError, EventKindUI, msg)
 				lastErr = msg
 			}
-			s.mu.Lock()
-			s.state = State{Err: err}
-			s.mu.Unlock()
+			s.setState(State{Err: err})
 			select {
 			case <-ctx.Done():
 				return nil
@@ -244,9 +259,7 @@ func (s *Server) Run(ctx context.Context) error {
 		if lanErr == nil {
 			lastLANErr = ""
 		}
-		s.mu.Lock()
-		s.state = State{Listening: true, Addr: inst.addr, URL: inst.url, LANMode: inst.lan, Err: lanErr}
-		s.mu.Unlock()
+		s.setState(State{Listening: true, Addr: inst.addr, URL: inst.url, LANMode: inst.lan, Err: lanErr})
 		mode := "localhost mode"
 		if inst.lan {
 			mode = "LAN mode"
@@ -256,9 +269,7 @@ func (s *Server) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			inst.stop()
-			s.mu.Lock()
-			s.state = State{}
-			s.mu.Unlock()
+			s.setState(State{})
 			return nil
 		case <-s.reconf:
 			inst.stop()

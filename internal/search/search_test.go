@@ -1,7 +1,10 @@
 package search
 
 import (
+	"bytes"
+	"encoding/base64"
 	"errors"
+	"fmt"
 	"math/rand"
 	"os"
 	"path/filepath"
@@ -246,7 +249,7 @@ func toRecs(ls []Line) []rec {
 
 func TestPartialAndResume(t *testing.T) {
 	f := newFixture(t, 3, 300)
-	f.eng.budget = time.Nanosecond // every request reads one block, then stops
+	f.eng.testMaxSteps = 1 // every request reads one block, then stops (not a time: Windows timers are coarse)
 	for _, asc := range []bool{false, true} {
 		for _, text := range []string{"", "seq=0001", "nothing matches this"} {
 			q := Query{Filter: Filter{From: f.day0, To: f.day0.Add(72 * time.Hour), Q: text}, Asc: asc, Limit: 100}
@@ -291,18 +294,47 @@ func TestCursorTamperAndBinding(t *testing.T) {
 		t.Fatal(err, p.NextCursor)
 	}
 	var qe *QueryError
-	for i := 0; i < len(p.NextCursor); i += 7 {
-		b := []byte(p.NextCursor)
-		b[i] ^= 1
-		if b[i] == '`' || b[i] == '.' || b[i] == '/' || b[i] == '+' {
-			continue
-		}
+	reject := func(what, cur string) {
+		t.Helper()
 		q2 := q
-		q2.Cursor = string(b)
+		q2.Cursor = cur
 		if _, err := f.eng.Search(bg, q2); !errors.As(err, &qe) {
-			t.Fatalf("tampered cursor (byte %d): %v", i, err)
+			t.Fatalf("%s accepted: %v", what, err)
 		}
 	}
+	// Every other character at every position of the text, including the
+	// last one's unused low bits (which non-strict base64 decodes to the same
+	// bytes, so such a cursor would alias the original rather than tamper with
+	// it; strict decoding refuses it).
+	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+	for i := 0; i < len(p.NextCursor); i++ {
+		for _, c := range []byte(alphabet) {
+			if c == p.NextCursor[i] {
+				continue
+			}
+			b := []byte(p.NextCursor)
+			b[i] = c
+			reject(fmt.Sprintf("character %d changed to %q", i, c), string(b))
+		}
+	}
+	// Every bit of every decoded byte (version, parameter hash, payload, MAC),
+	// re-encoded canonically.
+	raw, err := base64.RawURLEncoding.Strict().DecodeString(p.NextCursor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range raw {
+		for bit := 0; bit < 8; bit++ {
+			b := bytes.Clone(raw)
+			b[i] ^= 1 << bit
+			reject(fmt.Sprintf("byte %d bit %d flipped", i, bit), base64.RawURLEncoding.EncodeToString(b))
+		}
+	}
+	// Truncated, extended, padded.
+	reject("truncated", p.NextCursor[:len(p.NextCursor)-1])
+	reject("extended", p.NextCursor+"A")
+	reject("padded", p.NextCursor+"=")
+	reject("empty MAC", base64.RawURLEncoding.EncodeToString(raw[:len(raw)-macLen]))
 	for _, change := range []func(q *Query){
 		func(q *Query) { q.Q = "seq=" },
 		func(q *Query) { q.Asc = true },
@@ -436,7 +468,7 @@ func TestBigFixturePartialAndContext(t *testing.T) {
 	f := newBigFixture(t)
 	// A compressed file read newest-first needs one forward pass; a budget far
 	// below one pass makes that quadratic, so give each request a few blocks.
-	f.eng.budget, f.eng.block = 3*time.Millisecond, 64<<10
+	f.eng.testMaxSteps, f.eng.block = 8, 64<<10
 	for _, asc := range []bool{false, true} {
 		q := Query{Filter: Filter{From: f.day0.Add(5 * time.Hour), To: f.day0.Add(40 * time.Hour), Q: "seq=0012"}, Asc: asc, Limit: 50}
 		got, pages := f.all(q)
@@ -445,7 +477,7 @@ func TestBigFixturePartialAndContext(t *testing.T) {
 		}
 		same(t, "big partial", got, f.expect(q))
 	}
-	f.eng.budget = DefaultBudget
+	f.eng.testMaxSteps = 0
 	dev := model.DeviceID(devC)
 	q := Query{Filter: Filter{From: f.day0, To: f.day0.Add(48 * time.Hour)}, Devices: []string{dev}, Asc: true, Limit: MaxLimit}
 	res, _ := f.all(q)
@@ -476,33 +508,50 @@ func TestBigFixturePartialAndContext(t *testing.T) {
 // fail, no line may repeat, and each device's lines come in file order.
 func TestSearchWhileWriting(t *testing.T) {
 	f := newFixture(t, 2, 200)
-	f.st.SetLimits(store.Limits{RetentionDays: 30, RetentionBytes: 400 << 10, PartBytes: 8 << 10})
-	stop := make(chan struct{})
+	f.st.SetLimits(store.Limits{RetentionDays: 30, RetentionBytes: 64 << 10, PartBytes: 8 << 10})
+	// The writer and the searches interleave by construction, not by timing:
+	// each page the searches read lets the writer write a batch (rotating parts,
+	// compressing, deleting by retention), and the writer stops once retention
+	// has deleted wantDeleted files. A slow disk (fsync on Windows) only makes
+	// the test take more pages.
+	const wantDeleted = 60
+	grant := make(chan struct{}, 1)
 	done := make(chan struct{})
+	var werr error
 	go func() {
 		defer close(done)
 		at := f.day0.Add(48*time.Hour + time.Minute)
 		seq := 1 << 20
-		for i := 0; ; i++ {
-			select {
-			case <-stop:
+		for batch := 0; batch < 20000; batch++ {
+			<-grant
+			for i := 0; i < 30; i++ {
+				for _, a := range f.devs {
+					at = at.Add(time.Millisecond)
+					f.st.Write(model.Message{Received: at, Sender: a, Raw: []byte(msgText(seq))})
+					seq++
+				}
+			}
+			f.clock.Set(at)
+			f.st.Maintain()
+			if hist, err := f.idx.Deletions(bg, time.Time{}, time.Time{}, 0); err != nil {
+				werr = err
 				return
-			default:
-			}
-			for _, a := range f.devs {
-				at = at.Add(time.Millisecond)
-				f.st.Write(model.Message{Received: at, Sender: a, Raw: []byte(msgText(seq))})
-				seq++
-			}
-			if i%20 == 0 {
-				f.clock.Set(at)
-				f.st.Maintain()
+			} else if len(hist) >= wantDeleted {
+				return
 			}
 		}
+		werr = errors.New("retention never deleted enough files")
 	}()
-	deadline := time.Now().Add(3 * time.Second)
+	writing := func() bool {
+		select {
+		case <-done:
+			return false
+		default:
+			return true
+		}
+	}
 	rounds := 0
-	for time.Now().Before(deadline) {
+	for writing() {
 		for _, asc := range []bool{false, true} {
 			q := Query{Filter: Filter{From: f.day0, To: f.day0.Add(72 * time.Hour)}, Asc: asc, Limit: 37}
 			seen := map[string]bool{}
@@ -511,6 +560,10 @@ func TestSearchWhileWriting(t *testing.T) {
 				p, err := f.eng.Search(bg, q)
 				if err != nil {
 					t.Fatalf("round %d page %d: %v", rounds, n, err)
+				}
+				select {
+				case grant <- struct{}{}:
+				default:
 				}
 				for _, l := range p.Results {
 					if seen[l.Ref] {
@@ -530,12 +583,13 @@ func TestSearchWhileWriting(t *testing.T) {
 			rounds++
 		}
 	}
-	close(stop)
-	<-done
+	if werr != nil {
+		t.Fatal(werr)
+	}
 	hist, _ := f.idx.Deletions(bg, time.Time{}, time.Time{}, 0)
 	t.Logf("%d search rounds; %d files deleted by retention meanwhile", rounds, len(hist))
-	if len(hist) == 0 {
-		t.Error("retention never deleted a file; the test didn't exercise it")
+	if rounds < 2 {
+		t.Errorf("only %d search rounds overlapped the writes", rounds)
 	}
 }
 

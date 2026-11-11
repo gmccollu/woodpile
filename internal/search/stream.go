@@ -37,10 +37,14 @@ type run struct {
 	// noDeadline is set while re-reading a stream's known next line: that
 	// is part of returning a result the previous page found, not new reading.
 	noDeadline bool
-	scanned    int64 // bytes of uncompressed stream read for matching
-	files      map[int64]struct{}
-	timedOut   bool
-	err        error // a context error
+	// steps counts the reads a request has made (re-reading a pending line
+	// excluded); with maxSteps > 0 (tests) the budget is that many reads instead
+	// of a time, so budget tests don't depend on the OS timer's resolution.
+	steps, maxSteps int
+	scanned         int64 // bytes of uncompressed stream read for matching
+	files           map[int64]struct{}
+	timedOut        bool
+	err             error // a context error
 
 	unesc []byte
 }
@@ -54,7 +58,10 @@ func (r *run) expired() bool {
 		r.err = err
 		return true
 	}
-	if !r.noDeadline && !r.deadline.IsZero() && time.Now().After(r.deadline) {
+	if r.noDeadline {
+		return false
+	}
+	if (r.maxSteps > 0 && r.steps >= r.maxSteps) || (!r.deadline.IsZero() && time.Now().After(r.deadline)) {
 		r.timedOut = true
 		return true
 	}

@@ -423,21 +423,27 @@ func (s *Server) watchState(started time.Time, stop <-chan struct{}) {
 		}
 		if first || rs != last {
 			if err := writeState(dataDir, rs); err != nil {
+				// Try again on the next tick (on Windows a reader or a virus scanner
+				// holding the file makes the rename fail): last stays as it was.
 				s.log.Warn("couldn't write the run-state file", "err", err)
-			}
-			if rs.UI != last.UI {
-				if rs.UI.Listening {
-					s.log.Info("UI ready", "url", rs.UI.URL)
-				} else if rs.UI.Error != "" {
-					s.log.Error("UI isn't listening", "err", rs.UI.Error)
+			} else {
+				if rs.UI != last.UI {
+					if rs.UI.Listening {
+						s.log.Info("UI ready", "url", rs.UI.URL)
+					} else if rs.UI.Error != "" {
+						s.log.Error("UI isn't listening", "err", rs.UI.Error)
+					}
 				}
+				last = rs
 			}
-			last = rs
 		}
+		// The UI's state changes are written at once (woodpile status reads the
+		// file); the tick retries failed writes.
 		select {
 		case <-stop:
 			return
 		case <-t.C:
+		case <-s.api.StateChanged():
 		}
 	}
 }

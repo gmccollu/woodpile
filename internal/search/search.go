@@ -102,6 +102,7 @@ type Engine struct {
 	decodeSem chan struct{} // bounds parallel decompression
 
 	testHookOpen func(rel string) // called before each file open
+	testMaxSteps int              // >0: a request's budget is this many reads, not Budget
 	prefetches   atomic.Int64     // prefetch runs, for tests
 }
 
@@ -283,7 +284,7 @@ func (e *Engine) Search(ctx context.Context, q Query) (Page, error) {
 	limit = min(limit, MaxLimit)
 	bind := q.binding()
 
-	r := &run{e: e, ctx: ctx, deadline: start.Add(e.budget), now: e.now(), desc: !q.Asc, m: m,
+	r := &run{e: e, ctx: ctx, deadline: start.Add(e.budget), maxSteps: e.testMaxSteps, now: e.now(), desc: !q.Asc, m: m,
 		sevs: q.Severities, need: limit, files: map[int64]struct{}{}}
 	var streams []*stream
 	if q.Cursor != "" {
@@ -345,7 +346,6 @@ func (e *Engine) Search(ctx context.Context, q Query) (Page, error) {
 
 	page := Page{Results: []Line{}}
 	var pageBytes int
-	steps := 0
 	for {
 		if r.need == 0 || pageBytes >= e.pageBytes {
 			if pageBytes >= e.pageBytes && r.need > 0 {
@@ -372,11 +372,11 @@ func (e *Engine) Search(ctx context.Context, q Query) (Page, error) {
 			// a cursor always moves on; re-reading a line the previous page found
 			// (pending) doesn't count against the budget.
 			if !s.pending {
-				if steps > 0 && r.expired() {
+				if r.steps > 0 && r.expired() {
 					page.Partial = true
 					break
 				}
-				steps++
+				r.steps++
 			}
 			s.step(r)
 			if r.err != nil {
