@@ -39,13 +39,14 @@ Change this file first if the contract changes.
   "dropped_24h": 0,                           // drops Woodpile itself saw (disk guard, write errors)
   "kernel_dropped_24h": null,                 // integer on Linux, null where the OS doesn't expose it
   "truncated_24h": 0,
-  "rejected_24h": 0                           // messages from senders outside the allowlist
+  "rejected_24h": 0                           // refused messages and TCP connections (allowlist, per-source limit)
 }
 ```
 `days_kept` is the number of distinct UTC days that still have data on disk (today counts).
 `devices` counts exclude hidden devices.
 
-`GET /api/rejected` → `[{"ip": "198.51.100.7", "count_24h": 120, "last_seen": "..."}]` (senders refused by the allowlist)
+`GET /api/rejected` → `[{"ip": "198.51.100.7", "count_24h": 120, "last_seen": "...", "reason": "allowlist"}]` (refused
+senders). `reason` is the latest refusal's reason: `allowlist` or `per_source` (over the TCP connections-per-source limit).
 Sorted by `count_24h` descending, at most 200 entries. The server tracks at most 10,000 refused IPs and evicts the
 least recently seen.
 Banner kind `device_limit` (warn): new senders are being refused because the device cap (`max_devices`, default
