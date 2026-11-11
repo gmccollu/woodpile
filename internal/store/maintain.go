@@ -274,9 +274,19 @@ func (s *Store) deleteEntry(e *catEntry, reason index.Reason, now time.Time) boo
 	return true
 }
 
+// minFree is the low-disk reserve for a volume of total bytes:
+// max(MinFreeBytes, min(MinFreePercent of total, MaxReserveBytes)).
 func (s *Store) minFree(total uint64) uint64 {
-	pct := uint64(float64(total) * s.opts.MinFreePercent / 100)
-	return max(s.opts.MinFreeBytes, pct)
+	return reserveFor(total, s.opts.MinFreeBytes, s.opts.MinFreePercent, s.opts.MaxReserveBytes)
+}
+
+func reserveFor(total, floor uint64, pct float64, ceiling uint64) uint64 {
+	return max(floor, min(uint64(float64(total)*pct/100), ceiling))
+}
+
+// gib formats a byte count for event text, e.g. "9.8 GiB (10522669875 bytes)".
+func gib(n uint64) string {
+	return fmt.Sprintf("%.1f GiB (%d bytes)", float64(n)/(1<<30), n)
 }
 
 // checkDisk reads the data volume's free space.
@@ -296,7 +306,7 @@ func (s *Store) checkDisk() (free, total uint64, ok bool) {
 	return free, total, true
 }
 
-// guardDisk keeps free space above max(MinFreeBytes, MinFreePercent): it asks
+// guardDisk keeps free space above the reserve (see minFree): it asks
 // Reclaim (exports) first, then deletes the oldest closed files (compressed first, then ones still awaiting compression; never
 // an active file), and pauses writing when nothing is left to delete.
 func (s *Store) guardDisk(now time.Time) {
@@ -333,14 +343,15 @@ func (s *Store) guardDisk(now time.Time) {
 		if !s.paused.Swap(true) {
 			s.pausedSince.Store(now.UnixMilli())
 			s.event(index.LevelError, index.KindPause, "", fmt.Sprintf(
-				"writes paused: %d bytes free on the data volume, %d needed, and no closed logs left to delete", free, thr))
+				"writes paused: %s free on the data volume, below the low-disk reserve of %s, and no closed logs left to delete",
+				gib(free), gib(thr)))
 		}
 		return
 	}
 	// Resume only with some headroom, so the banner doesn't flap.
 	if s.paused.Load() && free >= thr+thr/20 {
 		s.paused.Store(false)
-		s.event(index.LevelInfo, index.KindResume, "", fmt.Sprintf("writes resumed: %d bytes free", free))
+		s.event(index.LevelInfo, index.KindResume, "", fmt.Sprintf("writes resumed: %s free, reserve %s", gib(free), gib(thr)))
 	}
 }
 

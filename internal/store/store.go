@@ -37,6 +37,7 @@ const (
 	DefaultRetentionBytes = 20 << 30
 	DefaultMinFreeBytes   = 1 << 30
 	DefaultMinFreePercent = 5.0
+	DefaultMaxReserve     = 10 << 30
 	DefaultFlushInterval  = time.Second
 	DefaultFlushBytes     = 1 << 20
 	DefaultSyncInterval   = 5 * time.Second
@@ -56,11 +57,15 @@ type Options struct {
 	DataDir string    // required; logs go under DataDir/logs
 	Index   *index.DB // required; the store doesn't close it
 
-	PartBytes      int64   // close the active file at this size (uncompressed)
-	RetentionDays  int     // delete compressed files older than this
-	RetentionBytes int64   // delete the oldest compressed files while all logs exceed this
-	MinFreeBytes   uint64  // low-disk guard: keep at least max(MinFreeBytes,
-	MinFreePercent float64 // MinFreePercent of the volume) free
+	PartBytes      int64 // close the active file at this size (uncompressed)
+	RetentionDays  int   // delete compressed files older than this
+	RetentionBytes int64 // delete the oldest compressed files while all logs exceed this
+	// Low-disk guard reserve: keep max(MinFreeBytes, min(MinFreePercent of the
+	// volume, MaxReserveBytes)) free. The floor protects small volumes; the cap keeps
+	// a large volume from reserving tens of GB it never needs.
+	MinFreeBytes    uint64
+	MinFreePercent  float64
+	MaxReserveBytes uint64
 	// Reclaim, if set, is called by the low-disk guard before it deletes any log
 	// file, with the number of bytes it needs freed. It should delete files that
 	// matter less than logs (exports) and return how many bytes it freed; the
@@ -217,6 +222,7 @@ func Open(opts Options) (*Store, error) {
 	setDefault(&opts.RetentionBytes, DefaultRetentionBytes)
 	setDefault(&opts.MinFreeBytes, DefaultMinFreeBytes)
 	setDefault(&opts.MinFreePercent, DefaultMinFreePercent)
+	setDefault(&opts.MaxReserveBytes, DefaultMaxReserve)
 	setDefault(&opts.FlushInterval, DefaultFlushInterval)
 	setDefault(&opts.FlushBytes, DefaultFlushBytes)
 	setDefault(&opts.SyncInterval, DefaultSyncInterval)
@@ -410,7 +416,8 @@ type Usage struct {
 	RetentionDays      int       // the age limit
 	FreeBytes          uint64    // free space on the data volume (last check)
 	VolumeBytes        uint64    // size of the data volume (last check)
-	MinFreeBytes       uint64    // free space the low-disk guard keeps
+	ReserveBytes       uint64    // free space the low-disk guard keeps (for the current volume size)
+	MinFreeBytes       uint64    // Deprecated: same value as ReserveBytes
 	DaysKept           int       // calendar days from the oldest file's day to today
 	Oldest             time.Time // earliest received time on disk (zero if none)
 	Files              int       // log files on disk
@@ -436,7 +443,8 @@ func (s *Store) Usage() Usage {
 	s.diskMu.Lock()
 	u.FreeBytes, u.VolumeBytes = s.lastFree, s.lastTotal
 	s.diskMu.Unlock()
-	u.MinFreeBytes = s.minFree(u.VolumeBytes)
+	u.ReserveBytes = s.minFree(u.VolumeBytes)
+	u.MinFreeBytes = u.ReserveBytes
 	oldestDay := ""
 	s.catMu.Lock()
 	u.BytesOnDisk = s.catBytes

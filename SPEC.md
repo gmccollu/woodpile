@@ -41,7 +41,8 @@ proposal and can change.
 | UI port | 8514 on localhost (§5) **(decided)** |
 | Linux UDP buffer | The deb/rpm raises `net.core.rmem_max` to 32 MiB through a sysctl drop-in (§3.1) **(decided)** |
 | Rotation | Close at 100 MiB or midnight UTC, gzip, keep 30 days / 20 GB (§3.4) **(decided)** |
-| Sizes | "GB" in this spec means GiB (1 GiB guard, 20 GiB cap) |
+| Sizes | "GB" in this spec means GiB (1 GiB guard floor, 20 GiB cap) |
+| Low-disk reserve | max(1 GiB, min(5% of the volume, 10 GiB)): 1 GiB on a 10 GB volume, 5 GiB on 100 GB, 10 GiB on 460 GB and 4 TB (§3.4) **(decided, 2026-11-11)** |
 | Checkpoints | Every 1 MiB, or every minute once 64 KiB has been written since the last one |
 | Durability | Plain `fsync` on every OS (on macOS that survives process and OS crashes, not necessarily power loss) |
 | Late messages | A message for a day that's already closed goes into the current file with its own timestamp; files never reopen |
@@ -136,9 +137,11 @@ frontend install.
 - Rotated files use gzip (`.log.gz`) rather than `.zip`. gzip streams, so search reads it without unpacking, and
   it's the standard for rotated logs. Exports are `.zip` (§4.1) because that's what people open by
   double-clicking.
-- Low-disk guard: if free space on the data volume falls below max(1 GB, 5%), delete the oldest files until
-  it's back above. If nothing is left to delete, pause writing, count the dropped messages, and show a red
-  banner. Never fill the disk.
+- Low-disk guard: if free space on the data volume falls below the reserve, max(1 GB, min(5% of the volume,
+  10 GB)), delete the oldest files until it's back above. The 10 GB cap keeps a large disk from reserving tens of
+  GB it never needs (on a 460 GB disk, 5% alone paused writes with 24 GB still free). If nothing is left to
+  delete, pause writing, count the dropped messages, and show a red banner that states the reserve. Never fill
+  the disk.
 - Every deletion is recorded in `index.db` (file, reason, time) and shown in Settings → Storage history.
 
 ### 3.5 Index

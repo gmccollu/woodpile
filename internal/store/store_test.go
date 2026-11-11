@@ -394,7 +394,11 @@ func TestLowDiskGuardAndPause(t *testing.T) {
 	if per["192.0.2.2"].Dropped != 7 {
 		t.Fatalf("per device %+v", per)
 	}
-	if evs := eventsOf(t, e.idx, index.KindPause); len(evs) != 1 || evs[0].Level != index.LevelError {
+	if u := e.s.Usage(); u.ReserveBytes != 5<<20 {
+		t.Fatalf("reserve %d", u.ReserveBytes)
+	}
+	if evs := eventsOf(t, e.idx, index.KindPause); len(evs) != 1 || evs[0].Level != index.LevelError ||
+		!strings.Contains(evs[0].Text, "low-disk reserve of 0.0 GiB (5242880 bytes)") {
 		t.Fatalf("pause events %+v", evs)
 	}
 	if evs := eventsOf(t, e.idx, index.KindDrop); len(evs) != 1 || evs[0].DeviceID != "192.0.2.2" || !strings.Contains(evs[0].Text, "dropped 7") {
@@ -745,5 +749,61 @@ func TestClockStepBackIsRecorded(t *testing.T) {
 	e.maintain()
 	if evs := eventsOf(t, e.idx, index.KindClock); len(evs) != 2 || !strings.Contains(evs[1].Text, "stepped back 30m") {
 		t.Fatalf("after restart %+v", evs)
+	}
+}
+
+func TestReserveRule(t *testing.T) {
+	const GiB = 1 << 30
+	cases := []struct {
+		name  string
+		total uint64
+		want  uint64
+	}{
+		{"10 GB volume: the 1 GiB floor", 10e9, 1 * GiB},
+		{"20 GiB volume: 5% equals the floor", 20 * GiB, 1 * GiB},
+		{"100 GiB volume: 5%", 100 * GiB, 5 * GiB},
+		{"200 GiB volume: 5% equals the cap", 200 * GiB, 10 * GiB},
+		{"460 GB volume: capped", 460e9, 10 * GiB},
+		{"4 TB volume: capped", 4e12, 10 * GiB},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			e := newEnv(t, nil) // production defaults: 1 GiB floor, 5%, 10 GiB cap
+			e.disk.total = c.total
+			e.write(ip(1), "x")
+			e.maintain()
+			u := e.s.Usage()
+			if u.ReserveBytes != c.want || u.MinFreeBytes != c.want {
+				t.Fatalf("reserve %d (%.2f GiB), want %d", u.ReserveBytes, float64(u.ReserveBytes)/GiB, c.want)
+			}
+			if e.s.Paused() {
+				t.Fatal("paused with an empty disk")
+			}
+		})
+	}
+	// The owner's case: a 460 GB volume with 24 GB free. The old max(1 GiB, 5%) rule
+	// reserved ~21.4 GiB and paused; the capped reserve keeps writing.
+	e := newEnv(t, nil)
+	e.disk.total = 460e9
+	e.disk.setOther(460e9 - 24e9)
+	e.write(ip(1), "x")
+	e.maintain()
+	if e.s.Paused() {
+		t.Fatal("paused at 24 GB free on a 460 GB volume")
+	}
+	e.write(ip(1), "still writing")
+	// Below the cap it pauses, and the event names the reserve it used.
+	e.disk.setOther(460e9 - 9*GiB)
+	e.maintain()
+	if !e.s.Paused() {
+		t.Fatal("not paused at 9 GiB free")
+	}
+	evs := eventsOf(t, e.idx, index.KindPause)
+	if len(evs) != 1 || !strings.Contains(evs[0].Text, "reserve of 10.0 GiB (10737418240 bytes)") {
+		t.Fatalf("pause events %+v", evs)
+	}
+	// A cap below the floor leaves the floor in charge.
+	if got := reserveFor(4e12, 2*GiB, 5, 1*GiB); got != 2*GiB {
+		t.Fatalf("floor over cap: %d", got)
 	}
 }
