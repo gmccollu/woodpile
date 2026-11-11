@@ -14,7 +14,7 @@
 #   wl check TARGET              service as its account; the host firewall with a closed/open control;
 #                                every sender IP reaches UDP and TCP 514 and shows up as its own device
 #   wl correctness TARGET        LAB_CORRECT_N messages (UDP, TCP-LF, TCP-octet) on disk exactly once
-#   wl stress TARGET             UDP and TCP rate steps: loss, CPU, RSS per step, and the knee
+#   wl stress TARGET [--resume]  UDP and TCP rate steps: loss, CPU, RSS per step, and the knee (--resume: skip recorded steps)
 #   wl export TARGET             search the correctness run; export one device-day; zip vs manifest; the reboot in gaps
 #   wl reboot TARGET             reboot with a stream running: the service returns, data intact, sending resumes
 #   wl portable TARGET           the tarball/zip binary run by hand, reached from the senders
@@ -376,24 +376,48 @@ print("knee" if knee else "ok")
 PY
 }
 
-cmd_stress() {
-	new_step stress
+recorded_step() { # recorded_step <proto> <rate>: a STEP line + ok|knee from stress.jsonl, if this step already ran
+	[ -f "$step_dir/stress.jsonl" ] || return 1
+	python3 - "$step_dir/stress.jsonl" "$1" "$2" <<'PY'
+import json, sys
+recs = [json.loads(l) for l in open(sys.argv[1]) if l.strip()]
+r = [x for x in recs if x["proto"] == sys.argv[2] and x["target_rate"] == int(sys.argv[3])]
+if not r:
+    sys.exit(1)
+x = r[-1]
+print(f"STEP {x['proto']} {x['target_rate']}/s (recorded): achieved {x['achieved_rate']:.0f}/s, sent {x['sent']}, on disk {x['received']}, "
+      f"missing {x['missing']} ({x['loss_pct']}%), dup {x['duplicates']}, CPU {x['cpu_pct_of_one_core']}% of a core, "
+      f"RSS peak {x['rss_peak_mib']} MiB, kernel drops {x['kernel_udp_drops']}")
+knee = (x["missing"] or 0) > 0 or (x["duplicates"] or 0) > 0 or x["achieved_rate"] < 0.95 * x["target_rate"]
+print("knee" if knee else "ok")
+PY
+}
+step_or_recorded() { # run a stress step unless stress.jsonl already has it (resume never repeats load)
+	recorded_step "$1" "$2" || { stress_step "$1" "$2"; sleep 10; }
+}
+
+cmd_stress() { # cmd_stress [--resume]: --resume continues the target's latest stress run, skipping recorded steps
+	if [ "${1:-}" = --resume ]; then
+		step_dir=$(ls -d "$LAB_RESULTS/$target"/*-stress 2>/dev/null | tail -1)
+		[ -n "$step_dir" ] || die "no earlier stress run to resume for $target"
+		log "== resuming stress on $target in $step_dir ($(wc -l <"$step_dir/stress.jsonl" 2>/dev/null || echo 0) steps recorded)"
+	else
+		new_step stress
+	fi
 	local proto rates rate res last
 	for proto in udp tcp; do
 		if [ "$proto" = udp ]; then rates=$LAB_STRESS_UDP; else rates=$LAB_STRESS_TCP; fi
 		last=""
 		for rate in $rates; do
-			res=$(stress_step "$proto" "$rate"); echo "$res" >>"$step_dir/log"; echo "$res" | sed -n 1p
+			res=$(step_or_recorded "$proto" "$rate"); echo "$res" >>"$step_dir/log"; echo "$res" | sed -n 1p
 			last=$rate
 			if echo "$res" | grep -qx knee; then log "KNEE $proto at or below $rate msg/s"; last=knee; break; fi
-			sleep 10
 		done
 		rate=${last:-0}
 		while [ "$last" != knee ] && [ $((rate * 2)) -le "$LAB_STRESS_MAX" ]; do # no knee yet: keep doubling
 			rate=$((rate * 2))
-			res=$(stress_step "$proto" "$rate"); echo "$res" >>"$step_dir/log"; echo "$res" | sed -n 1p
+			res=$(step_or_recorded "$proto" "$rate"); echo "$res" >>"$step_dir/log"; echo "$res" | sed -n 1p
 			if echo "$res" | grep -qx knee; then log "KNEE $proto between $((rate / 2)) and $rate msg/s"; last=knee; fi
-			sleep 10
 		done
 		[ "$last" = knee ] || log "no knee for $proto up to $LAB_STRESS_MAX msg/s"
 	done
@@ -620,7 +644,8 @@ tools) cmd_tools ;;
 setup-sender) cmd_setup_sender ;;
 senders) cmd_senders "$@" ;;
 stage) set_target "$1"; cmd_stage ;;
-install | check | correctness | stress | reboot | export | portable | collect) set_target "$1"; "cmd_$c" ;;
+install | check | correctness | reboot | export | portable | collect) set_target "$1"; "cmd_$c" ;;
+stress) set_target "$1"; shift; cmd_stress "$@" ;;
 soak) set_target "$1"; shift; cmd_soak "$@" ;;
 all)
 	set_target "$1"
