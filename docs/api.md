@@ -43,7 +43,8 @@ because this copy holds the UI port.
   "msgs_per_sec": 1284.2,
   "sparkline": [1100, 1180, 1250],            // msgs/sec averaged per minute, oldest first, last 60 minutes
   "devices": {"total": 14, "online": 12, "quiet": 1, "offline": 1},
-  "disk": {"used_bytes": 3435973836, "cap_bytes": 21474836480, "free_bytes": 400000000000, "days_kept": 30},
+  "disk": {"used_bytes": 3435973836, "cap_bytes": 21474836480, "free_bytes": 400000000000, "days_kept": 30,
+           "bytes_per_day": 2361393152, "compression_ratio": 9.2, "estimated_days": 9.1, "limited_by": "cap"},
   "dropped_24h": 0,                           // drops Woodpile itself saw (disk guard, write errors)
   "kernel_dropped_24h": null,                 // integer on Linux, null where the OS doesn't expose it
   "truncated_24h": 0,
@@ -51,6 +52,15 @@ because this copy holds the UI port.
 }
 ```
 `days_kept` is the number of distinct UTC days that still have data on disk (today counts).
+`bytes_per_day` is the on-disk (compressed-equivalent) bytes written over the last 24 h: raw bytes divided by
+`compression_ratio`, the ratio measured on files this server has closed and gzipped (a default of 8 until it has
+closed a file; `null` until it has 1 h of data). `estimated_days` = `cap_bytes` / `bytes_per_day`, or `null`.
+`limited_by` is `"cap"` when `estimated_days` < `retention_days` (the size cap, not the age limit, decides how long
+logs are kept), `"age"` otherwise, or `null` when unknown. While it's `"cap"`, `/api/status` carries a warn banner
+of kind `retention_cap` ("At the current rate the 20 GiB cap keeps about 9 days, less than the 30-day setting").
+
+`GET /api/storage/estimate?retention_bytes=N` → `{"estimated_days": 4.5, "bytes_per_day": …, "compression_ratio": …}`:
+the same estimate for a cap the user is typing in Settings, before saving.
 `devices` counts exclude hidden devices.
 
 `GET /api/rejected` → `[{"ip": "198.51.100.7", "count_24h": 120, "last_seen": "...", "reason": "allowlist"}]` (refused
