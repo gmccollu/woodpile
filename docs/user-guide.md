@@ -8,7 +8,7 @@ Downloads are on the [releases page](https://github.com/gmccollu/woodshed/releas
 
 ## 1. Start Woodshed
 
-Pick one: the **installer** keeps Woodshed running in the background, also after a restart; **portable** runs it only
+Pick one: the installer keeps Woodshed running in the background, including after a restart; portable runs it only
 while its window is open, with nothing installed (good for a quick look or a laptop on site).
 
 | | Installer (runs as a service) | Portable (nothing installed) |
@@ -24,15 +24,15 @@ The first time, your computer may warn you because Woodshed isn't signed yet:
 - **macOS:** if it says it "can't be opened", open **System Settings → Privacy & Security**, scroll down and click
   **Open Anyway**.
 
-Then open **<http://localhost:8514/>** in a browser on the same computer. (Portable mode opens it for you.) Later, the installer's
+Then open <http://localhost:8514/> in a browser on the same computer. (Portable mode opens it for you.) Later, the installer's
 launcher gets you back there: **Woodshed** in the Start menu (Windows), in Applications or Launchpad (macOS), or in
 your desktop's app menu (Linux). The
 **Setup** page shows the addresses your devices should send to and whether Woodshed is listening.
 
 ## 2. Point a device at it
 
-In each device's logging or syslog settings, set the **syslog server** to one of the addresses on the Setup page,
-**port 514**, UDP (or TCP if the device offers it). Save, and make the device log something (log in to it, or change
+In each device's logging or syslog settings, set the syslog server to one of the addresses on the Setup page,
+port 514, UDP (or TCP if the device offers it). Save, and make the device log something (log in to it, or change
 a setting). The Setup page says when the first message arrives.
 
 No device handy? Send a test message from the Woodshed computer:

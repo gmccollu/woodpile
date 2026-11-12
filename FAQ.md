@@ -17,8 +17,8 @@ New to Woodshed? Start with the [user guide](docs/user-guide.md). Installer deta
 ## Why port 514, and why UDP?
 
 514 is the standard syslog port, and it's what almost every device sends to by default, so Woodshed works without
-changing anything on the device. Most devices send syslog over **UDP**: it's simple and doesn't slow the device down,
-but a message lost on the network isn't resent. Woodshed also listens on **TCP 514** for devices that offer it
+changing anything on the device. Most devices send syslog over UDP: it's simple and doesn't slow the device down,
+but a message lost on the network isn't resent. Woodshed also listens on TCP 514 for devices that offer it
 (more reliable, in order). Both are on by default; you can change the ports in **Settings → Listeners**.
 
 If something else already uses port 514 (often the computer's own syslog service), Woodshed still starts and the UI
@@ -40,7 +40,7 @@ shows a red banner saying which program has the port. Stop that program, or move
 
 - **Windows:** the MSI (and `woodshed install`) adds two inbound rules for `woodshed.exe`, **Woodshed syslog (UDP
   514)** and **Woodshed syslog (TCP 514)**, and nothing else. The UI port (8514) is never opened.
-  The rules apply to **all network profiles, including Public**: Windows often calls a network "Public" just because
+  The rules apply to all network profiles, including Public: Windows often calls a network "Public" just because
   it hasn't been told otherwise, and devices on such a network would otherwise be silently blocked. To allow syslog
   only on Domain and Private networks, run this in an administrator PowerShell:
 
@@ -89,7 +89,7 @@ window.
 
 ## How much disk does it use, and how long does it keep logs?
 
-By default it keeps **30 days or 20 GB of logs, whichever comes first**, deleting the oldest days first. Change both
+By default it keeps 30 days or 20 GB of logs, whichever comes first, deleting the oldest days first. Change both
 in **Settings → Storage**. It also never fills the disk: it keeps 5% of the disk free (at least 1 GB, at most 10 GB),
 deleting the oldest logs if it has to, and if there's nothing left to delete it pauses writing and shows a red
 banner, counting what it couldn't store. Every deletion is listed in **Settings → Storage history**. The dashboard
@@ -101,7 +101,7 @@ Not by default: the UI answers only on the computer Woodshed runs on (`http://lo
 other computers, turn on **LAN mode** in **Settings → UI access**:
 
 1. Set a password first (in the same section).
-2. Turn on **LAN mode** and save. The UI moves to **HTTPS** at `https://<this computer's address>:8514/`, and every
+2. Turn on **LAN mode** and save. The UI moves to HTTPS at `https://<this computer's address>:8514/`, and every
    visitor has to log in.
 3. Your browser warns about the certificate the first time, because Woodshed makes its own; you can load your own
    certificate under **Advanced** instead.
@@ -125,7 +125,7 @@ do this over the network, on purpose.
 
 ## How do I uninstall it?
 
-Uninstalling removes the program and the service but **keeps your logs and settings**, unless you ask for them to be
+Uninstalling removes the program and the service but keeps your logs and settings, unless you ask for them to be
 deleted.
 
 - **Windows:** Settings → Apps → Woodshed → Uninstall (keeps the logs). To delete them too:

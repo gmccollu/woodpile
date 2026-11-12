@@ -1,44 +1,110 @@
 # Woodshed
 
-A simple, reliable syslog server for Windows, macOS and Linux, with a clean web UI.
-Install it, point your devices at it, and it keeps every message as plain files within a disk budget.
+A syslog server for Windows, macOS and Linux. Install it, point your devices at it, and it keeps every message as
+plain text files (one folder per device, one file per day) within a disk budget. There's a web UI to watch the live
+tail, search, and export a zip for whoever needs the logs.
 
-**[Download Woodshed](https://github.com/gmccollu/woodshed/releases/latest)**: an installer for Windows (MSI), macOS
-(pkg) or Linux (deb, rpm), or a portable zip/tarball that runs with nothing installed.
-Then follow the **[user guide](docs/user-guide.md)**: install or run portable, point a device at it, find the logs,
-search, and export a zip for support. Questions: [FAQ](FAQ.md). What's new: [CHANGELOG.md](CHANGELOG.md).
+![demo](docs/demo.gif)
 
-More: [docs/install.md](docs/install.md) (every installer in detail), [SPEC.md](SPEC.md) (the design),
-[docs/api.md](docs/api.md) (the UI's API), [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md).
+## Why
 
-## Features
+I work escalations for network gear. A lot of the cases that drag on are the ones where nobody has the logs. The
+outage happened, the device rebooted or its buffer rolled over, and there was no syslog server, or there was one
+that quietly dropped messages and nobody knew. Without logs from the window that matters, you're left asking the
+customer to wait for it to happen again.
 
-- **Listens straight away:** UDP and TCP on port 514 with no setup. TCP framing (octet counting or newline) is
-  detected per message. RFC 5424, RFC 3164 and the usual non-compliant variants are parsed leniently; the raw
-  message is always stored exactly as received.
-- **Plain files:** one folder per device and one file per day (`logs/<ip>/<day>.log`), gzipped once closed.
-  Read them with grep, an editor or any log tool.
-- **Never fills the disk:** retention by age and total size (30 days / 20 GiB by default), plus a low-disk guard.
-  Every deletion is recorded and shown in Settings.
-- **Honest counters:** dropped, truncated and refused messages are counted and shown. Where the OS hides kernel
-  UDP drops (Windows, macOS), the UI says so instead of showing a reassuring 0.
-- **Web UI:** a dashboard with the message rate, device tiles and a live tail with server-side filters; a devices
-  page to rename, group or hide senders; settings that apply without a restart; light and dark modes.
-- **Safe by default:** the UI listens on `127.0.0.1:8514` only. LAN mode serves HTTPS with a password. No
-  outbound connections, no telemetry, no update checks.
-- **Clear errors:** if port 514 is taken, the UI still starts and shows which program holds the port, with a
-  Retry button.
-- **One binary, one service:** the UI is embedded. Installers for Windows (MSI), macOS (pkg) and Linux (deb,
-  rpm) set it up as a system service.
+Setting up a syslog server properly is easy if you live in Linux. It isn't if you're a small shop with one Windows
+box, or someone on site with a laptop who needs logs off a device in the next 10 minutes. Woodshed is what I wanted to
+hand those people: download it, run it, point the device at it. It doesn't fill the disk, it counts and shows what it
+drops instead of hiding it, and the export zip carries checksums and the times Woodshed wasn't running, so whoever
+reads it knows what they're looking at.
+
+What it isn't: a SIEM. No correlation, alerting or forwarding (TLS syslog, alerts and forwarding are planned after
+1.0). If you already run a log platform you're happy with, you probably don't need this.
+
+## Download
+
+[Releases page](https://github.com/gmccollu/woodshed/releases/latest): MSI for Windows (x64, ARM64), a universal pkg
+for macOS, deb and rpm for Linux (amd64, arm64), or a portable zip/tarball that runs with nothing installed.
+
+The installers and binaries aren't code-signed yet, so Windows SmartScreen and macOS Gatekeeper will ask once
+before running them ("Windows protected your PC" → More info → Run anyway; on macOS, System Settings → Privacy &
+Security → Open Anyway). Every release has `checksums.txt`, and from 1.0.0 you can check a file's build provenance
+with `gh attestation verify FILE --repo gmccollu/woodshed`. More in the
+[FAQ](FAQ.md#windows-or-macos-warns-me-about-the-download).
 
 ## Quick start
 
-**Portable, nothing installed:** download the archive for your system, unpack it and double-click `woodshed` (or run
+1. Install it (or unpack the portable download and run `woodshed`). On Linux, portable mode needs `sudo` for port 514.
+2. Open <http://localhost:8514/>. The Setup page lists this machine's addresses and whether it's listening.
+3. On the device, set the syslog server to one of those addresses, port 514, UDP or TCP. The Setup page tells you
+   when the first message arrives.
+
+If nothing shows up, see [Devices can't reach Woodshed](FAQ.md#devices-cant-reach-woodshed). The Linux packages don't
+open the firewall for you.
+
+The [user guide](docs/user-guide.md) goes from install to a support zip. Also: [FAQ](FAQ.md),
+[docs/install.md](docs/install.md) (every installer in detail), [CHANGELOG.md](CHANGELOG.md), [SPEC.md](SPEC.md) (the
+design), [docs/api.md](docs/api.md) (the UI's API), [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md).
+
+## How it's tested
+
+- Every release runs `woodshed bench` for 10 minutes at 10,000 msg/s over UDP on a GitHub-hosted runner (4 vCPU,
+  15 GiB) and puts the result in the release notes. Every release so far: 6,000,000 sent, 6,000,000 stored, 0 missing,
+  0 duplicates.
+- On Linux lab VMs (Ubuntu 24.04 with the deb, AlmaLinux 9 with the rpm, 4 vCPU / 8 GB) over a real network, from 8
+  senders: 0 loss over TCP at every step up to 40,000 msg/s, at about a third of one core and under 50 MiB of memory.
+  UDP was 0 loss up to 40,000 msg/s on Ubuntu and 20,000 on Alma. Where UDP did lose messages (40k on Alma, 80k on
+  Ubuntu), diagnostic runs with the VM's interface counters showed the loss was before the VM's NIC: every datagram
+  that reached the VM was stored.
+- A reboot mid-stream: the service came back on its own, 2 UDP messages were lost around the shutdown, and the export
+  showed the 17-19 second gap as "Woodshed wasn't running".
+- 24 h soaks at 3,000 msg/s on both lab VMs: [soak results].
+- CI runs the tests on Windows, macOS and Linux, plus arm64 Linux and Windows on Arm. Install tests build the MSI,
+  pkg, deb and rpm and install, upgrade and uninstall them on each OS (arm64 included), and run portable mode too.
+- Before the first release candidate the code had a separate security review: no critical findings, one high (memory
+  exhaustion from spoofed source addresses) and seven medium. All were fixed and re-tested twice. What's still open is
+  below.
+
+## Known issues
+
+As of 0.9.0-rc4 (details and workarounds in the [CHANGELOG](CHANGELOG.md)):
+
+- A sustained flood from many spoofed source addresses can make size-based retention delete the busiest real
+  device's history. Use the sender allowlist on untrusted networks.
+- A flood cycling through more than 10,000 previously seen source addresses can slow ingest to about 12,000 msg/s,
+  and the kernel may then drop UDP for every device.
+- Windows: with `woodshed run` (not the installers), a data folder another local user created beforehand is accepted
+  if its permissions name individual users. A race exists while the installer replaces a folder another user created.
+- Hidden devices with no name or group can come back unhidden after 24 hours without logs.
+- On Windows and macOS the OS doesn't expose kernel UDP drops, so the UI says that instead of showing 0.
+
+## Features
+
+- Listens on UDP and TCP port 514 straight away, no setup. TCP framing (octet counting or newline) is detected per
+  message. RFC 5424, RFC 3164 and the usual non-compliant variants are parsed leniently, and the raw message is always
+  stored exactly as received.
+- Plain files: one folder per device and one file per day (`logs/<ip>/<day>.log`), gzipped once closed. Read them
+  with grep, an editor or any log tool.
+- Doesn't fill the disk: retention by age and total size (30 days / 20 GiB by default), plus a low-disk guard. Every
+  deletion is recorded and shown in Settings.
+- Dropped, truncated and refused messages are counted and shown. Where the OS hides kernel UDP drops (Windows,
+  macOS), the UI says so instead of showing 0.
+- Web UI: a dashboard with the message rate, device tiles and a live tail with server-side filters; a devices page to
+  rename, group or hide senders; settings that apply without a restart; light and dark modes.
+- The UI listens on `127.0.0.1:8514` only by default. LAN mode serves HTTPS with a password. No outbound connections,
+  no telemetry, no update checks.
+- If port 514 is taken, the UI still starts and shows which program holds the port, with a Retry button.
+- One binary, one service, with the UI embedded. The installers set it up as a system service.
+
+## Running portable or as a service
+
+Portable, nothing installed: download the archive for your system, unpack it and double-click `woodshed` (or run
 `./woodshed`). It listens on UDP and TCP 514, keeps its logs in `woodshed-data/` next to it, and opens the UI. On Linux,
 port 514 needs `sudo ./woodshed` (or `sudo setcap cap_net_bind_service=+ep ./woodshed` once). See
 [Portable mode](docs/install.md#portable-mode-no-install).
 
-**As a service:** use the installer for your system ([docs/install.md](docs/install.md)).
+As a service: use the installer for your system ([docs/install.md](docs/install.md)).
 
 ## Building from source
 
