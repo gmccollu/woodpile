@@ -50,7 +50,7 @@ type rec struct {
 }
 
 type fixture struct {
-	t     *testing.T
+	t     testing.TB
 	dir   string
 	idx   *index.DB
 	st    *store.Store
@@ -72,14 +72,14 @@ var (
 // real store with small parts, so the data dir has compressed parts and day
 // files, and plain active files on the last day. Devices A and B are in group
 // HQ, C has no group and H is hidden.
-func newFixture(t *testing.T, days, perDay int) *fixture {
+func newFixture(t testing.TB, days, perDay int) *fixture {
 	t.Helper()
 	return newFixtureParts(t, days, perDay, 16<<10)
 }
 
 // newBigFixture has files large enough for many checkpoints (one every ~64 KiB
 // written over more than a minute), so time ranges seek inside files.
-func newBigFixture(t *testing.T) *fixture {
+func newBigFixture(t testing.TB) *fixture {
 	t.Helper()
 	if testing.Short() {
 		t.Skip("big fixture")
@@ -87,7 +87,7 @@ func newBigFixture(t *testing.T) *fixture {
 	return newFixtureParts(t, 2, 10000, 512<<10)
 }
 
-func newFixtureParts(t *testing.T, days, perDay int, partBytes int64) *fixture {
+func newFixtureParts(t testing.TB, days, perDay int, partBytes int64) *fixture {
 	t.Helper()
 	dir := t.TempDir()
 	idx, err := index.Open(dir + "/" + index.FileName)
@@ -164,6 +164,14 @@ func msgText(seq int) string {
 		return fmt.Sprintf("\xef\xbb\xbf<%d>1 2026-11-10T00:00:00Z host app - - - Link DOWN on port %d seq=%06d", sev, seq%48, seq)
 	case 5:
 		return fmt.Sprintf("<999>bad pri seq=%06d", seq)
+	case 6:
+		return fmt.Sprintf("<%d>Nov 10 00:00:00 edge-fw-01 %%FW-6-302013: Built conn seq=%06d", 160+sev, seq)
+	case 7:
+		return fmt.Sprintf("<%d>Nov 10 00:00:00 Edge-FW-02 : %%FW-4-106023: Deny tcp seq=%06d", 160+sev, seq)
+	case 8:
+		return fmt.Sprintf("<%d>Nov 10 00:00:00 Web-01 sshd[42]: Accepted publickey seq=%06d", 32+sev, seq)
+	case 9:
+		return fmt.Sprintf("<%d>Nov 10 00:00:00 web-02 kernel: eth0 link up seq=%06d", sev, seq)
 	}
 	return fmt.Sprintf("<%d>Nov 10 00:00:00 host app[%d]: conn opened tcp 203.0.113.%d seq=%06d", 128+sev, seq%7, seq%250, seq)
 }
@@ -218,6 +226,43 @@ func (f *fixture) expect(q Query) []rec {
 		}
 		re = regexp.MustCompile(expr)
 	}
+	// textMatch is q's rule for any needle, for Q and for Exclude.
+	textMatch := func(needle, raw string) bool {
+		switch {
+		case q.Regex:
+			expr := needle
+			if !q.Case {
+				expr = "(?i)" + expr
+			}
+			return regexp.MustCompile(expr).MatchString(raw)
+		case q.Case:
+			return strings.Contains(raw, needle)
+		default:
+			return strings.Contains(strings.ToLower(raw), strings.ToLower(needle))
+		}
+	}
+	// fieldsMatch is the app and host filters' rule, written out plainly.
+	fieldsMatch := func(raw string) bool {
+		var m model.Message
+		syslog.Parse([]byte(raw), &m)
+		if len(q.Hosts) > 0 && !slices.ContainsFunc(q.Hosts, func(h string) bool { return strings.EqualFold(h, m.Hostname) }) {
+			return false
+		}
+		if len(q.Apps) == 0 {
+			return true
+		}
+		app := strings.ToLower(strings.TrimPrefix(m.App, "%"))
+		return app != "" && slices.ContainsFunc(q.Apps, func(a string) bool {
+			if a = strings.TrimSpace(a); a == "" {
+				return false
+			}
+			a = strings.ToLower(strings.TrimPrefix(a, "%"))
+			if p, ok := strings.CutSuffix(a, "*"); ok {
+				return strings.HasPrefix(app, p)
+			}
+			return app == a
+		})
+	}
 	var out []rec
 	for _, r := range f.recs {
 		if !devs[r.dev] || r.ms < fromMs || r.ms >= toMs {
@@ -244,6 +289,12 @@ func (f *fixture) expect(q Query) []rec {
 			if !strings.Contains(strings.ToLower(r.raw), strings.ToLower(q.Q)) {
 				continue
 			}
+		}
+		if q.Exclude != "" && textMatch(q.Exclude, r.raw) {
+			continue
+		}
+		if !fieldsMatch(r.raw) {
+			continue
 		}
 		out = append(out, r)
 	}
@@ -317,6 +368,10 @@ func same(t *testing.T, what string, got []Line, want []rec) {
 		syslog.Parse(g.Raw, &m)
 		if g.Severity != m.Severity {
 			t.Errorf("%s: result %d severity %d, want %d", what, i, g.Severity, m.Severity)
+			return
+		}
+		if g.App != m.App || g.Host != m.Hostname {
+			t.Errorf("%s: result %d app/host %q/%q, want %q/%q", what, i, g.App, g.Host, m.App, m.Hostname)
 			return
 		}
 	}

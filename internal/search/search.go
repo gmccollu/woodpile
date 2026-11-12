@@ -138,12 +138,21 @@ func New(opts Options) *Engine {
 	return e
 }
 
-// Filter selects lines: by text, severity and time. It's shared by search and
-// export, so an export of a search returns the same lines.
+// Filter selects lines: by text, severity, time, program/tag and host. It's
+// shared by search and export, so an export of a search returns the same lines.
 type Filter struct {
 	Q     string
-	Regex bool // Q is an RE2 regular expression
-	Case  bool // case-sensitive (substring and regex)
+	Regex bool // Q (and Exclude) is an RE2 regular expression
+	Case  bool // case-sensitive (substring and regex, Q and Exclude)
+	// Exclude drops the lines whose raw message matches it, like Q with the
+	// same Regex and Case. Empty: nothing is dropped.
+	Exclude string
+	// Apps and Hosts keep only lines whose parsed header (syslog.Parse) has one
+	// of these programs/tags or hostnames, ignoring case. An app ending in '*'
+	// is a prefix, and a leading '%' is ignored on both sides, so "FW-6-*" and
+	// "%FW-6-*" both match "%FW-6-302013". Empty: no filter. The header is
+	// parsed only for lines that passed every other check.
+	Apps, Hosts []string
 	// Severities: 0 means all; hub.SeverityNone matches nothing.
 	Severities hub.SeveritySet
 	// From and To bound the received time: From <= received < To. Zero values
@@ -171,6 +180,8 @@ type Line struct {
 	Severity int    // 0-7, or model.Unknown
 	Raw      []byte // the message as received
 	Ref      string
+	App      string // the parsed program/tag ("" when there's none)
+	Host     string // the parsed header hostname ("" when there's none)
 }
 
 // Page is one /api/search response.
@@ -193,8 +204,25 @@ func ceilMs(t time.Time) int64 {
 	return ms
 }
 
-func (e *Engine) compile(f Filter) (*matcher, error) {
-	return newMatcher(f.Q, f.Regex, f.Case)
+// compiled is a Filter's matchers.
+type compiled struct {
+	m      *matcher
+	ex     *matcher      // nil: no exclude
+	fields *fieldMatcher // nil: no app or host filter
+}
+
+func (e *Engine) compile(f Filter) (compiled, error) {
+	m, err := newMatcher(f.Q, f.Regex, f.Case)
+	if err != nil {
+		return compiled{}, err
+	}
+	c := compiled{m: m, fields: newFieldMatcher(f.Apps, f.Hosts)}
+	if f.Exclude != "" {
+		if c.ex, err = newMatcher(f.Exclude, f.Regex, f.Case); err != nil {
+			return compiled{}, &QueryError{Msg: "exclude: " + err.Error()}
+		}
+	}
+	return c, nil
 }
 
 // resolveRange applies the defaults and checks the range.
@@ -273,7 +301,7 @@ func (e *Engine) filesByDevice(ctx context.Context, devs []string, fromMs, toMs 
 // Search runs one page of a search.
 func (e *Engine) Search(ctx context.Context, q Query) (Page, error) {
 	start := time.Now()
-	m, err := e.compile(q.Filter)
+	c, err := e.compile(q.Filter)
 	if err != nil {
 		return Page{}, err
 	}
@@ -284,8 +312,8 @@ func (e *Engine) Search(ctx context.Context, q Query) (Page, error) {
 	limit = min(limit, MaxLimit)
 	bind := q.binding()
 
-	r := &run{e: e, ctx: ctx, deadline: start.Add(e.budget), maxSteps: e.testMaxSteps, now: e.now(), desc: !q.Asc, m: m,
-		sevs: q.Severities, need: limit, files: map[int64]struct{}{}}
+	r := &run{e: e, ctx: ctx, deadline: start.Add(e.budget), maxSteps: e.testMaxSteps, now: e.now(), desc: !q.Asc, m: c.m,
+		ex: c.ex, fields: c.fields, sevs: q.Severities, need: limit, files: map[int64]struct{}{}}
 	var streams []*stream
 	if q.Cursor != "" {
 		cur, err := e.decodeCursor(q.Cursor, bind)
@@ -421,12 +449,15 @@ func better(desc bool, k int64, has bool, dev string, bk int64, bhas bool, bdev 
 
 func (e *Engine) line(dev string, h hit) Line {
 	raw := logfile.Unescape(nil, h.esc)
+	app, host := Fields(raw)
 	return Line{
 		Received: time.UnixMilli(h.ms).UTC(),
 		DeviceID: dev,
 		Severity: Severity(raw),
 		Raw:      raw,
 		Ref:      encodeRef(h.file.ID, h.off, h.ms),
+		App:      app,
+		Host:     host,
 	}
 }
 

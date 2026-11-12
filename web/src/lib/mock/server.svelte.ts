@@ -42,7 +42,7 @@ import type {
 } from '../api';
 import { isKnown } from '../severity';
 import { setSessionSecret } from '../api';
-import { FLEET, line, SPECIAL, specialLine, testLine, weighted, type GenLine, type MockDeviceDef, type Special } from './gen';
+import { FLEET, fieldsOf, line, SPECIAL, specialLine, testLine, weighted, type GenLine, type MockDeviceDef, type Special } from './gen';
 import { STEP, deviceAt, lineAt, shareOf } from './history';
 
 const P = new URLSearchParams(location.search);
@@ -1028,7 +1028,7 @@ interface MockExport extends ExportInfo {
   estimate: number;
 }
 
-const noFilters = (): ExportInfo['filters'] => ({ group: '', ungrouped: false, severities: [], q: '', regex: false, case: false });
+const noFilters = (): ExportInfo['filters'] => ({ group: '', ungrouped: false, severities: [], q: '', regex: false, case: false, app: [], host: [], exclude: '' });
 const ago = (ms: number) => new Date(Date.now() - ms).toISOString();
 
 const exportsList: MockExport[] = [
@@ -1141,6 +1141,29 @@ function searchRoute(u: URLSearchParams, now: number): Response {
       return err(400, `error parsing regexp: ${(e as Error).message.replace(/^Invalid regular expression: /, '')}`);
     }
   }
+  // exclude, app and host (docs/api.md → Search): exclude is matched like q; app and host
+  // against the parsed header, ignoring case, with a trailing * as a prefix and "%" optional.
+  const exclude = u.get('exclude') ?? '';
+  let exRe: RegExp | null = null;
+  if (isRe && exclude) {
+    try {
+      exRe = new RegExp(exclude, cs ? '' : 'i');
+    } catch (e) {
+      return err(400, `exclude: error parsing regexp: ${(e as Error).message.replace(/^Invalid regular expression: /, '')}`);
+    }
+  }
+  const excluded = (raw: string) =>
+    !!exclude && (exRe ? exRe.test(raw) : cs ? raw.includes(exclude) : raw.toLowerCase().includes(exclude.toLowerCase()));
+  const list = (k: string) => (u.get(k) ?? '').split(',').map((x) => x.trim()).filter(Boolean);
+  const norm = (x: string) => x.replace(/^%/, '').toLowerCase();
+  const apps = list('app').map(norm);
+  const hosts = list('host').map((x) => x.toLowerCase());
+  const fieldsPass = (f: { app: string; host: string }) => {
+    if (hosts.length && !hosts.includes(f.host.toLowerCase())) return false;
+    if (!apps.length) return true;
+    const a = norm(f.app);
+    return !!a && apps.some((p) => (p.endsWith('*') ? a.startsWith(p.replace(/\*+$/, '')) : a === p));
+  };
   const to = u.has('to') ? Date.parse(u.get('to')!) : now;
   const from = u.has('from') ? Date.parse(u.get('from')!) : to - 24 * H;
   if (Number.isNaN(from) || Number.isNaN(to)) return err(400, '"from" and "to" must be RFC 3339 times.');
@@ -1170,7 +1193,7 @@ function searchRoute(u: URLSearchParams, now: number): Response {
   }
   const step = order === 'desc' ? -1 : 1;
   const inRange = (k: number) => k >= lo && k <= hi;
-  const results: (GenLine & { ref: string })[] = [];
+  const results: (GenLine & { ref: string; app: string; host: string })[] = [];
   const files = new Set<string>();
   let scanned = 0;
   const budget = scanBudget();
@@ -1183,7 +1206,10 @@ function searchRoute(u: URLSearchParams, now: number): Response {
     const l = lineAt(i);
     if (sev && !sev.has(sevKeyOf(l.severity))) continue;
     if (re ? !re.test(l.raw) : q && !(cs ? l.raw.includes(q) : l.raw.toLowerCase().includes(q.toLowerCase()))) continue;
-    results.push({ ...l, ref: `h${i}` });
+    if (excluded(l.raw)) continue;
+    const fl = fieldsOf(l.raw);
+    if (!fieldsPass(fl)) continue;
+    results.push({ ...l, ...fl, ref: `h${i}` });
   }
   const exhausted = !inRange(i);
   return json({
@@ -1352,12 +1378,20 @@ async function route(method: string, url: URL, body: unknown, header: string | n
     for (let j = (idx[0] ?? i) - 1; j >= firstIdx && j > (idx[0] ?? i) - 400_000; j--) if (deviceAt(j).ip === ip) { older = true; break; }
     let newer = false;
     for (let j = idx[idx.length - 1] + 1; j <= lastIdx; j++) if (deviceAt(j).ip === ip) { newer = true; break; }
-    return json({ lines: idx.map((j) => ({ ...lineAt(j), ref: `h${j}` })), hit_index: lo.length, at_start: !older, at_end: !newer });
+    return json({
+      lines: idx.map((j) => {
+        const l = lineAt(j);
+        return { ...l, ...fieldsOf(l.raw), ref: `h${j}` };
+      }),
+      hit_index: lo.length,
+      at_start: !older,
+      at_end: !newer,
+    });
   }
   if (method === 'POST' && (p === '/api/exports' || p === '/api/exports/estimate')) {
     const b = (body ?? {}) as {
       all_devices?: boolean; devices?: string[]; group?: string; ungrouped?: boolean; from?: string; to?: string;
-      severities?: unknown[]; q?: string; regex?: boolean; case?: boolean;
+      severities?: unknown[]; q?: string; regex?: boolean; case?: boolean; app?: string[]; host?: string[]; exclude?: string;
     };
     // devices, group or ungrouped: resolved as the build would (hidden devices only when named).
     probe.lastExportBody = JSON.stringify(b);
@@ -1367,13 +1401,15 @@ async function route(method: string, url: URL, body: unknown, header: string | n
     if (!ids.length) return err(400, 'Pick at least one device (by list, group or ungrouped).');
     if (!b.from || !b.to || !(Date.parse(b.from) < Date.parse(b.to))) return err(400, '"from" must be before "to".');
     for (const x of b.severities ?? []) if (!(x === 'unknown' || (Number.isInteger(x) && (x as number) >= 0 && (x as number) <= 7))) return err(400, `invalid severity ${JSON.stringify(x)}`);
-    if (b.regex && b.q) {
+    for (const [what, v] of [['', b.q], ['exclude: ', b.exclude]] as const) {
+      if (!b.regex || !v) continue;
       try {
-        new RegExp(b.q);
+        new RegExp(v);
       } catch (e) {
-        return err(400, `error parsing regexp: ${(e as Error).message.replace(/^Invalid regular expression: /, '')}`);
+        return err(400, `${what}error parsing regexp: ${(e as Error).message.replace(/^Invalid regular expression: /, '')}`);
       }
     }
+    for (const k of ['app', 'host'] as const) if (b[k] !== undefined && !Array.isArray(b[k])) return err(400, `${k} must be a list of strings`);
     const est = estimate({ devices: ids, from: b.from, to: b.to, severities: b.severities });
     if (p === '/api/exports/estimate') return json(est);
     const e: MockExport = {
@@ -1383,6 +1419,7 @@ async function route(method: string, url: URL, body: unknown, header: string | n
       filters: {
         group: b.group ?? '', ungrouped: !!b.ungrouped, severities: (b.severities ?? []) as ExportInfo['filters']['severities'],
         q: b.q ?? '', regex: !!b.regex, case: !!b.case,
+        app: b.app ?? [], host: b.host ?? [], exclude: b.exclude ?? '',
       },
     };
     exportsList.unshift(e);

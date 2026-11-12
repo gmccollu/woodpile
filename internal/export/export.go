@@ -75,6 +75,9 @@ type Filters struct {
 	Q          string          `json:"q"`
 	Regex      bool            `json:"regex"`
 	Case       bool            `json:"case"`
+	Apps       []string        `json:"app,omitempty"`  // program/tag values, as for search
+	Hosts      []string        `json:"host,omitempty"` // header hostnames, as for search
+	Exclude    string          `json:"exclude,omitempty"`
 }
 
 // Request is a POST /api/exports body, parsed.
@@ -275,7 +278,8 @@ func (m *Manager) event(level index.Level, text string) {
 
 // filter is the search filter of a request.
 func (r Request) filter() search.Filter {
-	return search.Filter{Q: r.Q, Regex: r.Regex, Case: r.Case, Severities: r.Severities, From: r.From, To: r.To}
+	return search.Filter{Q: r.Q, Regex: r.Regex, Case: r.Case, Severities: r.Severities, From: r.From, To: r.To,
+		Apps: r.Apps, Hosts: r.Hosts, Exclude: r.Exclude}
 }
 
 // resolve validates a request and returns its devices.

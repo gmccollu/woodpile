@@ -236,7 +236,7 @@ func (b *fakeBackend) Search(ctx context.Context, r SearchRequest) (SearchPage, 
 	}
 	return SearchPage{
 		Results: []SearchLine{{Received: ts("2026-11-10T20:41:07Z").Add(112 * time.Millisecond), DeviceID: "10.1.0.1", Severity: 6,
-			Raw: []byte("<134>conn opened \xff"), Ref: "ref1"},
+			Raw: []byte("<134>conn opened \xff"), Ref: "ref1", App: "%FW-6-1", Host: "edge-fw-01"},
 			{Received: ts("2026-11-10T20:41:06Z"), DeviceID: "10.1.0.2", Severity: Unknown, Raw: []byte("no pri \xff"), Ref: "ref2"}},
 		NextCursor: "next", ScannedBytes: 123456, ScannedFiles: 12, ElapsedMS: 840,
 	}, nil
@@ -262,7 +262,8 @@ func (b *fakeBackend) CreateExport(ctx context.Context, r ExportRequest) (Export
 	}
 	id := fmt.Sprintf("exp_%016x", len(b.exports)+1)
 	e := ExportInfo{ID: id, Created: ts("2026-11-10T21:00:00Z"), Devices: r.Devices, From: r.From, To: r.To, State: "queued",
-		Filters: ExportFilters{Group: r.Group, Ungrouped: r.Ungrouped, Severities: r.Severities, Q: r.Q, Regex: r.Regex, Case: r.Case}}
+		Filters: ExportFilters{Group: r.Group, Ungrouped: r.Ungrouped, Severities: r.Severities, Q: r.Q, Regex: r.Regex, Case: r.Case,
+			App: r.App, Host: r.Host, Exclude: r.Exclude}}
 	b.exports[id] = e
 	return e, nil
 }

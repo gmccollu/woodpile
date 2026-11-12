@@ -16,16 +16,20 @@ import (
 func TestParseSearch(t *testing.T) {
 	r, err := ParseSearch(url.Values{"q": {"Link"}, "regex": {"true"}, "case": {"1"}, "devices": {"10.1.0.1, 10.1.0.2,,"},
 		"group": {"HQ"}, "from": {"2026-11-10T00:00:00Z"}, "to": {"2026-11-10T01:00:00.5+01:00"}, "order": {"asc"},
-		"limit": {"9000"}, "cursor": {"c"}, "severities": {"3,unknown,3"}, "min_severity": {"7"}})
+		"limit": {"9000"}, "cursor": {"c"}, "severities": {"3,unknown,3"}, "min_severity": {"7"},
+		"app": {" sshd,%FW-6-*,, "}, "host": {"edge-fw-01"}, "exclude": {" keepalive "}})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !slices.Equal(r.App, []string{"sshd", "%FW-6-*"}) || !slices.Equal(r.Host, []string{"edge-fw-01"}) || r.Exclude != " keepalive " {
+		t.Errorf("app/host/exclude %+v", r)
 	}
 	if !r.Regex || !r.Case || !r.Asc || r.Limit != 5000 || r.Cursor != "c" || len(r.Devices) != 2 || r.Group != "HQ" ||
 		!r.To.Equal(time.Date(2026, 11, 10, 0, 0, 0, 5e8, time.UTC)) || !slices.Equal(r.Severities.Values, []int{3, Unknown}) {
 		t.Errorf("%+v", r)
 	}
 	r, _ = ParseSearch(url.Values{"min_severity": {"2"}})
-	if !slices.Equal(r.Severities.Values, []int{0, 1, 2, Unknown}) || r.Limit != 500 || r.Asc {
+	if !slices.Equal(r.Severities.Values, []int{0, 1, 2, Unknown}) || r.Limit != 500 || r.Asc || r.App != nil || r.Host != nil || r.Exclude != "" {
 		t.Errorf("min_severity: %+v", r)
 	}
 	r, _ = ParseSearch(url.Values{"severities": {"none"}, "min_severity": {"5"}})
@@ -92,7 +96,7 @@ func docBlock(t *testing.T, heading string) any {
 func TestSearchRoutes(t *testing.T) {
 	srv := startServer(t, nil, UIConfig{})
 	c := httpClient()
-	r := do(t, c, "GET", srv.url("/api/search?q=conn&severities=3,unknown&order=asc&limit=10&cursor=abc"), "")
+	r := do(t, c, "GET", srv.url("/api/search?q=conn&severities=3,unknown&order=asc&limit=10&cursor=abc&app=sshd,%25FW-*&host=a&exclude=x"), "")
 	if r.code != 200 {
 		t.Fatalf("%d %s", r.code, r.body)
 	}
@@ -101,13 +105,15 @@ func TestSearchRoutes(t *testing.T) {
 	sameShape(t, "/api/search", docBlock(t, "Search"), got, map[string]bool{"/api/search.results[1].severity": true}) // null: unknown
 	body := string(r.body)
 	for _, want := range []string{`"received":"2026-11-10T20:41:07.112Z"`, `"received":"2026-11-10T20:41:06.000Z"`,
-		`"severity":null`, `"severity":6`, `�`, `"next_cursor":"next"`, `"partial":false`} {
+		`"severity":null`, `"severity":6`, `�`, `"next_cursor":"next"`, `"partial":false`,
+		`"app":"%FW-6-1","host":"edge-fw-01"`, `"app":"","host":""`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("missing %s in %s", want, body)
 		}
 	}
 	req := srv.b.searches[0]
-	if req.Q != "conn" || !req.Asc || req.Limit != 10 || req.Cursor != "abc" || !slices.Equal(req.Severities.Values, []int{3, Unknown}) {
+	if req.Q != "conn" || !req.Asc || req.Limit != 10 || req.Cursor != "abc" || !slices.Equal(req.Severities.Values, []int{3, Unknown}) ||
+		!slices.Equal(req.App, []string{"sshd", "%FW-*"}) || !slices.Equal(req.Host, []string{"a"}) || req.Exclude != "x" {
 		t.Errorf("request %+v", req)
 	}
 	wantError(t, do(t, c, "GET", srv.url("/api/search?severities=banana"), ""), 400, "banana")
@@ -133,14 +139,16 @@ func TestExportRoutes(t *testing.T) {
 	srv := startServer(t, nil, UIConfig{})
 	c := httpClient()
 	body := `{"devices": ["10.1.0.1"], "group": "", "ungrouped": false, "from": "2026-11-10T00:00:00Z", "to": "2026-11-10T06:00:00Z",
-		"severities": [0, 1, "unknown"], "q": "link", "regex": false, "case": true}`
+		"severities": [0, 1, "unknown"], "q": "link", "regex": false, "case": true, "app": ["sshd", " ", "%FW-6-*"], "host": ["web-01"],
+		"exclude": "keepalive"}`
 	r := do(t, c, "POST", srv.url("/api/exports"), body)
 	if r.code != 202 {
 		t.Fatalf("%d %s", r.code, r.body)
 	}
 	id := r.json(t)["id"].(string)
 	req := srv.b.exportReqs[0]
-	if req.Q != "link" || !req.Case || !slices.Equal(req.Severities.Values, []int{0, 1, Unknown}) || !req.From.Equal(ts("2026-11-10T00:00:00Z")) {
+	if req.Q != "link" || !req.Case || !slices.Equal(req.Severities.Values, []int{0, 1, Unknown}) || !req.From.Equal(ts("2026-11-10T00:00:00Z")) ||
+		!slices.Equal(req.App, []string{"sshd", "%FW-6-*"}) || !slices.Equal(req.Host, []string{"web-01"}) || req.Exclude != "keepalive" {
 		t.Errorf("request %+v", req)
 	}
 	r = do(t, c, "POST", srv.url("/api/exports/estimate"), body)
@@ -161,7 +169,7 @@ func TestExportRoutes(t *testing.T) {
 		t.Errorf("keys %v", list[0])
 	}
 	f, _ := json.Marshal(list[0]["filters"])
-	if string(f) != `{"case":true,"group":"","q":"link","regex":false,"severities":[0,1,"unknown"],"ungrouped":false}` {
+	if string(f) != `{"app":["sshd","%FW-6-*"],"case":true,"exclude":"keepalive","group":"","host":["web-01"],"q":"link","regex":false,"severities":[0,1,"unknown"],"ungrouped":false}` {
 		t.Errorf("filters %s", f)
 	}
 	if list[0]["ready_at"] != nil {
@@ -215,6 +223,7 @@ func TestExportRoutes(t *testing.T) {
 		{`{"all_devices": false, "from": "2026-11-10T00:00:00Z", "to": "2026-11-10T06:00:00Z"}`, "at least one device"},
 		{`{"devices": ["a"], "from": "2026-11-10T00:00:00Z", "to": "2026-11-10T06:00:00Z", "severities": [9]}`, "severit"},
 		{`{"devices": ["a"], "from": "2026-11-10T00:00:00Z", "to": "2026-11-10T06:00:00Z", "path": "/etc"}`, "unknown field"},
+		{`{"devices": ["a"], "from": "2026-11-10T00:00:00Z", "to": "2026-11-10T06:00:00Z", "app": "sshd"}`, "app"},
 	} {
 		for _, route := range []string{"/api/exports", "/api/exports/estimate"} {
 			wantError(t, do(t, c, "POST", srv.url(route), bad.body), 400, bad.msg)

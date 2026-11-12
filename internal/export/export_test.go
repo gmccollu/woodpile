@@ -15,6 +15,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -82,6 +84,10 @@ func raw(i int) string {
 		return fmt.Sprintf("no pri at all %d", i)
 	case 1:
 		return fmt.Sprintf("<13>Ünïcode \xff\xfe bytes %d", i)
+	case 6: // device A
+		return fmt.Sprintf("<166>Nov 10 00:00:00 edge-fw-01 %%FW-6-302013: Built conn %d", i)
+	case 7: // device B
+		return fmt.Sprintf("<38>Nov 10 00:00:00 web-01 sshd[7]: Accepted publickey %d", i)
 	}
 	return fmt.Sprintf("<%d>Nov 10 00:00:00 host app[1]: conn opened tcp 203.0.113.%d seq=%06d", 128+i%8, i%250, i)
 }
@@ -387,6 +393,9 @@ func TestExportFiltersMatchSearch(t *testing.T) {
 		{Devices: []string{"192.0.2.2"}, Filters: Filters{Q: `^<1[34]>`, Regex: true, Case: true}},
 		{Devices: []string{"192.0.2.1"}, Filters: Filters{Q: "multi\nline"}},
 		{Devices: []string{"192.0.2.1"}, Filters: Filters{Severities: hub.SeverityNone}},
+		{Filters: Filters{Group: "HQ", Apps: []string{"%fw-*", "SSHD"}}},
+		{Devices: []string{"192.0.2.2"}, Filters: Filters{Hosts: []string{"WEB-01"}, Exclude: "7$", Regex: true}},
+		{Filters: Filters{Ungrouped: true, Q: "TCP", Exclude: "203.0.113.1"}},
 	} {
 		r.From, r.To = from, to
 		in, err := m.Create(bg, r)
@@ -396,7 +405,8 @@ func TestExportFiltersMatchSearch(t *testing.T) {
 		in = wait(t, m, in.ID, Ready)
 		files, _ := readZip(t, m, in.ID)
 		// The same query as a search, oldest first.
-		q := search.Query{Filter: search.Filter{Q: r.Q, Regex: r.Regex, Case: r.Case, Severities: r.Severities, From: from, To: to},
+		q := search.Query{Filter: search.Filter{Q: r.Q, Regex: r.Regex, Case: r.Case, Severities: r.Severities, From: from, To: to,
+			Apps: r.Apps, Hosts: r.Hosts, Exclude: r.Exclude},
 			Devices: r.Devices, Group: r.Group, Ungrouped: r.Ungrouped, Asc: true, Limit: search.MaxLimit}
 		want := map[string][]byte{}
 		var n int
@@ -427,7 +437,7 @@ func TestExportFiltersMatchSearch(t *testing.T) {
 		if got, _ := json.Marshal(man.Request.Filters.Severities); r.Severities == hub.SeverityNone && string(got) != `["none"]` {
 			t.Errorf("severities echo %s", got)
 		}
-		if in.Filters != r.Filters {
+		if !reflect.DeepEqual(in.Filters, r.Filters) {
 			t.Errorf("filters echo %+v, want %+v", in.Filters, r.Filters)
 		}
 	}
@@ -660,4 +670,64 @@ func TestExportAllDevices(t *testing.T) {
 		t.Errorf("estimate %+v %v", est, err)
 	}
 	wait(t, m, in.ID, Ready)
+}
+
+// TestExportAppHostExclude checks the program/tag, host and exclude filters
+// against the messages as written (not through search), over plain and
+// compressed files, and that the manifest and README record them.
+func TestExportAppHostExclude(t *testing.T) {
+	e := newEnv(t, 300)
+	m := e.manager()
+	from, to := e.day0, e.day0.Add(48*time.Hour)
+	r := Request{Devices: []string{"192.0.2.1", "192.0.2.2"}, From: from, To: to,
+		Filters: Filters{Apps: []string{"fw-6-*", "sshd"}, Hosts: []string{"EDGE-FW-01", "web-01"}, Exclude: `[05]$`, Regex: true}}
+	in, err := m.Create(bg, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	in = wait(t, m, in.ID, Ready)
+	files, _ := readZip(t, m, in.ID)
+	ex := regexp.MustCompile(`(?i)[05]$`)
+	want := e.expected([]netip.Addr{devA, devB}, from, to, func(raw string) bool {
+		return (strings.Contains(raw, " edge-fw-01 %FW-6-") || strings.Contains(raw, " web-01 sshd[")) && !ex.MatchString(raw)
+	})
+	man := checkExport(t, files, want)
+	if man.Lines == 0 {
+		t.Fatal("the filters matched nothing; the test tests nothing")
+	}
+	// Both days: day 0's files are compressed by now, day 1 has the plain active file.
+	for _, day := range []string{logfile.DayOf(from), logfile.DayOf(from.Add(24 * time.Hour))} {
+		if _, ok := files["logs/192.0.2.2/"+day+".log"]; !ok {
+			t.Errorf("no file for %s", day)
+		}
+	}
+	f := man.Request.Filters
+	if !reflect.DeepEqual(f.App, []string{"fw-6-*", "sshd"}) || !reflect.DeepEqual(f.Host, []string{"EDGE-FW-01", "web-01"}) || f.Exclude != `[05]$` || !f.Regex {
+		t.Errorf("manifest filters %+v", f)
+	}
+	readme := string(files["README.txt"])
+	for _, s := range []string{"Program/tag: fw-6-*, sshd", "Host: EDGE-FW-01, web-01", `Exclude: "[05]$" (regular expression, any case)`} {
+		if !strings.Contains(readme, s) {
+			t.Errorf("README doesn't say %q:\n%.600s", s, readme)
+		}
+	}
+	// An export without filters says so, and its manifest lists empty filters.
+	in, err = m.Create(bg, Request{Devices: []string{"192.0.2.1"}, From: from, To: from.Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	in = wait(t, m, in.ID, Ready)
+	files, _ = readZip(t, m, in.ID)
+	if !strings.Contains(string(files["README.txt"]), "Filters: none") {
+		t.Error("README of an unfiltered export")
+	}
+	if !strings.Contains(string(files["manifest.json"]), `"app": [],`) {
+		t.Errorf("manifest of an unfiltered export: %s", files["manifest.json"])
+	}
+	// An invalid exclude regex is refused, like q.
+	_, err = m.Create(bg, Request{Devices: []string{"192.0.2.1"}, From: from, To: to, Filters: Filters{Exclude: "a(", Regex: true}})
+	var re *RequestError
+	if !errors.As(err, &re) || !strings.HasPrefix(re.Msg, "exclude: ") {
+		t.Errorf("invalid exclude: %v", err)
+	}
 }

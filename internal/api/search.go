@@ -127,6 +127,9 @@ type SearchRequest struct {
 	Asc        bool      // order=asc
 	Limit      int       // 1-5,000
 	Cursor     string
+	App        []string // program/tag values (a trailing '*' is a prefix)
+	Host       []string // header hostnames
+	Exclude    string   // drop lines matching this (regex and case as for Q)
 }
 
 // SearchLine is one search result or context line.
@@ -136,6 +139,8 @@ type SearchLine struct {
 	Severity int    // 0-7, or Unknown
 	Raw      []byte // as received
 	Ref      string
+	App      string // parsed program/tag, "" when none
+	Host     string // parsed header hostname, "" when none
 }
 
 // MarshalJSON gives the docs/api.md shape: received with millisecond
@@ -152,7 +157,10 @@ func (l SearchLine) MarshalJSON() ([]byte, error) {
 		Severity any    `json:"severity"`
 		Raw      string `json:"raw"`
 		Ref      string `json:"ref"`
-	}{l.Received.UTC().Format("2006-01-02T15:04:05.000Z07:00"), l.DeviceID, sev, string(bytes.ToValidUTF8(l.Raw, []byte("�"))), l.Ref})
+		App      string `json:"app"`
+		Host     string `json:"host"`
+	}{l.Received.UTC().Format("2006-01-02T15:04:05.000Z07:00"), l.DeviceID, sev, string(bytes.ToValidUTF8(l.Raw, []byte("�"))), l.Ref,
+		strings.ToValidUTF8(l.App, "�"), strings.ToValidUTF8(l.Host, "�")})
 }
 
 // SearchPage is the body of GET /api/search.
@@ -184,6 +192,9 @@ type ExportRequest struct {
 	Q          string
 	Regex      bool
 	Case       bool
+	App        []string
+	Host       []string
+	Exclude    string
 }
 
 // ExportEstimate is the body of POST /api/exports/estimate.
@@ -201,6 +212,9 @@ type ExportFilters struct {
 	Q          string     `json:"q"`
 	Regex      bool       `json:"regex"`
 	Case       bool       `json:"case"`
+	App        []string   `json:"app"`
+	Host       []string   `json:"host"`
+	Exclude    string     `json:"exclude"`
 }
 
 // ExportInfo is one export in GET /api/exports.
@@ -222,6 +236,7 @@ type ExportInfo struct {
 
 func (e *ExportInfo) normalize() {
 	e.Devices = nonNil(e.Devices)
+	e.Filters.App, e.Filters.Host = nonNil(e.Filters.App), nonNil(e.Filters.Host)
 	e.Created, e.From, e.To = e.Created.UTC(), e.From.UTC(), e.To.UTC()
 	for _, p := range []**time.Time{&e.ReadyAt, &e.ExpiresAt} {
 		if *p != nil {
@@ -352,6 +367,7 @@ func ParseSearch(v url.Values) (SearchRequest, error) {
 		r.Limit = min(n, 5000)
 	}
 	r.Cursor = v.Get("cursor")
+	r.App, r.Host, r.Exclude = splitList(v.Get("app")), splitList(v.Get("host")), v.Get("exclude")
 	return r, nil
 }
 
@@ -428,6 +444,9 @@ type exportBody struct {
 	Q          string     `json:"q"`
 	Regex      bool       `json:"regex"`
 	Case       bool       `json:"case"`
+	App        []string   `json:"app"`
+	Host       []string   `json:"host"`
+	Exclude    string     `json:"exclude"`
 }
 
 func (s *Server) readExportRequest(w http.ResponseWriter, r *http.Request) (ExportRequest, bool) {
@@ -435,10 +454,16 @@ func (s *Server) readExportRequest(w http.ResponseWriter, r *http.Request) (Expo
 	if !decodeJSON(w, r, &b) {
 		return ExportRequest{}, false
 	}
-	req := ExportRequest{AllDevices: b.AllDevices, Group: b.Group, Ungrouped: b.Ungrouped, Severities: b.Severities, Q: b.Q, Regex: b.Regex, Case: b.Case}
-	for _, d := range b.Devices {
-		if d = strings.TrimSpace(d); d != "" {
-			req.Devices = append(req.Devices, d)
+	req := ExportRequest{AllDevices: b.AllDevices, Group: b.Group, Ungrouped: b.Ungrouped, Severities: b.Severities, Q: b.Q, Regex: b.Regex, Case: b.Case,
+		Exclude: b.Exclude}
+	for _, l := range []struct {
+		in  []string
+		out *[]string
+	}{{b.Devices, &req.Devices}, {b.App, &req.App}, {b.Host, &req.Host}} {
+		for _, d := range l.in {
+			if d = strings.TrimSpace(d); d != "" {
+				*l.out = append(*l.out, d)
+			}
 		}
 	}
 	bad := func(msg string) (ExportRequest, bool) {

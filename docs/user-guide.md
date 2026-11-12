@@ -65,18 +65,34 @@ Older days are compressed (`.log.gz`).
 By default Woodshed keeps 30 days or 20 GB, whichever comes first, and never fills the disk. Change it in
 **Settings → Storage**.
 
-## 5. Search
+## 5. Events: browse and filter everything stored
 
-Open **Search**, enter some text, pick the time range and, if you like, the
-devices and severities, then press **Search**. Results stream in, newest first. Click **Context** on a result to see
-the lines around it. Turn on **.\* Regex** for regular expressions and **Aa Case** to match upper and lower case
-exactly.
+**Events** shows every stored message, not just the live tail: all devices, all days, older compressed days
+included. It opens on the last hour, newest first. Leave the text box empty to browse, or narrow it down:
+
+- **Text**: lines containing it. Turn on **.\* Regex** for regular expressions and **Aa Case** to match upper and
+  lower case exactly.
+- **Program/tag**: the program or tag in the message header, such as `sshd` or `kernel`. Separate several with
+  commas. End one with `*` to match the start (`ssh*`, `%FW-6-*`); the leading `%` of a tag is optional.
+- **Host**: the hostname in the message header, such as `web-01`. To pick by sender address, use the device menu.
+- **Exclude**: leave out lines containing this text. Regex and Case apply here too.
+- **Devices**, **time range**, **severities** and **oldest or newest first**.
+
+Press **Search** (or Enter) to apply. Click a value in the **Host** or **Program/tag** column to add it to that
+filter. Click a line to see the lines around it.
+
+The filters are part of the page's address, so you can bookmark a view or send the link to someone. Links to the old
+**Search** page (`#/search`) still work.
+
+From the Dashboard, **Open in Events** on the live tail opens Events with the same devices, severities and text,
+over the last hour.
 
 ## 6. Export logs for support
 
 To send logs to someone (a colleague, a vendor's support team):
 
-1. From a search, click **Export these results**; or open **Export**, pick the devices and the time range.
+1. In **Events**, click **Export these results** (the zip holds what the page shows, filters included); or open
+   **Export** and pick the devices, the time range and any filters.
 2. Click **Build the zip**, wait until it's ready, then click **Download**.
 3. Attach the zip to your email or ticket.
 

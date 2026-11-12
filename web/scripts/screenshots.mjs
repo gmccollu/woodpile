@@ -6,7 +6,7 @@
 //   npm run screenshots         # all shots
 //   npm run screenshots -- settings   # only shots whose name contains "settings"
 //
-// CHROME=/path/to/chrome and BASE=http://host:port override the defaults.
+// CHROME=/path/to/chrome, BASE=http://host:port and OUT=/some/dir override the defaults.
 // Shots with a `check` also assert behaviour (a JS expression that must be true),
 // and `noshot` entries are checks only, so this doubles as a UI smoke test.
 import { spawn } from 'node:child_process';
@@ -17,7 +17,7 @@ import { fileURLToPath } from 'node:url';
 
 const CHROME = process.env.CHROME ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const BASE = process.env.BASE ?? 'http://127.0.0.1:5173';
-const OUT = fileURLToPath(new URL('../screenshots/', import.meta.url));
+const OUT = process.env.OUT ?? fileURLToPath(new URL('../screenshots/', import.meta.url));
 const PORT = 9300 + Math.floor(Math.random() * 500);
 const W = 1400;
 const H = 900;
@@ -256,7 +256,7 @@ const SHOTS = [
   {
     name: 'search-embedded-break-light',
     mode: 'light',
-    url: '/?mock_panel=0#/search?q=future%20version&r=24h',
+    url: '/?mock_panel=0#/events?q=future%20version&r=24h',
     wait: 2500,
     check: `(() => { const l = [...document.querySelectorAll('.logline.clickable')];
       return l.length > 20 && l.every((x) => x.offsetHeight <= 24 && x.textContent.includes('↵')) && document.querySelectorAll('mark.hl').length >= l.length; })()`,
@@ -265,7 +265,7 @@ const SHOTS = [
     name: 'context-embedded-break-one-row',
     noshot: true,
     mode: 'light',
-    url: '/?mock_panel=0#/search?q=future%20version&r=24h',
+    url: '/?mock_panel=0#/events?q=future%20version&r=24h',
     wait: 2500,
     act: `document.querySelectorAll('.logline.clickable')[30].click();`,
     after: 1500,
@@ -376,7 +376,7 @@ const SHOTS = [
   {
     name: 'search-long-line-light',
     mode: 'light',
-    url: '/?mock_panel=0#/search?q=payload%20dump&r=7d',
+    url: '/?mock_panel=0#/events?q=payload%20dump&r=7d',
     wait: 2500,
     check: `(() => { const l = [...document.querySelectorAll('.logline.clickable')]; return l.length > 0
       && l.every((x) => x.offsetHeight <= 24 && x.textContent.length < 9000 && x.textContent.includes('show full message')); })()`,
@@ -385,7 +385,7 @@ const SHOTS = [
     name: 'long-line-expands-in-place',
     noshot: true,
     mode: 'light',
-    url: '/?mock_panel=0#/search?q=payload%20dump&r=7d',
+    url: '/?mock_panel=0#/events?q=payload%20dump&r=7d',
     wait: 2500,
     act: `document.querySelector('.logline.clickable .more-btn').click();`,
     after: 600,
@@ -394,7 +394,7 @@ const SHOTS = [
   {
     name: 'search-spoofing-chars-light',
     mode: 'light',
-    url: '/?mock_panel=0#/search?q=file%20uploaded&r=24h',
+    url: '/?mock_panel=0#/events?q=file%20uploaded&r=24h',
     wait: 2500,
     check: `(() => { const l = [...document.querySelectorAll('.logline.clickable .m')]; return l.length > 0
       && l.every((x) => x.textContent.includes('⟨U+202E⟩') && x.textContent.includes('⟨U+200B⟩')
@@ -404,7 +404,7 @@ const SHOTS = [
     name: 'spoofing-chars-raw-escaped',
     noshot: true,
     mode: 'light',
-    url: '/?mock_panel=0#/search?q=file%20uploaded&r=24h',
+    url: '/?mock_panel=0#/events?q=file%20uploaded&r=24h',
     wait: 2500,
     act: `__btn('Raw').click();`,
     after: 500,
@@ -730,11 +730,11 @@ const SHOTS = [
 
   // ---- Custom time range (Export and Search), 1400 and 900 px ----
   ...[1400, 900].flatMap((w) =>
-    ['export', 'search'].flatMap((page) =>
+    ['export', 'events'].flatMap((page) =>
       both({
         name: `${page}-custom-range-${w}`,
         w,
-        url: page === 'export' ? '/?mock_panel=0#/export' : '/?mock_panel=0#/search?q=deny&r=24h',
+        url: page === 'export' ? '/?mock_panel=0#/export' : '/?mock_panel=0#/events?q=deny&r=24h',
         wait: 1800,
         act: `__btn('Custom').click(); await __tick();`,
         after: 400,
@@ -804,21 +804,21 @@ const SHOTS = [
   // ---- Search ----
   ...both({
     name: 'search-results',
-    url: '/?mock_panel=0#/search?q=deny&r=24h',
+    url: '/?mock_panel=0#/events?q=deny&r=24h',
     wait: 3000,
     check: `document.querySelectorAll('.logline.clickable').length === 500 && document.querySelectorAll('mark.hl').length > 100`,
   }),
   {
     name: 'search-partial-light',
     mode: 'light',
-    url: '/?mock_panel=0&mock_slow_scan=1#/search?q=failover&r=7d',
+    url: '/?mock_panel=0&mock_slow_scan=1#/events?q=failover&r=7d',
     wait: 2600,
     check: `/Scanned [\\d.]+ \\w+ in [\\d,]+ files…/.test(document.body.innerText) && !!__btn('Cancel')`,
   },
   {
     name: 'search-context-light',
     mode: 'light',
-    url: '/?mock_panel=0#/search?q=deny&r=24h',
+    url: '/?mock_panel=0#/events?q=deny&r=24h',
     wait: 2500,
     act: `document.querySelectorAll('.logline.clickable')[60].click();`,
     after: 1500,
@@ -829,7 +829,7 @@ const SHOTS = [
   {
     name: 'search-regex-error-light',
     mode: 'light',
-    url: '/?mock_panel=0#/search?q=deny%20(tcp&re=1&r=1h',
+    url: '/?mock_panel=0#/events?q=deny%20(tcp&re=1&r=1h',
     wait: 1500,
     check: `document.querySelector('#sq-err')?.textContent.startsWith('error parsing regexp') && document.querySelector('#sq').getAttribute('aria-invalid') === 'true'`,
   },
@@ -837,7 +837,7 @@ const SHOTS = [
     name: 'search-pagination-no-duplicates',
     noshot: true,
     mode: 'light',
-    url: '/?mock_panel=0#/search?r=24h',
+    url: '/?mock_panel=0#/events?r=24h',
     wait: 2500,
     act: `__btn('Load 500 more').click(); await new Promise((r) => setTimeout(r, 2500)); __btn('Load 500 more').click();`,
     after: 2500,
@@ -847,7 +847,7 @@ const SHOTS = [
     name: 'search-partial-finishes-and-cancels',
     noshot: true,
     mode: 'light',
-    url: '/?mock_panel=0&mock_slow_scan=1#/search?q=failover&r=24h',
+    url: '/?mock_panel=0&mock_slow_scan=1#/events?q=failover&r=24h',
     wait: 1800,
     act: `__btn('Cancel').click();`,
     after: 400,
@@ -857,7 +857,7 @@ const SHOTS = [
     name: 'search-empty-state',
     noshot: true,
     mode: 'light',
-    url: '/?mock_panel=0#/search?q=no-such-text-anywhere&r=15m',
+    url: '/?mock_panel=0#/events?q=no-such-text-anywhere&r=15m',
     wait: 1500,
     check: `document.body.innerText.includes('No matches in this range')`,
   },
@@ -865,18 +865,18 @@ const SHOTS = [
     name: 'search-export-these-results',
     noshot: true,
     mode: 'light',
-    url: '/?mock_panel=0#/search?q=deny&r=1h&group=HQ',
+    url: '/?mock_panel=0#/events?q=deny&r=1h&group=HQ',
     wait: 2000,
     act: `__btn('Export these results').click();`,
     after: 1500,
     check: `location.hash.startsWith('#/export?') && document.querySelector('#exq').value === 'deny'
-      && document.body.innerText.includes('Filled in from your search') && document.body.innerText.includes('Group: HQ')`,
+      && document.body.innerText.includes('Filled in from Events') && document.body.innerText.includes('Group: HQ')`,
   },
   {
     name: 'search-export-keeps-regex-and-case',
     noshot: true,
     mode: 'light',
-    url: '/?mock_panel=0#/search?q=deny%20(tcp%7Cudp)&re=1&cs=1&r=1h',
+    url: '/?mock_panel=0#/events?q=deny%20(tcp%7Cudp)&re=1&cs=1&r=1h',
     wait: 2000,
     act: `if (__btn('Export these results').disabled) throw new Error('export disabled for a regex search'); __btn('Export these results').click();`,
     after: 1500,
@@ -887,7 +887,7 @@ const SHOTS = [
     name: 'search-none-selected',
     noshot: true,
     mode: 'light',
-    url: '/?mock_panel=0#/search?r=1h&sev=none',
+    url: '/?mock_panel=0#/events?r=1h&sev=none',
     wait: 1500,
     check: `document.querySelectorAll('.logline.clickable').length === 0 && document.body.innerText.includes('No levels selected')`,
   },
@@ -900,6 +900,103 @@ const SHOTS = [
     after: 1500,
     check: `(() => { const p = window.__woodshedMock.livePaths; return p.length > 0 && /[?&]severities=none(&|$)/.test(p[p.length - 1])
       && document.querySelectorAll('[role=log] .logline').length === 0 && document.body.innerText.includes('No levels selected'); })()`,
+  },
+
+
+  // ---- Events: browse, program/tag, host and exclude, clickable columns, the old #/search link ----
+  {
+    name: 'events-browse-by-default',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/events',
+    wait: 2500,
+    check: `document.querySelectorAll('.logline.clickable').length === 500 && document.querySelector('#sq').placeholder === 'Browse every stored message; type to filter'
+      && document.querySelector('h1').textContent === 'Events' && document.title.startsWith('Events')
+      && document.querySelector('nav a[aria-current=page]').textContent.trim() === 'Events' && location.hash.startsWith('#/events?')`,
+  },
+  {
+    name: 'search-link-still-works',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/search?q=deny&r=24h',
+    wait: 2500,
+    check: `document.querySelectorAll('.logline.clickable').length === 500 && document.querySelector('#sq').value === 'deny'
+      && document.querySelector('nav a[aria-current=page]').textContent.trim() === 'Events'`,
+  },
+  ...both({
+    name: 'events-fields',
+    url: '/?mock_panel=0#/events?r=24h&app=%25FW-*&host=edge-fw-01&ex=denied',
+    wait: 3000,
+    check: `(() => { const rows = [...document.querySelectorAll('.logline.clickable')];
+      return rows.length > 50 && rows.every((r) => r.querySelector('.c.ap').textContent.startsWith('%FW-6-') && r.querySelector('.c.hn').textContent === 'edge-fw-01')
+        && !rows.some((r) => r.textContent.includes('denied')) && !!document.querySelector('.logline.colhead'); })()`,
+  }),
+  {
+    name: 'events-click-host-light',
+    mode: 'light',
+    url: '/?mock_panel=0#/events?q=session&r=24h',
+    wait: 2500,
+    act: `window.__before = document.querySelectorAll('.logline.clickable').length;
+      const b = [...document.querySelectorAll('.logline.clickable .c.hn.cell')].find((x) => x.textContent === 'edge-fw-02');
+      if (!b) throw new Error('no edge-fw-02 host cell'); b.click();`,
+    after: 2500,
+    check: `(() => { const rows = [...document.querySelectorAll('.logline.clickable')];
+      return __field('Host').value === 'edge-fw-02' && /[?&]host=edge-fw-02(&|$)/.test(location.hash) && !document.querySelector('[role=dialog]')
+        && rows.length > 0 && rows.every((r) => r.querySelector('.c.hn').textContent === 'edge-fw-02'); })()`,
+  },
+  {
+    name: 'events-click-app-adds-to-list',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/events?r=24h&app=sshd',
+    wait: 2500,
+    act: `__set(__field('Program/tag'), 'sshd, kernel'); document.querySelector('form[role=search]').requestSubmit();
+      await new Promise((r) => setTimeout(r, 2000));
+      const b = document.querySelector('.logline.clickable .c.ap.cell'); if (!b) throw new Error('no app cell'); window.__app = b.textContent; b.click();`,
+    after: 2000,
+    check: `__field('Program/tag').value === 'sshd, kernel' && [...document.querySelectorAll('.logline.clickable .c.ap')].every((x) => ['sshd', 'kernel'].includes(x.textContent))`,
+  },
+  {
+    name: 'events-exclude-regex-error',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/events?q=deny&re=1&ex=(tcp&r=1h',
+    wait: 1500,
+    check: `document.querySelector('#ex-err')?.textContent.startsWith('error parsing regexp') && !document.querySelector('#sq-err')`,
+  },
+  {
+    name: 'events-export-keeps-fields',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/events?r=1h&app=%25FW-*&host=edge-fw-01&ex=denied',
+    wait: 2000,
+    act: `__btn('Export these results').click();`,
+    after: 1500,
+    check: `(() => { const b = JSON.parse(window.__woodshedMock.lastExportBody || '{}');
+      return location.hash.startsWith('#/export?') && document.querySelector('#exapp').value === '%FW-*' && document.querySelector('#exhost').value === 'edge-fw-01'
+        && document.querySelector('#exex').value === 'denied' && b.app?.[0] === '%FW-*' && b.host?.[0] === 'edge-fw-01' && b.exclude === 'denied'; })()`,
+  },
+  ...both({
+    name: 'dashboard-open-in-events',
+    url: '/?mock_panel=0#/dashboard',
+    wait: 3000,
+    check: `(() => { const a = [...document.querySelectorAll('a.tail-btn')].find((x) => x.textContent.trim() === 'Open in Events');
+      return !!a && a.getAttribute('href') === '#/events?r=1h'; })()`,
+  }),
+  {
+    name: 'open-in-events-carries-tail-view',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0&mock_rate=200#/dashboard',
+    wait: 2500,
+    act: `[...document.querySelectorAll('[role=tab]')].find((t) => t.textContent.trim() === 'HQ').click();
+      __set(document.querySelector('input[type=search]'), 'deny'); await __tick();
+      [...document.querySelectorAll('a.tail-btn')].find((x) => x.textContent.trim() === 'Open in Events').click();`,
+    after: 2500,
+    check: `(() => { const p = new URLSearchParams(location.hash.split('?')[1]);
+      const rows = [...document.querySelectorAll('.logline.clickable')];
+      return location.hash.startsWith('#/events?') && p.get('q') === 'deny' && p.get('group') === 'HQ' && p.get('r') === '1h'
+        && document.querySelector('#sq').value === 'deny' && rows.length > 0 && rows.every((r) => r.textContent.toLowerCase().includes('deny')); })()`,
   },
 
   // ---- Export ----

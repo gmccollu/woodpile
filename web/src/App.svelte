@@ -13,7 +13,7 @@
   import Welcome from './pages/Welcome.svelte';
   import Dashboard from './pages/Dashboard.svelte';
   import Devices from './pages/Devices.svelte';
-  import Search from './pages/Search.svelte';
+  import Events from './pages/Events.svelte';
   import Export from './pages/Export.svelte';
   import Settings from './pages/Settings.svelte';
   import About from './pages/About.svelte';
@@ -37,7 +37,7 @@
   const NAV: { r: Route; label: string; icon: IconName }[] = [
     { r: 'dashboard', label: 'Dashboard', icon: 'home' },
     { r: 'devices', label: 'Devices', icon: 'devices' },
-    { r: 'search', label: 'Search', icon: 'search' },
+    { r: 'events', label: 'Events', icon: 'search' },
     { r: 'export', label: 'Export', icon: 'export' },
     { r: 'settings', label: 'Settings', icon: 'settings' },
     { r: 'about', label: 'About', icon: 'about' },
@@ -48,7 +48,7 @@
     welcome: 'Welcome',
     dashboard: 'Dashboard',
     devices: 'Devices',
-    search: 'Search',
+    events: 'Events',
     export: 'Export',
     settings: 'Settings',
     about: 'About',
@@ -135,8 +135,8 @@
           <Welcome />
         {:else if router.route === 'devices'}
           <Devices />
-        {:else if router.route === 'search'}
-          <Search />
+        {:else if router.route === 'events'}
+          <Events />
         {:else if router.route === 'export'}
           <Export />
         {:else if router.route === 'settings'}

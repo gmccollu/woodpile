@@ -169,10 +169,20 @@ export interface SearchParams {
   order?: 'desc' | 'asc';
   limit?: number;
   cursor?: string;
+  /** Programs/tags from the header, ignoring case; a trailing "*" is a prefix, a leading "%" optional. */
+  app?: string[];
+  /** Hostnames from the header (not the sender IP), ignoring case. */
+  host?: string[];
+  /** Leave out lines matching this; regex and case apply as for q. */
+  exclude?: string;
 }
 
 export interface SearchResult extends LogLine {
   ref: string;
+  /** The parsed program/tag ("" when the header has none). */
+  app: string;
+  /** The parsed header hostname ("" when the header has none). */
+  host: string;
 }
 
 export interface SearchResponse {
@@ -207,6 +217,9 @@ export interface ExportRequest {
   q?: string;
   regex?: boolean;
   case?: boolean;
+  app?: string[];
+  host?: string[];
+  exclude?: string;
 }
 
 export interface ExportFilters {
@@ -216,6 +229,9 @@ export interface ExportFilters {
   q: string;
   regex: boolean;
   case: boolean;
+  app: string[];
+  host: string[];
+  exclude: string;
 }
 
 export interface ExportEstimate {
@@ -521,6 +537,9 @@ export const searchPath = (p: SearchParams) =>
     from: p.from,
     to: p.to,
     severities: p.severities ? sevParam(p.severities) : undefined,
+    app: p.app,
+    host: p.host,
+    exclude: p.exclude,
     order: p.order,
     limit: p.limit,
     cursor: p.cursor,
@@ -538,8 +557,11 @@ function exportBody(r: ExportRequest): ExportRequest {
   if (r.group) b.group = r.group;
   if (r.ungrouped) b.ungrouped = true;
   if (r.severities && r.severities.length && sevParam(r.severities)) b.severities = ALL_SEVS.filter((k) => r.severities!.includes(k));
-  if (r.q) {
-    b.q = r.q;
+  if (r.app?.length) b.app = r.app;
+  if (r.host?.length) b.host = r.host;
+  if (r.exclude) b.exclude = r.exclude;
+  if (r.q || r.exclude) {
+    if (r.q) b.q = r.q;
     if (r.regex) b.regex = true;
     if (r.case) b.case = true;
   }

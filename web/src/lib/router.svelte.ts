@@ -1,15 +1,19 @@
 // Hash routing (#/devices) so the embedded server needs no SPA fallback. A page can keep
-// its own state after a "?" (#/search?q=deny&range=1h), so it can be bookmarked or shared.
+// its own state after a "?" (#/events?q=deny&r=1h), so it can be bookmarked or shared.
 
-export type Route = 'welcome' | 'dashboard' | 'devices' | 'search' | 'export' | 'settings' | 'about';
+export type Route = 'welcome' | 'dashboard' | 'devices' | 'events' | 'export' | 'settings' | 'about';
 
-const ROUTES: Route[] = ['welcome', 'dashboard', 'devices', 'search', 'export', 'settings', 'about'];
+const ROUTES: Route[] = ['welcome', 'dashboard', 'devices', 'events', 'export', 'settings', 'about'];
+
+/** Old names that still open their page: Events was called Search, so old links and bookmarks keep working. */
+const ALIASES: Record<string, Route> = { search: 'events' };
 
 function parse(): { route: Route | null; query: string } {
   const h = location.hash.replace(/^#\/?/, '');
   const [path, ...rest] = h.split('?');
   const query = rest.join('?');
   if (path === '') return { route: null, query };
+  if (ALIASES[path]) return { route: ALIASES[path], query };
   return { route: (ROUTES as string[]).includes(path) ? (path as Route) : 'dashboard', query };
 }
 

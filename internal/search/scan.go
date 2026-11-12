@@ -28,11 +28,11 @@ type Scanner struct {
 
 // NewScanner prepares a scan of one device over f.
 func (e *Engine) NewScanner(ctx context.Context, device string, f Filter) (*Scanner, error) {
-	m, err := e.compile(f)
+	c, err := e.compile(f)
 	if err != nil {
 		return nil, err
 	}
-	r := &run{e: e, ctx: ctx, now: e.now(), m: m, sevs: f.Severities, need: 1, files: map[int64]struct{}{}, ringBytes: e.ringBytes}
+	r := &run{e: e, ctx: ctx, now: e.now(), m: c.m, ex: c.ex, fields: c.fields, sevs: f.Severities, need: 1, files: map[int64]struct{}{}, ringBytes: e.ringBytes}
 	if r.fromMs, r.toMs, err = e.resolveRange(f); err != nil {
 		return nil, err
 	}
@@ -151,7 +151,7 @@ func (e *Engine) Estimate(ctx context.Context, devices []string, f Filter) (Esti
 	return est, nil
 }
 
-// CheckFilter validates f (its regular expression and time range) without
+// CheckFilter validates f (its regular expressions and time range) without
 // reading anything. It returns a *QueryError for a bad filter.
 func (e *Engine) CheckFilter(f Filter) error {
 	if _, err := e.compile(f); err != nil {

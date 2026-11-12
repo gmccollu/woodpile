@@ -56,10 +56,15 @@ as plain files within a disk budget and has a web UI for watching, searching and
 - Dashboard: message rate with a sparkline, devices online and quiet, disk use against the cap, dropped messages,
   device tiles with a last-heard dot, group tabs and a live tail with server-side filters.
 - Devices: rename, group or hide senders; first and last seen and totals.
-- Search: text or regular expression, case on or off, devices or groups, time range and severities; results stream
-  in, with ±50 lines of context around a hit.
-- Export: a zip of the raw lines for chosen devices and a time range (or exactly what a search showed), with a
-  manifest (line counts, SHA-256, gaps when Woodshed wasn't running), Woodshed's own events and a README.
+- Events (called Search in the release candidates; old `#/search` links still work): browse or filter every stored
+  message, compressed days included. Filters: text or regular expression, case on or off, program/tag (with `*`
+  for a prefix, such as `%FW-6-*`), header hostname, exclude, devices or groups, time range and severities. It opens
+  on the last hour with no text, so it browses everything. Host and Program/tag columns; click a value to filter by
+  it. Results stream in, with ±50 lines of context around a hit.
+- The live tail has **Open in Events**: the same devices, severities and text over the last hour.
+- Export: a zip of the raw lines for chosen devices and a time range (or exactly what Events showed, with the same
+  filters), with a manifest (line counts, SHA-256, the filters, gaps when Woodshed wasn't running), Woodshed's own
+  events and a README that states the filters.
 - Settings that apply without a restart: listeners, allowlist, retention, file size, quiet thresholds, LAN mode.
 - Light and dark modes.
 
