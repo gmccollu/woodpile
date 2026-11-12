@@ -139,6 +139,9 @@ const (
 	KindDeviceLimit Kind = "device_limit"
 	// KindFlood: one device sent more than half of the last 24 h's bytes.
 	KindFlood Kind = "flood"
+	// KindRetentionCap: at the current rate the size cap keeps fewer days than
+	// retention_days (at most once a day).
+	KindRetentionCap Kind = "retention_cap"
 )
 
 // Source says what an event is about, for readers that act on events (export

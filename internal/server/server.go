@@ -323,6 +323,12 @@ func (s *Server) Run(ctx context.Context) error {
 		s.watchState(started, stateStop)
 	}()
 
+	retentionDone := make(chan struct{})
+	go func() {
+		defer close(retentionDone)
+		s.be.watchRetention(stateStop)
+	}()
+
 	select {
 	case <-ctx.Done():
 	case err := <-apiDone:
@@ -333,6 +339,7 @@ func (s *Server) Run(ctx context.Context) error {
 	log.Info("shutting down")
 	close(stateStop)
 	<-stateDone
+	<-retentionDone
 	return s.shutdown(ln, apiCancel, apiDone)
 }
 

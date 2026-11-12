@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -181,6 +182,20 @@ func (s *Server) apiRoutes() *http.ServeMux {
 		},
 		http.MethodPut: s.putSettings,
 	})
+	mux.Handle("/api/storage/estimate", methods{http.MethodGet: func(w http.ResponseWriter, r *http.Request) {
+		v := r.URL.Query().Get("retention_bytes")
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "retention_bytes must be an integer number of bytes")
+			return
+		}
+		est, err := b.StorageEstimate(r.Context(), n)
+		if err != nil {
+			s.requestOrBackendError(w, r, err, "")
+			return
+		}
+		writeJSON(w, http.StatusOK, est)
+	}})
 	mux.Handle("/api/storage/history", methods{http.MethodGet: func(w http.ResponseWriter, r *http.Request) {
 		es, err := b.StorageHistory(r.Context())
 		if err != nil {

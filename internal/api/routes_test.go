@@ -99,6 +99,15 @@ func docExamples(t *testing.T) map[string]any {
 		}
 		out["/api/rejected"] = v
 	}
+	// "`GET /api/storage/estimate?retention_bytes=N` → `{...}`", "…" for values
+	// the doc doesn't give (any kind).
+	if m := regexp.MustCompile("`GET /api/storage/estimate\\?retention_bytes=N` → `(\\{.*?\\})`").FindStringSubmatch(doc); m != nil {
+		var v any
+		if err := json.Unmarshal([]byte(strings.ReplaceAll(m[1], "…", "null")), &v); err != nil {
+			t.Fatalf("storage estimate example: %v", err)
+		}
+		out["/api/storage/estimate"] = v
+	}
 	// Key lists: "`GET /api/storage/history` → `[{"time", "file", ...: "age|cap|low_disk"}]`".
 	if m := regexp.MustCompile("`GET /api/storage/history` → `\\[\\{(.*?)\\}\\]`").FindStringSubmatch(doc); m != nil {
 		obj := map[string]any{}
@@ -193,14 +202,14 @@ func sameShape(t *testing.T, where string, doc, got any, optional map[string]boo
 
 func TestRoutesMatchDocExamples(t *testing.T) {
 	examples := docExamples(t)
-	for _, route := range []string{"/api/status", "/api/stats", "/api/devices", "/api/groups", "/api/settings", "/api/rejected", "/api/storage/history"} {
+	for _, route := range []string{"/api/status", "/api/stats", "/api/devices", "/api/groups", "/api/settings", "/api/rejected", "/api/storage/history", "/api/storage/estimate"} {
 		if _, ok := examples[route]; !ok {
 			t.Fatalf("no example for %s in docs/api.md", route)
 		}
 	}
 	srv := startServer(t, nil, UIConfig{})
 	c := httpClient()
-	if len(examples) < 7 {
+	if len(examples) < 8 {
 		t.Fatalf("found only %d examples in docs/api.md: %v", len(examples), keys(examples))
 	}
 	optional := map[string]bool{
@@ -210,7 +219,11 @@ func TestRoutesMatchDocExamples(t *testing.T) {
 		if strings.HasPrefix(route, "/api/search") {
 			continue // M3
 		}
-		r := do(t, c, "GET", srv.url(route), "")
+		path := route
+		if route == "/api/storage/estimate" {
+			path += "?retention_bytes=21474836480"
+		}
+		r := do(t, c, "GET", srv.url(path), "")
 		if r.code != http.StatusOK {
 			t.Errorf("%s: %d %s", route, r.code, r.body)
 			continue
@@ -717,4 +730,21 @@ func TestPatchBlockedAndFilter(t *testing.T) {
 	}
 	wantError(t, do(t, c, "GET", srv.url("/api/devices?blocked=sure"), ""), 400, "blocked")
 	wantError(t, do(t, c, "PATCH", srv.url("/api/devices/10.1.0.2"), `{"blocked": "yes"}`), 400, "")
+}
+
+func TestStorageEstimate(t *testing.T) {
+	srv := startServer(t, nil, UIConfig{})
+	c := httpClient()
+	for _, q := range []string{"", "?retention_bytes=", "?retention_bytes=abc", "?retention_bytes=1.5", "?retention_bytes=1073741823", "?retention_bytes=-1"} {
+		if r := do(t, c, "GET", srv.url("/api/storage/estimate"+q), ""); r.code != http.StatusBadRequest {
+			t.Errorf("%q: %d %s", q, r.code, r.body)
+		}
+	}
+	m := do(t, c, "GET", srv.url("/api/storage/estimate?retention_bytes=4722786304"), "").json(t)
+	if d, _ := m["estimated_days"].(float64); d < 1.99 || d > 2.01 || m["bytes_per_day"] != float64(2361393152) || m["compression_ratio"] != 9.2 {
+		t.Errorf("%v", m)
+	}
+	if r := do(t, c, "POST", srv.url("/api/storage/estimate?retention_bytes=4722786304"), ""); r.code != http.StatusMethodNotAllowed {
+		t.Errorf("POST: %d", r.code)
+	}
 }

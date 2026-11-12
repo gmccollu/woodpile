@@ -22,6 +22,10 @@ type Backend interface {
 	// Status serves GET /api/status.
 	Status(ctx context.Context) (Status, error)
 
+	// StorageEstimate serves GET /api/storage/estimate: the retention estimate for
+	// a cap the user is typing in Settings. A cap the setting wouldn't accept is a
+	// *RequestError.
+	StorageEstimate(ctx context.Context, retentionBytes int64) (StorageEstimate, error)
 	// Stats serves GET /api/stats.
 	Stats(ctx context.Context) (Stats, error)
 
@@ -214,6 +218,19 @@ type Disk struct {
 	CapBytes  int64 `json:"cap_bytes"`
 	FreeBytes int64 `json:"free_bytes"`
 	DaysKept  int   `json:"days_kept"`
+
+	// The retention estimate (nil when unknown: under 1 h of data).
+	BytesPerDay      *int64   `json:"bytes_per_day"`     // on-disk bytes a day at the last 24 h's rate
+	CompressionRatio *float64 `json:"compression_ratio"` // measured on gzipped files, 8 until there are any
+	EstimatedDays    *float64 `json:"estimated_days"`    // cap_bytes / bytes_per_day (nil at a zero rate)
+	LimitedBy        *string  `json:"limited_by"`        // "cap" or "age"
+}
+
+// StorageEstimate is the body of GET /api/storage/estimate.
+type StorageEstimate struct {
+	EstimatedDays    *float64 `json:"estimated_days"`
+	BytesPerDay      *int64   `json:"bytes_per_day"`
+	CompressionRatio *float64 `json:"compression_ratio"`
 }
 
 // ---- GET /api/rejected ----

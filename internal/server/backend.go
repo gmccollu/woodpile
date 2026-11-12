@@ -76,6 +76,9 @@ type backend struct {
 	// firstSeen caches the earliest device first_seen once the index has one.
 	firstSeen atomic.Int64
 
+	// retention caches the retention estimate's index inputs.
+	retention retentionCache
+
 	// live has each sender's last-heard time and rate since start, without the
 	// index's lag.
 	live *liveDevices
@@ -246,7 +249,14 @@ func (b *backend) Status(ctx context.Context) (api.Status, error) {
 			Proto: l.Proto, Addr: l.Addr, Port: l.Port, OK: l.OK, Error: l.Error, Holder: l.Holder,
 		})
 	}
-	st.Banners = append(buildBanners(ls.Listeners, b.store.Usage(), cfg.Storage.DataDir), b.startupBanners...)
+	u := b.store.Usage()
+	st.Banners = append(buildBanners(ls.Listeners, u, cfg.Storage.DataDir), b.startupBanners...)
+	// The estimate is a hint: an index error leaves the banner out, not the status.
+	if ban, err := b.retentionBanner(ctx, u.CapBytes, cfg.Storage.RetentionDays); err != nil {
+		b.log.Warn("retention estimate failed", "err", err)
+	} else if ban != nil {
+		st.Banners = append(st.Banners, *ban)
+	}
 	// Another Woodpile on this machine (usually the installed service): name it
 	// as the holder and say what to do.
 	if !b.isService {
@@ -406,6 +416,11 @@ func (b *backend) Stats(ctx context.Context) (api.Stats, error) {
 	if u.Files == 0 {
 		st.Disk.DaysKept = 0
 	}
+	e, err := b.estimate(ctx, u.CapBytes)
+	if err != nil {
+		return st, err
+	}
+	e.apply(&st.Disk, b.config().Storage.RetentionDays)
 
 	// Only buckets with drops or truncations are read (a day of per-minute
 	// buckets for 10,000 devices is 14 million rows).

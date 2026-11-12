@@ -78,7 +78,8 @@ func newFakeBackend() *fakeBackend {
 			MsgsPerSec: 1284.2,
 			Sparkline:  []float64{1100, 1180, 1250},
 			Devices:    DeviceCounts{Total: 3, Online: 1, Quiet: 1, Offline: 1},
-			Disk:       Disk{UsedBytes: 3435973836, CapBytes: 21474836480, FreeBytes: 400000000000, DaysKept: 30},
+			Disk: Disk{UsedBytes: 3435973836, CapBytes: 21474836480, FreeBytes: 400000000000, DaysKept: 30,
+				BytesPerDay: ptr(int64(2361393152)), CompressionRatio: ptr(9.2), EstimatedDays: ptr(9.1), LimitedBy: ptr("cap")},
 		},
 		rejected: []RejectedSender{{IP: "198.51.100.7", Count24h: 120, LastSeen: ts("2026-11-10T20:30:00Z"), Reason: "allowlist"}},
 		devices:  map[string]Device{},
@@ -131,6 +132,24 @@ func (b *fakeBackend) Stats(ctx context.Context) (Stats, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.stats, nil
+}
+
+func ptr[T any](v T) *T { return &v }
+
+// StorageEstimate scales the fake's stats estimate to the cap; under 1 GiB is
+// refused like the setting.
+func (b *fakeBackend) StorageEstimate(_ context.Context, n int64) (StorageEstimate, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if n < 1<<30 {
+		return StorageEstimate{}, &RequestError{Msg: "retention_bytes must be at least 1 GiB (1073741824)"}
+	}
+	d := b.stats.Disk
+	est := StorageEstimate{BytesPerDay: d.BytesPerDay, CompressionRatio: d.CompressionRatio}
+	if d.BytesPerDay != nil && *d.BytesPerDay > 0 {
+		est.EstimatedDays = ptr(float64(n) / float64(*d.BytesPerDay))
+	}
+	return est, nil
 }
 func (b *fakeBackend) Rejected(ctx context.Context) ([]RejectedSender, error) {
 	b.mu.Lock()
