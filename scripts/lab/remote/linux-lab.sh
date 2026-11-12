@@ -9,7 +9,8 @@
 #   linux-lab.sh fw-open | fw-close        open / close UDP+TCP 514 exactly as docs/install.md says
 #   linux-lab.sh verify RUN N [MISSING_OK] [WAIT]   verifyseq -json against the service's data dir
 #   linux-lab.sh stats                     GET /api/stats (localhost UI)
-#   linux-lab.sh integrity                 JSON: /usr/bin/woodshed present + sha256, service, 514 sockets, ampdaemon running
+#   linux-lab.sh integrity [SERVICES]      JSON: /usr/bin/woodshed present + sha256, service, 514 sockets, and the state of the
+#                                          comma-separated endpoint protection (EDR) services/processes ("-" skips; from lab.env)
 #   linux-lab.sh api METHOD PATH [BODY]    any local API call; download PATH OUT saves a body (export zips)
 #   linux-lab.sh devices                   the device folders under logs/
 #   linux-lab.sh sample OUT INTERVAL SECS [PID]     CSV of RSS, CPU seconds, fds, threads, UDP drops
@@ -112,21 +113,28 @@ verify-detached)
 	echo "started woodpile-lab-verify-$run -> $out"
 	;;
 stats) curl -fsS --max-time 5 "$UI/api/stats" ;;
-integrity) # what endpoint protection did to the product: binary, service, sockets (and whether Secure Endpoint runs here)
+integrity) # what endpoint protection (EDR) did to the product: binary, service, sockets (and whether the EDR runs here)
 	exe=/usr/bin/woodshed pid=$(svc_pid) sha="" size=0 mtime="" udp=0 tcp=0
 	if [ -f "$exe" ]; then sha=$(sha256sum "$exe" | cut -d' ' -f1); size=$(stat -c %s "$exe"); mtime=$(date -u -r "$exe" +%FT%TZ); fi
 	if [ -n "$pid" ]; then
 		udp=$($S ss -H -lnup 'sport = :514' | grep -c "pid=$pid," || true)
 		tcp=$($S ss -H -lntp 'sport = :514' | grep -c "pid=$pid," || true)
 	fi
-	amp=$(pgrep -x ampdaemon >/dev/null && echo ampdaemon=running || echo ampdaemon=absent)
+	edr=""
+	if [ "${1:--}" != - ]; then
+		IFS=, read -r -a names <<<"$1"
+		for x in "${names[@]}"; do
+			[[ "$x" =~ ^[A-Za-z0-9._@-]+$ ]] || continue
+			if systemctl is-active --quiet "$x" 2>/dev/null || pgrep -x "$x" >/dev/null; then edr="$edr,$x=running"; else edr="$edr,$x=absent"; fi
+		done
+	fi
 	python3 - "$exe" "$sha" "$size" "$mtime" "$(systemctl is-active woodshed.service || true)" "$(systemctl is-enabled woodshed.service || true)" \
-		"$(ps -o user= -p "${pid:-1}" 2>/dev/null | tr -d ' ')" "${pid:-0}" "$udp" "$tcp" "$amp" <<'PY'
+		"$(ps -o user= -p "${pid:-1}" 2>/dev/null | tr -d ' ')" "${pid:-0}" "$udp" "$tcp" "${edr#,}" <<'PY'
 import json, sys
 a = sys.argv[1:]
 print(json.dumps({"exe": a[0], "exe_present": bool(a[1]), "exe_sha256": a[1], "exe_size": int(a[2] or 0), "exe_mtime_utc": a[3],
                   "service_state": a[4], "start_mode": a[5], "account": a[6], "pid": a[7], "udp514": int(a[8] or 0), "tcp514": int(a[9] or 0),
-                  "defender_detections": [], "secure_endpoint": [a[10]]}))
+                  "defender_detections": [], "edr_services": [x for x in a[10].split(",") if x]}))
 PY
 	;;
 api) # api METHOD PATH [BODYFILE]: the local UI API (no auth on localhost); prints the body

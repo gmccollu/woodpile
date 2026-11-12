@@ -593,7 +593,11 @@ cmd_integrity() { # integrity TARGET LABEL: did endpoint protection quarantine, 
 	[[ "$label" =~ ^[a-z0-9-]+$ ]] || die "integrity label must be [a-z0-9-]"
 	new_step "integrity-$label"
 	local j rel f=$LAB_RESULTS/$target/integrity.jsonl
-	j=$({ vm integrity 48 || true; } | tr -d '\r' | { grep '^{' || echo '{}'; } | tail -1)
+	if [ "$(tv OS)" = windows ]; then
+		j=$({ vm integrity 48 "${LAB_EDR_EVENT_PROVIDERS:--}" "${LAB_EDR_SERVICES:--}" || true; } | tr -d '\r' | { grep '^{' || echo '{}'; } | tail -1)
+	else
+		j=$({ vm integrity "${LAB_EDR_SERVICES:--}" || true; } | tr -d '\r' | { grep '^{' || echo '{}'; } | tail -1)
+	fi
 	rel=$(release_exe_sha 2>/dev/null || echo "")
 	printf '{"label": "%s", "at": "%s", "release_archive_exe_sha256": "%s", "state": %s}\n' "$label" "$(date -u +%FT%TZ)" "$rel" "$j" >>"$f"
 	python3 - "$f" "$label" <<'PY' | tee -a "$step_dir/log"
@@ -615,11 +619,11 @@ if st.get("defender_detections"):
 rel = cur.get("release_archive_exe_sha256")
 print(f"integrity {cur['label']} at {cur['at']}: exe {st.get('exe_sha256', '')[:16]}… size {st.get('exe_size')} mtime {st.get('exe_mtime_utc')} "
       f"signature {st.get('signature', 'n/a')}; service {st.get('service_state')} ({st.get('account')}); udp514 {st.get('udp514')} tcp514 {st.get('tcp514')}; "
-      f"endpoint {st.get('secure_endpoint')}")
+      f"EDR services {st.get('edr_services')}")
 print("release archive binary " + ("matches the installed binary" if rel and rel == st.get("exe_sha256") else
       f"differs from the installed binary (archive {rel[:16]}…; the packaged build may differ, so 'unchanged' is judged against after-install)"))
-for e in st.get("cisco_app_events") or []:
-    print("  Cisco/AMP event: " + e)
+for e in st.get("edr_app_events") or []:
+    print("  EDR event: " + e)
 print("INTEGRITY_OK" if not problems else "INTEGRITY_PROBLEM: " + "; ".join(problems))
 PY
 	if grep -q "INTEGRITY_PROBLEM" "$step_dir/log"; then

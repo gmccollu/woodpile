@@ -19,8 +19,9 @@
   reboot                          shutdown /r in 5 s
   api METHOD PATH [BODYFILE]      any local API call; download PATH OUT saves a body (export zips)
   parse                           check this script parses
-  integrity [HOURS]               JSON: woodshed.exe present + sha256 + signature, service, 514 sockets, Defender detections and
-                                  Cisco/AMP Application-log events in the last HOURS (default 48)
+  integrity [HOURS] [PROVIDERS] [SERVICES]   JSON: woodshed.exe present + sha256 + signature, service, 514 sockets, Defender
+                                  detections, and endpoint protection (EDR): Application-log events whose provider matches the
+                                  PROVIDERS regex, and the state of the comma-separated SERVICES ("-" skips either; from lab.env)
   collect OUT.zip                 event log, service config, firewall rules, config, status, data listing, samples
 #>
 param([Parameter(Position = 0, Mandatory = $true)][string]$Action,
@@ -114,7 +115,7 @@ switch ($Action) {
   }
   "portable" {
     $op = Arg 0; $port = Arg 1 15514; $allow = (Arg 2 "") -eq "allow"
-    $P = "C:\woodshed-portable"   # outside C:\woodpile-lab (the Secure Endpoint exclusion), so this copy of the product stays monitored
+    $P = "C:\woodshed-portable"   # outside C:\woodpile-lab (the folder excluded from endpoint protection (EDR) for the test scripts), so this copy of the product stays monitored
     switch ($op) {
       "start" {
         New-Item -ItemType Directory -Force (Join-Path $P "data") | Out-Null
@@ -158,8 +159,9 @@ port = 18514
   }
   # shutdown.exe schedules the restart in the OS; a child process would die with the ssh session (OpenSSH job object)
   "reboot" { & shutdown.exe /r /t 5 /c "woodpile-lab reboot test"; "rebooting in 5 s (exit $LASTEXITCODE)" }
-  "integrity" {  # what endpoint protection (Secure Endpoint, Defender) did to the product: file, service, sockets, detections
+  "integrity" {  # what endpoint protection (EDR, Defender) did to the product: file, service, sockets, detections
     $hours = [int](Arg 0 48); $since = (Get-Date).AddHours(-$hours)
+    $prov = Arg 1 "-"; $svcs = Arg 2 "-"
     $exe = Join-Path $env:ProgramFiles "Woodshed\woodshed.exe"
     $f = Get-Item $exe -ErrorAction SilentlyContinue
     $sig = if ($f) { Get-AuthenticodeSignature $exe } else { $null }
@@ -169,16 +171,17 @@ port = 18514
     $tcp = @(Get-NetTCPConnection -LocalPort 514 -State Listen -ErrorAction SilentlyContinue | Where-Object OwningProcess -eq $procId).Count
     $det = @(Get-MpThreatDetection -ErrorAction SilentlyContinue | Where-Object { $_.InitialDetectionTime -ge $since } |
       ForEach-Object { "$($_.InitialDetectionTime.ToUniversalTime().ToString('u')) threat=$($_.ThreatID) $($_.Resources -join ';')" })
-    $cisco = @(Get-WinEvent -FilterHashtable @{ LogName = 'Application'; StartTime = $since } -ErrorAction SilentlyContinue |
-      Where-Object { $_.ProviderName -match 'Cisco|AMP|Immunet|Secure Endpoint|Orbital' } | Select-Object -First 30 |
-      ForEach-Object { "$($_.TimeCreated.ToUniversalTime().ToString('u')) $($_.ProviderName) $($_.Id): $((($_.Message -split "`n")[0]).Trim())" })
+    $edrEvents = @(if ($prov -ne "-") { Get-WinEvent -FilterHashtable @{ LogName = 'Application'; StartTime = $since } -ErrorAction SilentlyContinue |
+      Where-Object { $_.ProviderName -match $prov } | Select-Object -First 30 |
+      ForEach-Object { "$($_.TimeCreated.ToUniversalTime().ToString('u')) $($_.ProviderName) $($_.Id): $((($_.Message -split "`n")[0]).Trim())" } })
     [ordered]@{ exe = $exe; exe_present = [bool]$f
       exe_sha256 = $(if ($f) { (Get-FileHash $exe -Algorithm SHA256).Hash.ToLower() } else { "" })
       exe_size = $(if ($f) { $f.Length } else { 0 }); exe_mtime_utc = $(if ($f) { $f.LastWriteTimeUtc.ToString('u') } else { "" })
       signature = $(if ($sig) { "$($sig.Status)" } else { "" })
       service_state = $s.State; start_mode = $s.StartMode; account = $s.StartName; pid = $procId; udp514 = $udp; tcp514 = $tcp
-      defender_detections = $det; cisco_app_events = $cisco
-      secure_endpoint = @(Get-Service CiscoAMP, CiscoOrbital -ErrorAction SilentlyContinue | ForEach-Object { "$($_.Name)=$($_.Status)" })
+      defender_detections = $det; edr_app_events = $edrEvents
+      edr_services = @(if ($svcs -ne "-") { $svcs -split ',' | Where-Object { $_ } | ForEach-Object {
+        $x = Get-Service $_ -ErrorAction SilentlyContinue; if ($x) { "$($x.Name)=$($x.Status)" } else { "$_=absent" } } })
     } | ConvertTo-Json -Compress
   }
   "api" {
