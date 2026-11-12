@@ -18,6 +18,8 @@ import (
 	"strings"
 
 	"github.com/pelletier/go-toml/v2"
+
+	"github.com/gmccollu/woodshed/internal/atomicfile"
 )
 
 // FileName is the config file's base name.
@@ -227,7 +229,7 @@ func Load(path string) (Config, error) {
 
 // LoadOrCreate is Load with explicit defaults, and reports whether it created the file.
 func LoadOrCreate(path string, def Config) (Config, bool, error) {
-	b, err := os.ReadFile(path)
+	b, err := atomicfile.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		c := def.Clone()
 		c.Normalize()
@@ -309,7 +311,7 @@ func Save(path string, c Config) error {
 	if err := f.Close(); err != nil {
 		return fmt.Errorf("config: %w", err)
 	}
-	if err := os.Rename(tmp, path); err != nil {
+	if err := atomicfile.Rename(tmp, path); err != nil {
 		return fmt.Errorf("config: %w", err)
 	}
 	ok = true

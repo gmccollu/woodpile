@@ -12,11 +12,12 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
-	"os"
 	"os/exec"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/gmccollu/woodshed/internal/atomicfile"
 )
 
 // Kind is what kind of Woodshed a peer is (docs/api.md, holder_kind).
@@ -103,7 +104,7 @@ type runState struct {
 func readStates(paths []string) []runState {
 	var out []runState
 	for _, p := range paths {
-		b, err := os.ReadFile(p)
+		b, err := atomicfile.ReadFile(p)
 		if err != nil || len(b) > 1<<20 {
 			continue
 		}

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gmccollu/woodshed/internal/atomicfile"
 	"github.com/gmccollu/woodshed/internal/hub"
 	"github.com/gmccollu/woodshed/internal/index"
 	"github.com/gmccollu/woodshed/internal/store/logfile"
@@ -300,7 +301,7 @@ func (m *Manager) build(ctx context.Context, e *entry) (buildResult, error) {
 	if err := f.Close(); err != nil {
 		return res, err
 	}
-	if err := os.Rename(tmp, m.zipPath(info.ID)); err != nil {
+	if err := atomicfile.Rename(tmp, m.zipPath(info.ID)); err != nil {
 		return res, err
 	}
 	ok = true

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/gmccollu/woodshed/internal/api"
+	"github.com/gmccollu/woodshed/internal/atomicfile"
 	"github.com/gmccollu/woodshed/internal/config"
 	"github.com/gmccollu/woodshed/internal/server"
 	"github.com/gmccollu/woodshed/internal/service"
@@ -379,7 +380,7 @@ func certFileFingerprint(cfg config.Config, dataDir string) string {
 	if path == "" {
 		path = filepath.Join(dataDir, api.CertFile)
 	}
-	b, err := os.ReadFile(path)
+	b, err := atomicfile.ReadFile(path)
 	if err != nil {
 		return ""
 	}

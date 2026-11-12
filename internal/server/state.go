@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/gmccollu/woodshed/internal/api"
+	"github.com/gmccollu/woodshed/internal/atomicfile"
 )
 
 // StateFileName is the run-state file a running server keeps in its data dir
@@ -55,7 +56,7 @@ func writeState(dataDir string, rs RunState) error {
 	if err := os.WriteFile(tmp, append(b, '\n'), 0o640); err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	return atomicfile.Rename(tmp, path)
 }
 
 func removeState(dataDir string) {
@@ -66,7 +67,7 @@ func removeState(dataDir string) {
 // while DataDirInUse reports true: a crashed server leaves it behind.
 func ReadState(dataDir string) (RunState, error) {
 	var rs RunState
-	b, err := os.ReadFile(filepath.Join(dataDir, StateFileName))
+	b, err := atomicfile.ReadFile(filepath.Join(dataDir, StateFileName))
 	if err != nil {
 		return rs, err
 	}

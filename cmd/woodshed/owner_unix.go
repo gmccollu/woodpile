@@ -14,6 +14,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"github.com/gmccollu/woodshed/internal/atomicfile"
 	"github.com/gmccollu/woodshed/internal/config"
 )
 
@@ -73,7 +74,7 @@ func saveConfigKeepingOwner(path string, c config.Config) error {
 	if err := f.Close(); err != nil {
 		return err
 	}
-	if err := os.Rename(tmp, path); err != nil {
+	if err := atomicfile.Rename(tmp, path); err != nil {
 		return err
 	}
 	ok = true
@@ -211,7 +212,7 @@ func writeOwnedLikeDir(dir, name string, data []byte, perm os.FileMode) error {
 	if err := f.Close(); err != nil {
 		return err
 	}
-	if err := os.Rename(tmp, filepath.Join(dir, name)); err != nil {
+	if err := atomicfile.Rename(tmp, filepath.Join(dir, name)); err != nil {
 		return err
 	}
 	ok = true

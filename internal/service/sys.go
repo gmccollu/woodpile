@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/gmccollu/woodshed/internal/atomicfile"
 )
 
 func lookupIDs(name, group string) (int, int, error) {
@@ -109,7 +111,7 @@ func (h *host) writeFile(p, data string, perm os.FileMode) error {
 	if err := os.Chmod(tmp, perm); err != nil {
 		return err
 	}
-	return os.Rename(tmp, h.path(p))
+	return atomicfile.Rename(tmp, h.path(p))
 }
 
 func (h *host) mkdirAll(p string, perm os.FileMode) error { return os.MkdirAll(h.path(p), perm) }
@@ -147,7 +149,7 @@ func (h *host) copyFile(src, dst string, perm os.FileMode) error {
 	if err := os.Chmod(tmp, perm); err != nil {
 		return err
 	}
-	return os.Rename(tmp, h.path(dst))
+	return atomicfile.Rename(tmp, h.path(dst))
 }
 
 func sameFile(a, b string) (bool, error) {

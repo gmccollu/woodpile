@@ -27,6 +27,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gmccollu/woodshed/internal/atomicfile"
 	"github.com/gmccollu/woodshed/internal/hub"
 	"github.com/gmccollu/woodshed/internal/index"
 	"github.com/gmccollu/woodshed/internal/search"
@@ -191,7 +192,7 @@ func Open(opts Options) (*Manager, error) {
 		case strings.HasSuffix(name, ".tmp"):
 			os.Remove(filepath.Join(m.dir, name))
 		case strings.HasSuffix(name, ".json") && idRE.MatchString(strings.TrimSuffix(name, ".json")):
-			b, err := os.ReadFile(filepath.Join(m.dir, name))
+			b, err := atomicfile.ReadFile(filepath.Join(m.dir, name))
 			var info Info
 			if err != nil || json.Unmarshal(b, &info) != nil || info.ID+".json" != name {
 				m.log.Warn("export: ignoring an unreadable export entry", "file", name)
@@ -257,7 +258,7 @@ func (m *Manager) save(e *entry) {
 	p := filepath.Join(m.dir, e.info.ID+".json")
 	tmp := p + ".tmp"
 	if err := os.WriteFile(tmp, b, 0o640); err == nil {
-		err = os.Rename(tmp, p)
+		err = atomicfile.Rename(tmp, p)
 		if err != nil {
 			m.log.Warn("export: couldn't save an entry", "id", e.info.ID, "err", err)
 		}

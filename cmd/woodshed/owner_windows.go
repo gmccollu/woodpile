@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/gmccollu/woodshed/internal/atomicfile"
 	"github.com/gmccollu/woodshed/internal/config"
 	"github.com/gmccollu/woodshed/internal/winacl"
 )
@@ -66,7 +67,7 @@ func writeOwnedLikeDir(dir, name string, data []byte, _ os.FileMode) error {
 		err = cerr
 	}
 	if err == nil {
-		err = os.Rename(tmp, filepath.Join(dir, name))
+		err = atomicfile.Rename(tmp, filepath.Join(dir, name))
 	}
 	if err != nil {
 		os.Remove(tmp)

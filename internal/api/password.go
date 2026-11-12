@@ -12,6 +12,8 @@ import (
 	"strings"
 
 	"golang.org/x/crypto/argon2"
+
+	"github.com/gmccollu/woodshed/internal/atomicfile"
 )
 
 // PasswordFile is the UI password hash's file name in the data dir. It holds one
@@ -130,7 +132,7 @@ func checkNewPassword(pw string) string {
 
 // readHash returns the stored hash, or "" if none is set.
 func readHash(dataDir string) (string, error) {
-	b, err := os.ReadFile(filepath.Join(dataDir, PasswordFile))
+	b, err := atomicfile.ReadFile(filepath.Join(dataDir, PasswordFile))
 	if errors.Is(err, os.ErrNotExist) {
 		return "", nil
 	}
@@ -146,38 +148,8 @@ func writeHash(dataDir, phc string) error {
 }
 
 // writeFileAtomic writes data to a temp file in path's directory with perm, syncs
-// it and renames it over path.
+// it and renames it over path (atomicfile.WriteFile: the rename retries while
+// another process briefly holds the file on Windows).
 func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
-	dir := filepath.Dir(path)
-	f, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
-	if err != nil {
-		return err
-	}
-	tmp := f.Name()
-	ok := false
-	defer func() {
-		if !ok {
-			_ = os.Remove(tmp)
-		}
-	}()
-	if err := f.Chmod(perm); err != nil && !isWindows {
-		f.Close()
-		return err
-	}
-	if _, err := f.Write(data); err != nil {
-		f.Close()
-		return err
-	}
-	if err := f.Sync(); err != nil {
-		f.Close()
-		return err
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		return err
-	}
-	ok = true
-	return nil
+	return atomicfile.WriteFile(path, data, perm)
 }

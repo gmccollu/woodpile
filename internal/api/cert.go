@@ -24,6 +24,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gmccollu/woodshed/internal/atomicfile"
 	"github.com/gmccollu/woodshed/internal/config"
 )
 
@@ -353,7 +354,7 @@ func (c *certSource) recheck() {
 
 // readKey returns the self-signed certificate's existing ECDSA key, or nil.
 func readKey(dataDir string) *ecdsa.PrivateKey {
-	b, err := os.ReadFile(filepath.Join(dataDir, KeyFile))
+	b, err := atomicfile.ReadFile(filepath.Join(dataDir, KeyFile))
 	if err != nil {
 		return nil
 	}
@@ -393,7 +394,17 @@ func certFingerprint(der []byte) string {
 }
 
 func readCertPair(dataDir string) (*tls.Certificate, *x509.Certificate, error) {
-	pair, err := tls.LoadX509KeyPair(filepath.Join(dataDir, CertFile), filepath.Join(dataDir, KeyFile))
+	// Shared reads (FILE_SHARE_DELETE on Windows), so a regeneration's rename
+	// isn't blocked by this read.
+	certPEM, err := atomicfile.ReadFile(filepath.Join(dataDir, CertFile))
+	if err != nil {
+		return nil, nil, err
+	}
+	keyPEM, err := atomicfile.ReadFile(filepath.Join(dataDir, KeyFile))
+	if err != nil {
+		return nil, nil, err
+	}
+	pair, err := tls.X509KeyPair(certPEM, keyPEM)
 	if err != nil {
 		return nil, nil, err
 	}

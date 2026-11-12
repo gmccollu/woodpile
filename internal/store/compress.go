@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"time"
 
+	"github.com/gmccollu/woodshed/internal/atomicfile"
 	"github.com/gmccollu/woodshed/internal/index"
 	"github.com/gmccollu/woodshed/internal/store/logfile"
 )
@@ -150,7 +151,7 @@ func (s *Store) compressOne(ctx context.Context, e *catEntry) error {
 		}
 		return err
 	}
-	if err := os.Rename(tmp, dst); err != nil {
+	if err := atomicfile.Rename(tmp, dst); err != nil {
 		os.Remove(tmp)
 		return err
 	}

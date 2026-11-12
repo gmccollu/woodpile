@@ -12,12 +12,13 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/gmccollu/woodshed/internal/atomicfile"
 )
 
 // A session is two secrets (docs/api.md, "Session secret"): a cookie, and a
@@ -531,7 +532,7 @@ func knownClientsData(m map[[32]byte]time.Time) []byte {
 // readKnownClients loads the remembered-client hashes that haven't expired.
 func readKnownClients(dataDir string, now time.Time) map[[32]byte]time.Time {
 	out := map[[32]byte]time.Time{}
-	b, err := os.ReadFile(filepath.Join(dataDir, knownClientsFile))
+	b, err := atomicfile.ReadFile(filepath.Join(dataDir, knownClientsFile))
 	if err != nil {
 		return out
 	}
