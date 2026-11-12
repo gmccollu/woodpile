@@ -1,12 +1,12 @@
 #!/bin/bash
-# Builds the macOS installer: a universal (arm64 + x86_64) woodpile binary, a component
+# Builds the macOS installer: a universal (arm64 + x86_64) woodshed binary, a component
 # package (pkgbuild) and the product archive (productbuild).
 #
-# The pkg installs the daemon, the binary and /Applications/Woodpile.app (a launcher for the UI).
+# The pkg installs the daemon, the binary and /Applications/Woodshed.app (a launcher for the UI).
 #
 #   packaging/macos/build-pkg.sh [--version 1.2.3] [--commit abc1234] [--out dist/macos]
-#                                [--universal path/to/woodpile]
-#                                [--arm64 path/to/woodpile --amd64 path/to/woodpile]
+#                                [--universal path/to/woodshed]
+#                                [--arm64 path/to/woodshed --amd64 path/to/woodshed]
 #
 # --universal packages a universal binary as is (the release uses GoReleaser's, so the pkg
 # and the darwin archive ship the same file). --arm64/--amd64 are combined with lipo. With
@@ -58,72 +58,72 @@ case "$pkg_version" in
 	"" | *[!0-9.]*) pkg_version=0.0.0 ;; # e.g. `git describe --always` on an untagged tree
 esac
 
-work=$(mktemp -d "${TMPDIR:-/tmp}/woodpile-pkg.XXXXXX")
+work=$(mktemp -d "${TMPDIR:-/tmp}/woodshed-pkg.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 
 build_one() { # goarch output
 	CGO_ENABLED=0 GOOS=darwin GOARCH=$1 go -C "$repo" build -trimpath \
 		-ldflags "-s -w -X main.version=$version -X main.commit=$commit" \
-		-o "$2" ./cmd/woodpile
+		-o "$2" ./cmd/woodshed
 }
 
 if [ -z "$bin_universal" ] && { [ -z "$bin_arm64" ] || [ -z "$bin_amd64" ]; }; then
 	echo "==> go build darwin/arm64 and darwin/amd64 ($version, $commit)"
-	bin_arm64="$work/woodpile-arm64"
-	bin_amd64="$work/woodpile-amd64"
+	bin_arm64="$work/woodshed-arm64"
+	bin_amd64="$work/woodshed-amd64"
 	build_one arm64 "$bin_arm64"
 	build_one amd64 "$bin_amd64"
 fi
 
 root="$work/root"
 mkdir -p "$root/usr/local/bin" \
-	"$root/usr/local/share/woodpile" \
+	"$root/usr/local/share/woodshed" \
 	"$root/Library/LaunchDaemons" \
 	"$root/private/etc/newsyslog.d"
 
 if [ -n "$bin_universal" ]; then
 	echo "==> using the universal binary $bin_universal"
-	cp "$bin_universal" "$root/usr/local/bin/woodpile"
+	cp "$bin_universal" "$root/usr/local/bin/woodshed"
 else
 	echo "==> lipo (universal binary)"
-	lipo -create -output "$root/usr/local/bin/woodpile" "$bin_arm64" "$bin_amd64"
+	lipo -create -output "$root/usr/local/bin/woodshed" "$bin_arm64" "$bin_amd64"
 fi
-archs=$(lipo -archs "$root/usr/local/bin/woodpile")
+archs=$(lipo -archs "$root/usr/local/bin/woodshed")
 case "$archs" in
 	*x86_64*arm64* | *arm64*x86_64*) echo "    archs: $archs" ;;
 	*) echo "build-pkg.sh: universal binary has archs '$archs'" >&2; exit 1 ;;
 esac
-chmod 0755 "$root/usr/local/bin/woodpile"
+chmod 0755 "$root/usr/local/bin/woodshed"
 
 if [ -n "${MACOS_APP_SIGN_IDENTITY:-}" ]; then
 	echo "==> codesign the binary"
 	codesign --force --options runtime --timestamp \
 		${MACOS_KEYCHAIN:+--keychain "$MACOS_KEYCHAIN"} \
-		--sign "$MACOS_APP_SIGN_IDENTITY" "$root/usr/local/bin/woodpile"
-	codesign --verify --strict --verbose=2 "$root/usr/local/bin/woodpile"
+		--sign "$MACOS_APP_SIGN_IDENTITY" "$root/usr/local/bin/woodshed"
+	codesign --verify --strict --verbose=2 "$root/usr/local/bin/woodshed"
 else
 	echo "==> MACOS_APP_SIGN_IDENTITY not set; the binary stays unsigned (ad-hoc arm64 signature only)"
 fi
 
-install -m 0644 "$here/com.woodpile.daemon.plist" "$root/Library/LaunchDaemons/com.woodpile.daemon.plist"
-install -m 0644 "$here/com.woodpile.daemon.newsyslog.conf" "$root/private/etc/newsyslog.d/com.woodpile.daemon.conf"
-install -m 0755 "$here/uninstall.sh" "$root/usr/local/share/woodpile/uninstall.sh"
+install -m 0644 "$here/com.woodshed.daemon.plist" "$root/Library/LaunchDaemons/com.woodshed.daemon.plist"
+install -m 0644 "$here/com.woodshed.daemon.newsyslog.conf" "$root/private/etc/newsyslog.d/com.woodshed.daemon.conf"
+install -m 0755 "$here/uninstall.sh" "$root/usr/local/share/woodshed/uninstall.sh"
 if [ ! -f "$repo/THIRD_PARTY_NOTICES.txt" ]; then
 	echo "build-pkg.sh: THIRD_PARTY_NOTICES.txt is missing; run scripts/third_party_notices.py" >&2
 	exit 1
 fi
-install -m 0644 "$repo/LICENSE" "$root/usr/local/share/woodpile/LICENSE"
-install -m 0644 "$repo/THIRD_PARTY_NOTICES.txt" "$root/usr/local/share/woodpile/THIRD_PARTY_NOTICES.txt"
+install -m 0644 "$repo/LICENSE" "$root/usr/local/share/woodshed/LICENSE"
+install -m 0644 "$repo/THIRD_PARTY_NOTICES.txt" "$root/usr/local/share/woodshed/THIRD_PARTY_NOTICES.txt"
 
-# /Applications/Woodpile.app: a launcher that opens the web UI (packaging/macos/app).
-app="$root/Applications/Woodpile.app/Contents"
+# /Applications/Woodshed.app: a launcher that opens the web UI (packaging/macos/app).
+app="$root/Applications/Woodshed.app/Contents"
 mkdir -p "$app/MacOS" "$app/Resources"
 sed "s/@VERSION@/$pkg_version/g" "$here/app/Info.plist" >"$app/Info.plist"
 chmod 0644 "$app/Info.plist"
-install -m 0755 "$here/app/Woodpile" "$app/MacOS/Woodpile"
-install -m 0644 "$repo/packaging/icons/woodpile.icns" "$app/Resources/woodpile.icns"
+install -m 0755 "$here/app/Woodshed" "$app/MacOS/Woodshed"
+install -m 0644 "$repo/packaging/icons/woodshed.icns" "$app/Resources/woodshed.icns"
 plutil -lint "$app/Info.plist" >/dev/null
-plutil -lint "$root/Library/LaunchDaemons/com.woodpile.daemon.plist" >/dev/null
+plutil -lint "$root/Library/LaunchDaemons/com.woodshed.daemon.plist" >/dev/null
 
 scripts="$work/scripts"
 mkdir -p "$scripts"
@@ -136,7 +136,7 @@ install -m 0644 "$here/scripts/common.sh" "$scripts/"
 xattr -cr "$root" "$scripts" 2>/dev/null || true
 
 mkdir -p "$out"
-component="$work/woodpile-component.pkg"
+component="$work/woodshed-component.pkg"
 # The app must land in /Applications: not relocatable (Installer would otherwise move it to
 # wherever another bundle with its identifier already is) and not upgraded by version alone.
 components="$work/components.plist"
@@ -148,7 +148,7 @@ for ((i = 0; i < n; i++)); do
 done
 echo "==> pkgbuild"
 pkgbuild --root "$root" \
-	--identifier com.woodpile.pkg \
+	--identifier com.woodshed.pkg \
 	--version "$pkg_version" \
 	--install-location / \
 	--ownership recommended \
@@ -162,7 +162,7 @@ cp "$repo/LICENSE" "$resources/LICENSE.txt"
 cp "$here/conclusion.html" "$resources/conclusion.html"
 sed "s/@VERSION@/$pkg_version/" "$here/distribution.xml" >"$work/distribution.xml"
 
-product="$out/woodpile_${version}_macos_universal.pkg"
+product="$out/woodshed_${version}_macos_universal.pkg"
 echo "==> productbuild"
 sign_args=()
 if [ -n "${MACOS_INSTALLER_SIGN_IDENTITY:-}" ]; then

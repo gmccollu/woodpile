@@ -14,7 +14,7 @@ func TestDeviceLimits(t *testing.T) {
 	}
 	// An older config without the keys gets the defaults.
 	dir := t.TempDir()
-	path := filepath.Join(dir, "woodpile.toml")
+	path := filepath.Join(dir, "woodshed.toml")
 	os.WriteFile(path, []byte("[listeners]\nmax_devices = 500\n"), 0o640)
 	got, err := Load(path)
 	if err != nil {

@@ -1,7 +1,7 @@
 // Display preferences remembered in localStorage.
 import { ALL_SEVS, type SevKey } from './api';
 
-const KEY = 'woodpile.prefs';
+const KEY = 'woodshed.prefs';
 
 interface Prefs {
   /** Wrap long log lines (off: one line per message, scroll sideways). */

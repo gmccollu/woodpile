@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/gmccollu/woodpile/internal/config"
-	"github.com/gmccollu/woodpile/internal/winacl"
+	"github.com/gmccollu/woodshed/internal/config"
+	"github.com/gmccollu/woodshed/internal/winacl"
 )
 
 // saveConfigKeepingOwner is config.Save on Windows: the rewritten config inherits

@@ -38,7 +38,7 @@ func (q *Query) binding() []byte {
 			num(0)
 		}
 	}
-	str("woodpile-search-v1")
+	str("woodshed-search-v1")
 	str(q.Q)
 	flag(q.Regex)
 	flag(q.Case)

@@ -60,9 +60,9 @@ type staticUI struct {
 // inline script or style, so it works under the CSP.
 const notBuiltPage = `<!doctype html>
 <html lang="en">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Woodpile</title></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Woodshed</title></head>
 <body>
-<h1>Woodpile is running</h1>
+<h1>Woodshed is running</h1>
 <p>This build doesn't include the web UI. Build it with <code>make web</code> (or <code>npm run build</code> in <code>web/</code>) and rebuild the binary.</p>
 <p>The syslog listeners and the API at <code>/api/</code> work without it.</p>
 </body>

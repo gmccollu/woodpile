@@ -1,19 +1,19 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- /Applications/Woodpile.app: a launcher that opens the Woodpile web UI. The version
-     placeholder is filled in by build-pkg.sh and by `woodpile install`. -->
+<!-- /Applications/Woodshed.app: a launcher that opens the Woodshed web UI. The version
+     placeholder is filled in by build-pkg.sh and by `woodshed install`. -->
 <plist version="1.0">
 <dict>
 	<key>CFBundleIdentifier</key>
-	<string>com.woodpile.launcher</string>
+	<string>com.woodshed.launcher</string>
 	<key>CFBundleName</key>
-	<string>Woodpile</string>
+	<string>Woodshed</string>
 	<key>CFBundleDisplayName</key>
-	<string>Woodpile</string>
+	<string>Woodshed</string>
 	<key>CFBundleExecutable</key>
-	<string>Woodpile</string>
+	<string>Woodshed</string>
 	<key>CFBundleIconFile</key>
-	<string>woodpile</string>
+	<string>woodshed</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleInfoDictionaryVersion</key>
@@ -27,6 +27,6 @@
 	<key>LSUIElement</key>
 	<false/>
 	<key>NSHumanReadableCopyright</key>
-	<string>Woodpile, MIT License</string>
+	<string>Woodshed, MIT License</string>
 </dict>
 </plist>

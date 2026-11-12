@@ -14,7 +14,7 @@ import (
 // permissions and (with --delete-logs) delete the data folder. The service
 // account can write its own config, so nothing here may trust the config's
 // paths (security review M1, M2): the data folder is the OS default or the one
-// the administrator passed to `woodpile install --data-dir`, recorded in a place
+// the administrator passed to `woodshed install --data-dir`, recorded in a place
 // only administrators can write (the unit, the plist, the service's registry
 // key), and every path is checked before use.
 
@@ -52,7 +52,7 @@ func systemFolders(goos string) []string {
 }
 
 // systemTrees are folders a data folder must not be inside either (re-test N12),
-// with the exceptions that are Woodpile's own (or a service's) places.
+// with the exceptions that are Woodshed's own (or a service's) places.
 func systemTrees(goos string) (trees []string, allowed func(dir string) bool) {
 	switch goos {
 	case "windows":
@@ -61,7 +61,7 @@ func systemTrees(goos string) (trees []string, allowed func(dir string) bool) {
 	case "darwin":
 		return []string{"/System", "/Library", "/usr", "/bin", "/sbin", "/etc", "/var", "/private/etc", "/private/var", "/dev", "/cores"},
 			func(dir string) bool {
-				return within(dir, "/Library/Application Support/Woodpile", true) || varLibService(dir, "/var") || varLibService(dir, "/private/var")
+				return within(dir, "/Library/Application Support/Woodshed", true) || varLibService(dir, "/var") || varLibService(dir, "/private/var")
 			}
 	}
 	return []string{"/usr", "/etc", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32", "/boot", "/proc", "/sys", "/dev", "/run", "/var"},
@@ -176,7 +176,7 @@ func checkDataDir(goos, dir string, homes []string) error {
 }
 
 // checkConfigDir is checkDataDir for the config's folder, which may also be a
-// folder of its own directly under /etc (the packages use /etc/woodpile).
+// folder of its own directly under /etc (the packages use /etc/woodshed).
 func checkConfigDir(goos, dir string, homes []string) error {
 	if goos == "linux" && path.Dir(dir) == "/etc" && dir != "/etc" {
 		return checkUnixPath("the config folder", dir)
@@ -249,11 +249,11 @@ func checkWindowsDataDir(dir string, homes []string, rawOnly bool) error {
 	return nil
 }
 
-// woodpileMarkers are entries only a Woodpile data folder has.
-var woodpileMarkers = []string{"index.db", "logs", "woodpile.lock", "woodpile.toml"}
+// woodshedMarkers are entries only a Woodshed data folder has.
+var woodshedMarkers = []string{"index.db", "logs", "woodshed.lock", "woodshed.toml"}
 
 // checkDataDirContents refuses an existing data folder that is a link, or is
-// neither empty nor a Woodpile data folder (has none of woodpileMarkers).
+// neither empty nor a Woodshed data folder (has none of woodshedMarkers).
 func (h *host) checkDataDirContents(dir string) error {
 	fi, err := os.Lstat(h.path(dir))
 	if errors.Is(err, os.ErrNotExist) {
@@ -272,12 +272,12 @@ func (h *host) checkDataDirContents(dir string) error {
 	if len(entries) == 0 {
 		return nil
 	}
-	for _, m := range woodpileMarkers {
+	for _, m := range woodshedMarkers {
 		if li, err := os.Lstat(h.path(filepath.Join(dir, m))); err == nil && li.Mode()&os.ModeSymlink == 0 {
 			return nil
 		}
 	}
-	return fmt.Errorf("%s isn't empty and isn't a Woodpile data folder (no index.db or logs); pick an empty folder", dir)
+	return fmt.Errorf("%s isn't empty and isn't a Woodshed data folder (no index.db or logs); pick an empty folder", dir)
 }
 
 // homeDirs is this machine's home folders for checkDataDir: the caller's and,

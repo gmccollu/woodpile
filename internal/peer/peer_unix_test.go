@@ -22,11 +22,11 @@ func TestServiceQueryUsesTheServiceNames(t *testing.T) {
 	running, pid := serviceQuery(context.Background(), o)
 	switch runtime.GOOS {
 	case "darwin":
-		if got != "launchctl print system/com.woodpile.daemon" || !running || pid != 4210 {
+		if got != "launchctl print system/com.woodshed.daemon" || !running || pid != 4210 {
 			t.Errorf("%q -> %v %d", got, running, pid)
 		}
 	case "linux":
-		if got != "systemctl show woodpile.service -p MainPID,ActiveState" || !running || pid != 812 {
+		if got != "systemctl show woodshed.service -p MainPID,ActiveState" || !running || pid != 812 {
 			t.Errorf("%q -> %v %d", got, running, pid)
 		}
 	}

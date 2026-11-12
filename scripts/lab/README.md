@@ -42,21 +42,21 @@ scripts/lab/wl soak ubuntu start       # then: soak ubuntu status, and after 24 
 
 | Step | Checks |
 |---|---|
-| `install` | the package installs; the service runs as its unprivileged account (`woodpile`, or `NT SERVICE\Woodpile`) and holds UDP and TCP 514; `/healthz` answers. Linux also: only `CAP_NET_BIND_SERVICE`, and `rmem_max` raised to 32 MiB |
+| `install` | the package installs; the service runs as its unprivileged account (`woodshed`, or `NT SERVICE\Woodshed`) and holds UDP and TCP 514; `/healthz` answers. Linux also: only `CAP_NET_BIND_SERVICE`, and `rmem_max` raised to 32 MiB |
 | `check` | the host firewall is on (wl turns it on if it's off, with SSH kept open; `LAB_FW_ENABLE=0` to skip). **Negative control:** with 514 closed, UDP and TCP from a sender don't arrive. Then wl opens it exactly as `docs/install.md` says (`ufw allow 514`, or the `firewall-cmd` line; on Windows the MSI's own rules) and checks that each of the 8 sender IPs reaches UDP and TCP 514 and gets its own device folder |
 | `correctness` | `LAB_CORRECT_N` (100,000) messages, half UDP (4 senders), a quarter TCP-LF and a quarter TCP-octet (2 senders each), are on disk exactly once (`scripts/verifyseq`) |
 | `stress` | UDP, then TCP, at each rate in `LAB_STRESS_UDP`/`_TCP` for `LAB_STRESS_SECS`, doubling past the list up to `LAB_STRESS_MAX` until the **knee**: the first step with any loss or duplicate, or where the senders fall more than 5% short. Each step records the sent and on-disk counts, loss %, the service's CPU (% of one core), peak RSS, and the kernel UDP drops (Linux) in `stress.jsonl`. Pass: 10,000 msg/s over UDP and TCP with no loss (SPEC §2) |
 | `reboot` | a UDP stream runs across a reboot; the service comes back by itself as its account on 514; the run sent before the reboot (and the correctness run) are still complete; a new run after it is complete; the stream has no duplicates (its gap is the reboot window) |
 | `portable` | (deb and MSI targets) the tarball or zip binary, run by hand from a folder on port `LAB_PORTABLE_PORT` with its own config and data, receives 10,000 messages from the 8 senders exactly once. On Windows it first records what happens with no firewall rule for that exe (expected: blocked), then adds a temporary allow rule. On Linux it runs unprivileged on the high port, with a temporary firewall opening |
 | `soak` | `LAB_SOAK_RATE` (3,000) msg/s for `LAB_SOAK_HOURS` (24): senders 0-5 over UDP and 6-7 over TCP, as transient systemd units on the sender. On the VM, a systemd unit (Linux) or a SYSTEM scheduled task (Windows) samples RSS or working set, open fds or handles, and CPU every 60 s. `verify` (run after the senders finish) checks every message is on disk exactly once, that memory stays flat (median of the last tenth ≤ 1.5 × the second tenth + 20 MiB), and that fds or handles stay bounded |
-| `collect` | the journal or Application event log, unit or service config, firewall rules, config, `woodpile status`, the data listing and the samples, pulled back as a tgz or zip |
+| `collect` | the journal or Application event log, unit or service config, firewall rules, config, `woodshed status`, the data listing and the samples, pulled back as a tgz or zip |
 
 Every check writes a `PASS`/`FAIL` line to `LAB_RESULTS/<target>/results.log`; each step's directory has its log,
 the verifyseq JSON lines and the samples.
 
 ## Notes
 
-- A run's messages are numbered (`woodpile send --run ID --first-seq S`). `wl-send` splits a run's count and rate
+- A run's messages are numbered (`woodshed send --run ID --first-seq S`). `wl-send` splits a run's count and rate
   evenly over the chosen namespaces, giving each a contiguous block of sequence numbers, so one `verifyseq -n N`
   checks the whole run whichever senders carried it.
 - TCP sends to a closed port can wait minutes for a connect timeout, so the negative control bounds each sender

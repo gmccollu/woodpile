@@ -3,17 +3,17 @@
 # The variables below are used by the scripts that source this file.
 # shellcheck shell=sh disable=SC2034
 
-LABEL=com.woodpile.daemon
+LABEL=com.woodshed.daemon
 PLIST=/Library/LaunchDaemons/$LABEL.plist
-SVC_USER=_woodpile
-SVC_GROUP=_woodpile
-DATA_DIR="/Library/Application Support/Woodpile"
-LOG_DIR=/Library/Logs/Woodpile
-LOG_FILE=$LOG_DIR/woodpile.log
+SVC_USER=_woodshed
+SVC_GROUP=_woodshed
+DATA_DIR="/Library/Application Support/Woodshed"
+LOG_DIR=/Library/Logs/Woodshed
+LOG_FILE=$LOG_DIR/woodshed.log
 UI_URL=http://127.0.0.1:8514/
 
 log() {
-	echo "woodpile: $*"
+	echo "woodshed: $*"
 }
 
 # The daemon is loaded in the system domain.
@@ -39,7 +39,7 @@ free_system_id() {
 	return 1
 }
 
-# Creates the _woodpile group and user if they are missing. Idempotent.
+# Creates the _woodshed group and user if they are missing. Idempotent.
 ensure_service_account() {
 	if dscl . -read "/Groups/$SVC_GROUP" PrimaryGroupID >/dev/null 2>&1; then
 		gid=$(dscl . -read "/Groups/$SVC_GROUP" PrimaryGroupID | awk '{print $2}')
@@ -50,7 +50,7 @@ ensure_service_account() {
 		}
 		dscl . -create "/Groups/$SVC_GROUP"
 		dscl . -create "/Groups/$SVC_GROUP" PrimaryGroupID "$gid"
-		dscl . -create "/Groups/$SVC_GROUP" RealName "Woodpile syslog server"
+		dscl . -create "/Groups/$SVC_GROUP" RealName "Woodshed syslog server"
 		dscl . -create "/Groups/$SVC_GROUP" Password '*'
 		log "created group $SVC_GROUP ($gid)"
 	fi
@@ -69,7 +69,7 @@ ensure_service_account() {
 		dscl . -create "/Users/$SVC_USER" PrimaryGroupID "$gid"
 		dscl . -create "/Users/$SVC_USER" UserShell /usr/bin/false
 		dscl . -create "/Users/$SVC_USER" NFSHomeDirectory /var/empty
-		dscl . -create "/Users/$SVC_USER" RealName "Woodpile syslog server"
+		dscl . -create "/Users/$SVC_USER" RealName "Woodshed syslog server"
 		dscl . -create "/Users/$SVC_USER" Password '*'
 		dscl . -create "/Users/$SVC_USER" IsHidden 1
 		log "created user $SVC_USER ($uid)"
@@ -81,10 +81,10 @@ ensure_service_account() {
 }
 
 # The daemon's own log (launchd's StandardOutPath/StandardErrorPath), rotated by newsyslog
-# as root. The folder is root-owned and not writable by _woodpile, so the daemon can't put
+# as root. The folder is root-owned and not writable by _woodshed, so the daemon can't put
 # a symlink or other name there for root to follow when it rotates; only the log file
-# itself belongs to _woodpile. Idempotent; heals a folder from an older install that
-# _woodpile owned, deleting any symlinks it holds.
+# itself belongs to _woodshed. Idempotent; heals a folder from an older install that
+# _woodshed owned, deleting any symlinks it holds.
 prepare_log_dir() {
 	mkdir -p "$LOG_DIR"
 	chown root:wheel "$LOG_DIR"

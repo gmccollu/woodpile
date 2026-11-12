@@ -9,7 +9,7 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/gmccollu/woodpile/internal/config"
+	"github.com/gmccollu/woodshed/internal/config"
 )
 
 // cmdFlags is a subcommand's flag set and help text.
@@ -20,7 +20,7 @@ type cmdFlags struct {
 	stderr io.Writer
 }
 
-// newFlagSet returns the flag set for a subcommand. Its help is "usage: woodpile
+// newFlagSet returns the flag set for a subcommand. Its help is "usage: woodshed
 // <name> [flags] <argsUsage>", desc and the flags. Usage errors go to stderr.
 func newFlagSet(name, argsUsage, desc string, stderr io.Writer) *cmdFlags {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
@@ -32,7 +32,7 @@ func newFlagSet(name, argsUsage, desc string, stderr io.Writer) *cmdFlags {
 // help returns the subcommand's help text.
 func (f *cmdFlags) help() string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "usage: woodpile %s", f.Name())
+	fmt.Fprintf(&b, "usage: woodshed %s", f.Name())
 	n := 0
 	f.VisitAll(func(*flag.Flag) { n++ })
 	if n > 0 {
@@ -72,11 +72,11 @@ func parse(f *cmdFlags, args []string, stdout io.Writer) (code int, done bool) {
 		return 0, true
 	}
 	if err != nil {
-		fmt.Fprintf(f.stderr, "woodpile %s: %v\n\n%s", f.Name(), err, f.help())
+		fmt.Fprintf(f.stderr, "woodshed %s: %v\n\n%s", f.Name(), err, f.help())
 		return 2, true
 	}
 	if f.args == "" && f.NArg() > 0 {
-		fmt.Fprintf(f.stderr, "woodpile %s: unexpected argument %q\n\n%s", f.Name(), f.Arg(0), f.help())
+		fmt.Fprintf(f.stderr, "woodshed %s: unexpected argument %q\n\n%s", f.Name(), f.Arg(0), f.help())
 		return 2, true
 	}
 	return 0, false

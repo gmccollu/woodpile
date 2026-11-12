@@ -12,7 +12,7 @@ import (
 // Re-test N13: portable mode adopts only its own folder, config and password hash.
 func TestCheckOwnedByMe(t *testing.T) {
 	dir := t.TempDir()
-	mine := filepath.Join(dir, "woodpile.toml")
+	mine := filepath.Join(dir, "woodshed.toml")
 	os.WriteFile(mine, []byte("x"), 0o640)
 	if err := checkOwnedByMe(mine); err != nil {
 		t.Errorf("my own file: %v", err)

@@ -10,7 +10,7 @@ import (
 
 // windowsServiceState reads the registry (readable without administrator rights,
 // unlike opening the SCM for configuration): whether the service's entry exists,
-// and whether the MSI's key HKLM\Software\Woodpile does. Only the MSI writes that
+// and whether the MSI's key HKLM\Software\Woodshed does. Only the MSI writes that
 // key (its Start menu component), so it marks a package install.
 func windowsServiceState(name string) (exists, msi bool, err error) {
 	k, err := registry.OpenKey(registry.LOCAL_MACHINE, `SYSTEM\CurrentControlSet\Services\`+name, registry.QUERY_VALUE)
@@ -21,7 +21,7 @@ func windowsServiceState(name string) (exists, msi bool, err error) {
 	case !errors.Is(err, registry.ErrNotExist):
 		return false, false, err
 	}
-	k, err = registry.OpenKey(registry.LOCAL_MACHINE, `Software\Woodpile`, registry.QUERY_VALUE|registry.WOW64_64KEY)
+	k, err = registry.OpenKey(registry.LOCAL_MACHINE, `Software\Woodshed`, registry.QUERY_VALUE|registry.WOW64_64KEY)
 	switch {
 	case err == nil:
 		msi = true

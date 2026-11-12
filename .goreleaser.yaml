@@ -1,4 +1,4 @@
-# GoReleaser (OSS, v2 schema) for Woodpile.
+# GoReleaser (OSS, v2 schema) for Woodshed.
 #
 # Builds the binaries, archives, checksums, deb/rpm (nfpm), a Homebrew cask and a
 # Scoop manifest. The Windows MSI and macOS .pkg are built by separate jobs in
@@ -6,8 +6,8 @@
 #
 # Everything that names the repo comes from these environment variables (the release
 # workflow sets them from the repo it runs in), so a fork or move needs no edit here:
-#   WOODPILE_OWNER     user or org that owns the repo        (default: gmccollu)
-#   WOODPILE_REPO      repo name                             (default: woodpile)
+#   WOODSHED_OWNER     user or org that owns the repo        (default: gmccollu)
+#   WOODSHED_REPO      repo name                             (default: woodshed)
 #   GITHUB_SERVER_URL  set by Actions; https://github.com or a GitHub Enterprise Server URL
 #   TAP_GITHUB_TOKEN   token that can push to OWNER/homebrew-tap and OWNER/scoop-bucket.
 #                      While it is unset, the cask and the Scoop manifest are generated
@@ -16,25 +16,25 @@
 # Local dry run: make snapshot  (= goreleaser release --snapshot --clean --skip=publish)
 version: 2
 
-project_name: woodpile
+project_name: woodshed
 
 env:
-  - WOODPILE_OWNER={{ envOrDefault "WOODPILE_OWNER" "gmccollu" }}
-  - WOODPILE_REPO={{ envOrDefault "WOODPILE_REPO" "woodpile" }}
-  - WOODPILE_SERVER={{ envOrDefault "GITHUB_SERVER_URL" "https://github.com" }}
+  - WOODSHED_OWNER={{ envOrDefault "WOODSHED_OWNER" "gmccollu" }}
+  - WOODSHED_REPO={{ envOrDefault "WOODSHED_REPO" "woodshed" }}
+  - WOODSHED_SERVER={{ envOrDefault "GITHUB_SERVER_URL" "https://github.com" }}
   - TAP_GITHUB_TOKEN={{ envOrDefault "TAP_GITHUB_TOKEN" "" }}
 
 before:
   hooks:
     # The UI is embedded by Go, so it has to be built first. Skipped until web/ has a package.json.
     # The release workflow builds web/dist in its own job (no secrets, npm ci --ignore-scripts) and sets
-    # WOODPILE_WEB_PREBUILT=1, so no npm code runs where the release tokens are.
-    - sh -c 'if [ -n "$WOODPILE_WEB_PREBUILT" ]; then test -f web/dist/index.html && echo "using the prebuilt web/dist"; elif [ -f web/package.json ]; then cd web && npm ci && npm run build; else echo "web/package.json not found; skipping the frontend build"; fi'
+    # WOODSHED_WEB_PREBUILT=1, so no npm code runs where the release tokens are.
+    - sh -c 'if [ -n "$WOODSHED_WEB_PREBUILT" ]; then test -f web/dist/index.html && echo "using the prebuilt web/dist"; elif [ -f web/package.json ]; then cd web && npm ci && npm run build; else echo "web/package.json not found; skipping the frontend build"; fi'
 
 builds:
-  - id: woodpile
-    main: ./cmd/woodpile
-    binary: woodpile
+  - id: woodshed
+    main: ./cmd/woodshed
+    binary: woodshed
     env:
       - CGO_ENABLED=0
     flags:
@@ -50,7 +50,7 @@ builds:
   # archived or shipped on its own.
   - id: aclfix
     main: ./packaging/windows/aclfix
-    binary: woodpile-aclfix
+    binary: woodshed-aclfix
     env:
       - CGO_ENABLED=0
     flags:
@@ -63,16 +63,16 @@ builds:
 
 universal_binaries:
   # One macOS binary for arm64 + x86_64; it replaces the per-arch darwin binaries.
-  - id: woodpile-universal
-    ids: [woodpile]
+  - id: woodshed-universal
+    ids: [woodshed]
     replace: true
     mod_timestamp: "{{ .CommitTimestamp }}"
 
-# The archives double as the portable downloads: unpack, double-click woodpile, and its
-# data goes in woodpile-data next to it. Each one unpacks into a folder of its own.
+# The archives double as the portable downloads: unpack, double-click woodshed, and its
+# data goes in woodshed-data next to it. Each one unpacks into a folder of its own.
 archives:
-  - id: woodpile
-    ids: [woodpile, woodpile-universal]
+  - id: woodshed
+    ids: [woodshed, woodshed-universal]
     formats: [tar.gz]
     format_overrides:
       - goos: windows
@@ -103,17 +103,17 @@ changelog:
       - "^Merge "
 
 nfpms:
-  - id: woodpile
-    ids: [woodpile]
-    package_name: woodpile
+  - id: woodshed
+    ids: [woodshed]
+    package_name: woodshed
     # The package version keeps nfpm's "~" for a prerelease (0.9.0~rc1 sorts before 0.9.0 in
     # dpkg and rpm), but the file name doesn't: GitHub renames "~" in uploaded asset names,
-    # so checksums.txt wouldn't match. woodpile_0.9.0-rc1_amd64.deb, woodpile-0.9.0-rc1-1.x86_64.rpm.
+    # so checksums.txt wouldn't match. woodshed_0.9.0-rc1_amd64.deb, woodshed-0.9.0-rc1-1.x86_64.rpm.
     file_name_template: '{{ replace .ConventionalFileName "~" "-" }}'
     formats: [deb, rpm]
-    vendor: Woodpile
-    homepage: "{{ .Env.WOODPILE_SERVER }}/{{ .Env.WOODPILE_OWNER }}/{{ .Env.WOODPILE_REPO }}"
-    maintainer: "{{ .Env.WOODPILE_OWNER }} <{{ .Env.WOODPILE_OWNER }}@users.noreply.github.com>"
+    vendor: Woodshed
+    homepage: "{{ .Env.WOODSHED_SERVER }}/{{ .Env.WOODSHED_OWNER }}/{{ .Env.WOODSHED_REPO }}"
+    maintainer: "{{ .Env.WOODSHED_OWNER }} <{{ .Env.WOODSHED_OWNER }}@users.noreply.github.com>"
     description: |-
       Simple, reliable syslog server with a web UI.
       Receives syslog on UDP and TCP port 514, stores every message as plain files
@@ -124,35 +124,35 @@ nfpms:
     priority: optional
     bindir: /usr/bin
     contents:
-      - src: packaging/linux/woodpile.service
-        dst: /usr/lib/systemd/system/woodpile.service
+      - src: packaging/linux/woodshed.service
+        dst: /usr/lib/systemd/system/woodshed.service
         file_info:
           mode: 0644
       # A plain package file (not a conffile), so dpkg and rpm both delete it on
       # removal and replace it on upgrade. Admins override it with a higher-numbered drop-in.
-      - src: packaging/linux/60-woodpile.conf
-        dst: /etc/sysctl.d/60-woodpile.conf
+      - src: packaging/linux/60-woodshed.conf
+        dst: /etc/sysctl.d/60-woodshed.conf
         file_info:
           mode: 0644
       # A desktop entry that opens the web UI, and its icon (harmless on a headless server).
-      - src: packaging/linux/woodpile.desktop
-        dst: /usr/share/applications/woodpile.desktop
+      - src: packaging/linux/woodshed.desktop
+        dst: /usr/share/applications/woodshed.desktop
         file_info:
           mode: 0644
       - src: web/public/favicon.svg
-        dst: /usr/share/icons/hicolor/scalable/apps/woodpile.svg
+        dst: /usr/share/icons/hicolor/scalable/apps/woodshed.svg
         file_info:
           mode: 0644
       - src: LICENSE
-        dst: /usr/share/doc/woodpile/LICENSE
+        dst: /usr/share/doc/woodshed/LICENSE
         file_info:
           mode: 0644
       - src: THIRD_PARTY_NOTICES.txt
-        dst: /usr/share/doc/woodpile/THIRD_PARTY_NOTICES.txt
+        dst: /usr/share/doc/woodshed/THIRD_PARTY_NOTICES.txt
         file_info:
           mode: 0644
       - src: docs/install.md
-        dst: /usr/share/doc/woodpile/install.md
+        dst: /usr/share/doc/woodshed/install.md
         file_info:
           mode: 0644
     scripts:
@@ -166,31 +166,31 @@ nfpms:
         dependencies: [shadow-utils]
 
 homebrew_casks:
-  - name: woodpile
-    ids: [woodpile]
+  - name: woodshed
+    ids: [woodshed]
     repository:
-      owner: "{{ .Env.WOODPILE_OWNER }}"
+      owner: "{{ .Env.WOODSHED_OWNER }}"
       name: homebrew-tap
       token: "{{ .Env.TAP_GITHUB_TOKEN }}"
-    homepage: "{{ .Env.WOODPILE_SERVER }}/{{ .Env.WOODPILE_OWNER }}/{{ .Env.WOODPILE_REPO }}"
+    homepage: "{{ .Env.WOODSHED_SERVER }}/{{ .Env.WOODSHED_OWNER }}/{{ .Env.WOODSHED_REPO }}"
     description: Simple, reliable syslog server with a web UI
     license: MIT
     # Not uploaded until the tap exists and TAP_GITHUB_TOKEN is set.
     skip_upload: '{{ if .Env.TAP_GITHUB_TOKEN }}false{{ else }}true{{ end }}'
     caveats: |-
-      This installs the woodpile command only. To run it as a system service, use the
+      This installs the woodshed command only. To run it as a system service, use the
       .pkg installer from the releases page, or run it in the foreground:
-        woodpile run
+        woodshed run
       The binary is not signed yet; see docs/install.md for the Gatekeeper prompt.
 
 scoops:
-  - name: woodpile
-    ids: [woodpile]
+  - name: woodshed
+    ids: [woodshed]
     repository:
-      owner: "{{ .Env.WOODPILE_OWNER }}"
+      owner: "{{ .Env.WOODSHED_OWNER }}"
       name: scoop-bucket
       token: "{{ .Env.TAP_GITHUB_TOKEN }}"
-    homepage: "{{ .Env.WOODPILE_SERVER }}/{{ .Env.WOODPILE_OWNER }}/{{ .Env.WOODPILE_REPO }}"
+    homepage: "{{ .Env.WOODSHED_SERVER }}/{{ .Env.WOODSHED_OWNER }}/{{ .Env.WOODSHED_REPO }}"
     description: Simple, reliable syslog server with a web UI
     license: MIT
     # Not uploaded until the bucket exists and TAP_GITHUB_TOKEN is set.
@@ -199,15 +199,15 @@ scoops:
 # Empty on github.com (GoReleaser's defaults). On GitHub Enterprise Server, Actions sets
 # GITHUB_SERVER_URL and these point GoReleaser at that server's API.
 github_urls:
-  api: '{{ if ne .Env.WOODPILE_SERVER "https://github.com" }}{{ .Env.WOODPILE_SERVER }}/api/v3/{{ end }}'
-  upload: '{{ if ne .Env.WOODPILE_SERVER "https://github.com" }}{{ .Env.WOODPILE_SERVER }}/api/uploads/{{ end }}'
-  download: "{{ .Env.WOODPILE_SERVER }}"
+  api: '{{ if ne .Env.WOODSHED_SERVER "https://github.com" }}{{ .Env.WOODSHED_SERVER }}/api/v3/{{ end }}'
+  upload: '{{ if ne .Env.WOODSHED_SERVER "https://github.com" }}{{ .Env.WOODSHED_SERVER }}/api/uploads/{{ end }}'
+  download: "{{ .Env.WOODSHED_SERVER }}"
 
 release:
   # Named from the env vars above, not the git remote (there may be none locally).
   github:
-    owner: "{{ .Env.WOODPILE_OWNER }}"
-    name: "{{ .Env.WOODPILE_REPO }}"
+    owner: "{{ .Env.WOODSHED_OWNER }}"
+    name: "{{ .Env.WOODSHED_REPO }}"
   # Created as a draft: the release workflow attaches the MSIs and the pkg, adds them to
   # checksums.txt and only then publishes it, so nobody sees a half-filled release (and it
   # works with GitHub's immutable releases, which forbid adding assets after publishing).
@@ -218,8 +218,8 @@ release:
   # The body comes from CHANGELOG.md (--release-notes); this goes under it.
   footer: |-
     ---
-    **Downloads:** the MSI (Windows), `.pkg` (macOS), `.deb` / `.rpm` (Linux) install Woodpile as a service.
-    The `.zip` / `.tar.gz` archives are the portable version: unpack, double-click `woodpile`, and its data
-    goes in `woodpile-data` next to it. Verify downloads against `checksums.txt`.
+    **Downloads:** the MSI (Windows), `.pkg` (macOS), `.deb` / `.rpm` (Linux) install Woodshed as a service.
+    The `.zip` / `.tar.gz` archives are the portable version: unpack, double-click `woodshed`, and its data
+    goes in `woodshed-data` next to it. Verify downloads against `checksums.txt`.
     The installers aren't signed yet, so expect a SmartScreen or Gatekeeper prompt the first time; see the
-    [user guide]({{ .Env.WOODPILE_SERVER }}/{{ .Env.WOODPILE_OWNER }}/{{ .Env.WOODPILE_REPO }}/blob/{{ .Tag }}/docs/user-guide.md).
+    [user guide]({{ .Env.WOODSHED_SERVER }}/{{ .Env.WOODSHED_OWNER }}/{{ .Env.WOODSHED_REPO }}/blob/{{ .Tag }}/docs/user-guide.md).

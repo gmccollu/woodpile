@@ -63,7 +63,7 @@ func newFakeBackend() *fakeBackend {
 	b := &fakeBackend{
 		status: Status{
 			Version: "0.1.0", Build: "abc1234", OS: "darwin/arm64",
-			DataDir:        "/Library/Application Support/Woodpile",
+			DataDir:        "/Library/Application Support/Woodshed",
 			StartedAt:      ts("2026-11-10T20:00:00Z"),
 			FirstMessageAt: &first,
 			UDPRcvbufBytes: 33554432, UDPRcvbufRequestedBytes: 33554432,

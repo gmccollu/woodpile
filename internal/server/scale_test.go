@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gmccollu/woodpile/internal/api"
-	"github.com/gmccollu/woodpile/internal/index"
+	"github.com/gmccollu/woodshed/internal/api"
+	"github.com/gmccollu/woodshed/internal/index"
 )
 
 // scaleLimit is the most any device endpoint may take at 10,000 devices on a

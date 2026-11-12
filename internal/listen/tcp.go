@@ -9,8 +9,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/gmccollu/woodpile/internal/config"
-	"github.com/gmccollu/woodpile/internal/syslog"
+	"github.com/gmccollu/woodshed/internal/config"
+	"github.com/gmccollu/woodshed/internal/syslog"
 )
 
 // TCP abuse limits (security review M6). One host must not be able to take every

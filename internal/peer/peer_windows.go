@@ -8,10 +8,10 @@ import (
 
 	"golang.org/x/sys/windows"
 
-	"github.com/gmccollu/woodpile/internal/service"
+	"github.com/gmccollu/woodshed/internal/service"
 )
 
-// serviceQuery asks the SCM about the Woodpile service with the rights any
+// serviceQuery asks the SCM about the Woodshed service with the rights any
 // user has (connect, query status).
 func serviceQuery(ctx context.Context, o *Options) (bool, int) {
 	m, err := windows.OpenSCManager(nil, nil, windows.SC_MANAGER_CONNECT)

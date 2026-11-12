@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 // which needs at least one file there, and git tracks dist/.keep, so put it back.
 function keepFile(): Plugin {
   return {
-    name: 'woodpile-keep-dist',
+    name: 'woodshed-keep-dist',
     apply: 'build',
     closeBundle() {
       writeFileSync(fileURLToPath(new URL('./dist/.keep', import.meta.url)), '');
@@ -30,7 +30,7 @@ export default defineConfig({
     host: '127.0.0.1',
     port: 5173,
     strictPort: true,
-    // Without mock mode, talk to a locally running woodpile.
+    // Without mock mode, talk to a locally running woodshed.
     proxy: { '/api': { target: 'http://127.0.0.1:8514', changeOrigin: false } },
   },
 });

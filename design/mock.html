@@ -124,7 +124,7 @@
 
 <script>
 const names = {
-  Woodpile: { sub: "syslog server", icon: `<svg width="30" height="30" viewBox="0 0 30 30">
+  Woodshed: { sub: "syslog server", icon: `<svg width="30" height="30" viewBox="0 0 30 30">
       ${[[8,21],[22,21],[15,9]].map(([x,y]) => `<circle cx="${x}" cy="${y}" r="6.5" fill="#e3b77a" stroke="#9a6a34" stroke-width="1.6"/>
       <circle cx="${x}" cy="${y}" r="3.4" fill="none" stroke="#9a6a34" stroke-width="1.1"/><circle cx="${x}" cy="${y}" r="1" fill="#9a6a34"/>`).join("")}</svg>` },
   SysLedger: { sub: "syslog server", icon: `<svg width="28" height="28" viewBox="0 0 28 28"><rect x="5" y="3" width="18" height="22" rx="3" fill="#5b6cf0"/>
@@ -140,7 +140,7 @@ function pick(n) {
   [...sw.children].forEach(b => b.classList.toggle("on", b.textContent === n));
 }
 Object.keys(names).forEach(n => { const b = document.createElement("button"); b.textContent = n; b.onclick = () => pick(n); sw.appendChild(b); });
-pick("Woodpile");
+pick("Woodshed");
 </script>
 </body>
 </html>

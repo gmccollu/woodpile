@@ -1,5 +1,5 @@
 #!/bin/bash
-# Soak test (SPEC §7, shortened): runs the real woodpile binary on high loopback ports
+# Soak test (SPEC §7, shortened): runs the real woodshed binary on high loopback ports
 # for SOAK_HOURS at a steady SOAK_RATE msg/s of mixed UDP and TCP from four senders,
 # with disruptions along the way, then checks every message on disk.
 #
@@ -50,9 +50,9 @@ check() { # check <description> <command...>
 }
 
 log "soak: ${HOURS} h at ${RATE} msg/s, ${ROUND} s rounds, results in $OUT"
-go -C "$repo" build -o "$OUT/bin/woodpile" ./cmd/woodpile
+go -C "$repo" build -o "$OUT/bin/woodshed" ./cmd/woodshed
 go -C "$repo" build -o "$OUT/bin/verifyseq" ./scripts/verifyseq
-WP=$OUT/bin/woodpile
+WP=$OUT/bin/woodshed
 BASE=http://127.0.0.1:$UI_PORT
 
 # ---- data volume ----
@@ -90,7 +90,7 @@ mkdir -p "$DATA"
 
 tcp_addr="::1"
 python3 -c "import socket; s=socket.socket(socket.AF_INET6); s.bind(('::1', 0))" 2>/dev/null || tcp_addr="127.0.0.1"
-cat >"$OUT/woodpile.toml" <<EOF
+cat >"$OUT/woodshed.toml" <<EOF
 [listeners.udp]
 enabled = true
 addr = "127.0.0.1"
@@ -111,7 +111,7 @@ EOF
 
 # ---- the server and the sampler ----
 start_server() {
-	nice -n "$NICE" "$WP" run --config "$OUT/woodpile.toml" >>"$OUT/server.log" 2>&1 &
+	nice -n "$NICE" "$WP" run --config "$OUT/woodshed.toml" >>"$OUT/server.log" 2>&1 &
 	server_pid=$!
 	echo "$server_pid" >"$OUT/server.pid"
 	for _ in $(seq 100); do

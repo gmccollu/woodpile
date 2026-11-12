@@ -7,18 +7,18 @@ import (
 	"path/filepath"
 )
 
-// LockFileName is the file in the data dir that a running Woodpile holds an
-// exclusive lock on, so that two servers (or a server and `woodpile reindex`)
+// LockFileName is the file in the data dir that a running Woodshed holds an
+// exclusive lock on, so that two servers (or a server and `woodshed reindex`)
 // never use one data dir at once. The lock is the OS's (flock, LockFileEx), so it
 // goes away with the process, even after a crash.
-const LockFileName = "woodpile.lock"
+const LockFileName = "woodshed.lock"
 
 // errNotPlainFile is returned for a lock file that's a symlink, a hard link or not
 // a regular file.
 var errNotPlainFile = errors.New("is a link or not a regular file; refusing to use it (remove it if it shouldn't be there)")
 
 // ErrLocked means another process holds the data dir's lock.
-var ErrLocked = errors.New("another Woodpile process is using this data folder")
+var ErrLocked = errors.New("another Woodshed process is using this data folder")
 
 // DirLock is a held data-dir lock.
 type DirLock struct {
@@ -29,7 +29,7 @@ type DirLock struct {
 // wrapping ErrLocked when another process holds it.
 func LockDataDir(dataDir string) (*DirLock, error) {
 	path := filepath.Join(dataDir, LockFileName)
-	// Never through a symlink or a hard link: a root `woodpile reindex` on a folder
+	// Never through a symlink or a hard link: a root `woodshed reindex` on a folder
 	// the service account controls must not truncate some other file.
 	f, err := openLockFile(path, true)
 	if err != nil {
@@ -61,7 +61,7 @@ func (l *DirLock) Unlock() error {
 	return err
 }
 
-// DataDirInUse reports whether a running Woodpile holds dataDir's lock. It
+// DataDirInUse reports whether a running Woodshed holds dataDir's lock. It
 // returns false when the lock file doesn't exist. An error means it couldn't
 // tell (for example no permission to open the lock file).
 func DataDirInUse(dataDir string) (bool, error) {

@@ -84,8 +84,8 @@ jobs:
       - name: go build
         run: |
           short=${GITHUB_SHA::7}
-          go build -trimpath -ldflags "-X main.version=0.0.0-ci+$short -X main.commit=$short" -o dist/ ./cmd/woodpile
-          ./dist/woodpile version
+          go build -trimpath -ldflags "-X main.version=0.0.0-ci+$short -X main.commit=$short" -o dist/ ./cmd/woodshed
+          ./dist/woodshed version
 
   # arm64 runners (ubuntu-24.04-arm, windows-11-arm; both available to this repo, checked
   # 2026-11-11). A job asking for a label the repo doesn't have waits forever, so set the repo
@@ -135,8 +135,8 @@ jobs:
 
       - name: go build
         run: |
-          go build -trimpath -o dist/ ./cmd/woodpile
-          ./dist/woodpile version
+          go build -trimpath -o dist/ ./cmd/woodshed
+          ./dist/woodshed version
 
   fuzz:
     runs-on: ubuntu-latest
@@ -187,8 +187,8 @@ jobs:
 
       - name: Snapshot build (nothing is published)
         env:
-          WOODPILE_OWNER: ${{ github.repository_owner }}
-          WOODPILE_REPO: ${{ github.event.repository.name }}
+          WOODSHED_OWNER: ${{ github.repository_owner }}
+          WOODSHED_REPO: ${{ github.event.repository.name }}
         run: go run github.com/goreleaser/goreleaser/v2@"$GORELEASER_VERSION" release --snapshot --clean --skip=publish
 
       # The snapshot version is a prerelease (0.0.1-snapshot.<sha>), like an -rc tag.
@@ -203,7 +203,7 @@ jobs:
           dpkg-deb -f "$deb" Version | grep -q '~snapshot' || { echo "deb Version lost the ~"; exit 1; }
           dpkg-deb --info "$deb"
           dpkg-deb --contents "$deb"
-          for f in /usr/bin/woodpile /usr/lib/systemd/system/woodpile.service /etc/sysctl.d/60-woodpile.conf; do
+          for f in /usr/bin/woodshed /usr/lib/systemd/system/woodshed.service /etc/sysctl.d/60-woodshed.conf; do
             dpkg-deb --contents "$deb" | grep -q " \.$f\$" || { echo "missing $f in $deb"; exit 1; }
           done
           if command -v rpm >/dev/null; then
@@ -211,16 +211,16 @@ jobs:
             rpm -qlp --scripts dist/*.x86_64.rpm
           fi
           # The desktop entry that opens the UI, and its icon, in both packages.
-          for f in /usr/share/applications/woodpile.desktop /usr/share/icons/hicolor/scalable/apps/woodpile.svg; do
+          for f in /usr/share/applications/woodshed.desktop /usr/share/icons/hicolor/scalable/apps/woodshed.svg; do
             dpkg-deb --contents "$deb" | grep -q " \.$f\$" || { echo "missing $f in $deb"; exit 1; }
             if command -v rpm >/dev/null; then
               rpm -qlp dist/*.x86_64.rpm | grep -qx "$f" || { echo "missing $f in the rpm"; exit 1; }
             fi
           done
           if command -v desktop-file-validate >/dev/null || sudo apt-get install -y -qq desktop-file-utils >/dev/null 2>&1; then
-            desktop-file-validate packaging/linux/woodpile.desktop
+            desktop-file-validate packaging/linux/woodshed.desktop
           fi
-          systemd-analyze verify packaging/linux/woodpile.service 2>&1 | grep -v "Command /usr/bin/woodpile is not executable" || true
+          systemd-analyze verify packaging/linux/woodshed.service 2>&1 | grep -v "Command /usr/bin/woodshed is not executable" || true
 
   windows-msi:
     name: installer (windows msi)
@@ -266,4 +266,4 @@ jobs:
         run: |
           pkgutil --payload-files dist/macos/*.pkg
           pkgutil --expand dist/macos/*.pkg "$RUNNER_TEMP/pkg"
-          ls -la "$RUNNER_TEMP/pkg/woodpile-component.pkg/Scripts"
+          ls -la "$RUNNER_TEMP/pkg/woodshed-component.pkg/Scripts"

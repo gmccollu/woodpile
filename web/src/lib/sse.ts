@@ -1,5 +1,5 @@
 // A small Server-Sent Events parser for fetch() streams (the live tail can't use
-// EventSource: it can't send the X-Woodpile-Session header). It follows the
+// EventSource: it can't send the X-Woodshed-Session header). It follows the
 // WHATWG "event stream interpretation" rules for what the live tail needs: lines end in
 // LF, CRLF or CR; "event", "data", "id" and "retry" fields; ":" comment lines
 // (heartbeats); a blank line dispatches. Unknown fields are ignored.

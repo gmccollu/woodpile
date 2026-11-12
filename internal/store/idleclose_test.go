@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gmccollu/woodpile/internal/index"
-	"github.com/gmccollu/woodpile/internal/model"
+	"github.com/gmccollu/woodshed/internal/index"
+	"github.com/gmccollu/woodshed/internal/model"
 )
 
 // TestCapCountsActiveSenders: 10,000 one-shot spoofed senders fill the cap. A known

@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gmccollu/woodpile/internal/hub"
-	"github.com/gmccollu/woodpile/internal/store/logfile"
+	"github.com/gmccollu/woodshed/internal/hub"
+	"github.com/gmccollu/woodshed/internal/store/logfile"
 )
 
 // run is the state of one scan (one search request, or one export device).

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gmccollu/woodpile/internal/config"
+	"github.com/gmccollu/woodshed/internal/config"
 )
 
 func rejectedFrom(s *Server, ip string) (RejectedSender, bool) {

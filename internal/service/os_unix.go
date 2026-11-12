@@ -25,7 +25,7 @@ func installOS(o InstallOptions) (Result, error) {
 	case "darwin":
 		return installLaunchd(h, o, dataDir)
 	}
-	return Result{}, fmt.Errorf("installing a service isn't supported on %s; run `woodpile run`", runtime.GOOS)
+	return Result{}, fmt.Errorf("installing a service isn't supported on %s; run `woodshed run`", runtime.GOOS)
 }
 
 func uninstallOS(o UninstallOptions) (Result, error) {

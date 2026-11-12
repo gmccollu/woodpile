@@ -10,17 +10,17 @@ import (
 // DefaultConfigPath returns where the service reads its config on this OS
 // (docs/service-contract.md):
 //
-//   - Linux: /etc/woodpile/woodpile.toml
-//   - macOS: /Library/Application Support/Woodpile/woodpile.toml
-//   - Windows: C:\ProgramData\Woodpile\woodpile.toml (%ProgramData% if set)
+//   - Linux: /etc/woodshed/woodshed.toml
+//   - macOS: /Library/Application Support/Woodshed/woodshed.toml
+//   - Windows: C:\ProgramData\Woodshed\woodshed.toml (%ProgramData% if set)
 func DefaultConfigPath() string {
 	c, _ := pathsFor(runtime.GOOS, os.Getenv)
 	return c
 }
 
 // DefaultDataDir returns the default data directory on this OS:
-// /var/lib/woodpile on Linux, /Library/Application Support/Woodpile on macOS and
-// C:\ProgramData\Woodpile on Windows.
+// /var/lib/woodshed on Linux, /Library/Application Support/Woodshed on macOS and
+// C:\ProgramData\Woodshed on Windows.
 func DefaultDataDir() string {
 	_, d := pathsFor(runtime.GOOS, os.Getenv)
 	return d
@@ -34,13 +34,13 @@ func pathsFor(goos string, getenv func(string) string) (configPath, dataDir stri
 			base = `C:\ProgramData`
 		}
 		base = strings.TrimRight(base, `\/`)
-		dir := base + `\Woodpile`
+		dir := base + `\Woodshed`
 		return dir + `\` + FileName, dir
 	case "darwin":
-		dir := "/Library/Application Support/Woodpile"
+		dir := "/Library/Application Support/Woodshed"
 		return dir + "/" + FileName, dir
 	default: // linux and other Unix
-		return "/etc/woodpile/" + FileName, "/var/lib/woodpile"
+		return "/etc/woodshed/" + FileName, "/var/lib/woodshed"
 	}
 }
 

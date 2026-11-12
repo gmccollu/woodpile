@@ -10,7 +10,7 @@ import (
 )
 
 // The child gets its own process group so a Ctrl-Break reaches only it; Go
-// delivers Ctrl-Break as os.Interrupt, which `woodpile run` handles like SIGTERM.
+// delivers Ctrl-Break as os.Interrupt, which `woodshed run` handles like SIGTERM.
 func prepareCmd(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_NEW_PROCESS_GROUP}
 }

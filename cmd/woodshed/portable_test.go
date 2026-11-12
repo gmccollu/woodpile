@@ -7,13 +7,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gmccollu/woodpile/internal/api"
-	"github.com/gmccollu/woodpile/internal/server"
+	"github.com/gmccollu/woodshed/internal/api"
+	"github.com/gmccollu/woodshed/internal/server"
 )
 
 func TestChooseDataDir(t *testing.T) {
 	tmp := t.TempDir()
-	exe := filepath.Join(tmp, "dl", "woodpile")
+	exe := filepath.Join(tmp, "dl", "woodshed")
 	home := filepath.Join(tmp, "home")
 	readonly := map[string]bool{}
 	env := dirEnv{
@@ -27,23 +27,23 @@ func TestChooseDataDir(t *testing.T) {
 		},
 	}
 	// Next to the binary.
-	if dir, note, err := chooseDataDir("", env); err != nil || dir != filepath.Join(tmp, "dl", "woodpile-data") || note != "" {
+	if dir, note, err := chooseDataDir("", env); err != nil || dir != filepath.Join(tmp, "dl", "woodshed-data") || note != "" {
 		t.Errorf("default = %q %q %v", dir, note, err)
 	}
-	// Not writable there (read-only media, Program Files): ~/Woodpile, with a note.
-	readonly[filepath.Join(tmp, "dl", "woodpile-data")] = true
+	// Not writable there (read-only media, Program Files): ~/Woodshed, with a note.
+	readonly[filepath.Join(tmp, "dl", "woodshed-data")] = true
 	dir, note, err := chooseDataDir("", env)
-	if err != nil || dir != filepath.Join(home, "Woodpile") || !strings.Contains(note, "can't be written") {
+	if err != nil || dir != filepath.Join(home, "Woodshed") || !strings.Contains(note, "can't be written") {
 		t.Errorf("fallback = %q %q %v", dir, note, err)
 	}
 	// macOS App Translocation: straight to the fallback.
-	exe = "/private/var/folders/x/AppTranslocation/ABC/d/woodpile"
-	if dir, note, _ := chooseDataDir("", env); dir != filepath.Join(home, "Woodpile") || !strings.Contains(note, "read-only") {
+	exe = "/private/var/folders/x/AppTranslocation/ABC/d/woodshed"
+	if dir, note, _ := chooseDataDir("", env); dir != filepath.Join(home, "Woodshed") || !strings.Contains(note, "read-only") {
 		t.Errorf("translocated = %q %q", dir, note)
 	}
 	// Neither writable: a clear error.
-	readonly[filepath.Join(home, "Woodpile")] = true
-	exe = filepath.Join(tmp, "dl", "woodpile")
+	readonly[filepath.Join(home, "Woodshed")] = true
+	exe = filepath.Join(tmp, "dl", "woodshed")
 	if _, _, err := chooseDataDir("", env); err == nil || !strings.Contains(err.Error(), "can't be written either") {
 		t.Errorf("both read-only: %v", err)
 	}
@@ -56,8 +56,8 @@ func TestChooseDataDir(t *testing.T) {
 		t.Error("read-only --dir accepted")
 	}
 	env.exe = func() (string, error) { return "", errors.New("no /proc") }
-	delete(readonly, filepath.Join(home, "Woodpile"))
-	if dir, _, err := chooseDataDir("", env); err != nil || dir != filepath.Join(home, "Woodpile") {
+	delete(readonly, filepath.Join(home, "Woodshed"))
+	if dir, _, err := chooseDataDir("", env); err != nil || dir != filepath.Join(home, "Woodshed") {
 		t.Errorf("unknown exe: %q %v", dir, err)
 	}
 }
@@ -105,9 +105,9 @@ func TestClassifyLaunch(t *testing.T) {
 
 func TestBannerText(t *testing.T) {
 	ok := []api.Listener{{Proto: "udp", Addr: "0.0.0.0", Port: 514, OK: true}, {Proto: "tcp", Addr: "0.0.0.0", Port: 514, OK: true}}
-	b := bannerText(bannerInfo{Version: "1.0.0", DataDir: "/x/woodpile-data", URL: "http://localhost:8514/",
+	b := bannerText(bannerInfo{Version: "1.0.0", DataDir: "/x/woodshed-data", URL: "http://localhost:8514/",
 		Listeners: ok, HostIPs: []string{"192.0.2.10", "2001:db8::10"}, GOOS: "linux"})
-	for _, want := range []string{"Woodpile 1.0.0, portable mode", "Data folder:  /x/woodpile-data", "Listening on UDP 514 and TCP 514\n",
+	for _, want := range []string{"Woodshed 1.0.0, portable mode", "Data folder:  /x/woodshed-data", "Listening on UDP 514 and TCP 514\n",
 		"Send logs to: 192.0.2.10, 2001:db8::10", "Web UI:       http://localhost:8514/"} {
 		if !strings.Contains(b, want) {
 			t.Errorf("banner lacks %q:\n%s", want, b)
@@ -121,17 +121,17 @@ func TestBannerText(t *testing.T) {
 	}
 	b = bannerText(bannerInfo{URL: "http://localhost:8515/", UIFellBackFrom: 8514, Listeners: denied, GOOS: "linux"})
 	if strings.Count(b, "setcap") != 1 || !strings.Contains(b, "UDP and TCP 514 need extra rights") ||
-		strings.Index(b, "setcap") > strings.Index(b, "sudo ./woodpile") {
+		strings.Index(b, "setcap") > strings.Index(b, "sudo ./woodshed") {
 		t.Errorf("one combined hint, setcap first:\n%s", b)
 	}
-	for _, want := range []string{"NOT listening on UDP 514", "sudo ./woodpile", "sudo setcap cap_net_bind_service=+ep ./woodpile",
-		"port 8514 is in use, maybe by an installed Woodpile, so this copy uses 8515"} {
+	for _, want := range []string{"NOT listening on UDP 514", "sudo ./woodshed", "sudo setcap cap_net_bind_service=+ep ./woodshed",
+		"port 8514 is in use, maybe by an installed Woodshed, so this copy uses 8515"} {
 		if !strings.Contains(b, want) {
 			t.Errorf("denied banner lacks %q:\n%s", want, b)
 		}
 	}
 
-	// In use by the OS's syslog daemon, or by an installed Woodpile.
+	// In use by the OS's syslog daemon, or by an installed Woodshed.
 	inUse := []api.Listener{{Proto: "udp", Addr: "0.0.0.0", Port: 514, Error: "bind: address already in use", Holder: "rsyslogd (pid 812)"},
 		{Proto: "tcp", Addr: "0.0.0.0", Port: 514, OK: true}}
 	b = bannerText(bannerInfo{Listeners: inUse, GOOS: "linux"})
@@ -139,9 +139,9 @@ func TestBannerText(t *testing.T) {
 		!strings.Contains(b, "Listening on TCP 514") || strings.Contains(b, "setcap") {
 		t.Errorf("in-use banner:\n%s", b)
 	}
-	inUse[0].Holder = "woodpile.exe (pid 4)"
-	if b := bannerText(bannerInfo{Listeners: inUse, GOOS: "windows"}); !strings.Contains(b, "installed Woodpile service") {
-		t.Errorf("held by Woodpile:\n%s", b)
+	inUse[0].Holder = "woodshed.exe (pid 4)"
+	if b := bannerText(bannerInfo{Listeners: inUse, GOOS: "windows"}); !strings.Contains(b, "installed Woodshed service") {
+		t.Errorf("held by Woodshed:\n%s", b)
 	}
 
 	// Bound to one address: that's what devices must use.
@@ -151,7 +151,7 @@ func TestBannerText(t *testing.T) {
 		t.Errorf("single-address banner:\n%s", b)
 	}
 	// The fallback note when the data folder isn't next to the binary.
-	if b := bannerText(bannerInfo{DirNote: "Using /h/Woodpile because x."}); !strings.Contains(b, "(Using /h/Woodpile because x.)") {
+	if b := bannerText(bannerInfo{DirNote: "Using /h/Woodshed because x."}); !strings.Contains(b, "(Using /h/Woodshed because x.)") {
 		t.Errorf("dir note:\n%s", b)
 	}
 }
@@ -196,7 +196,7 @@ func lockForTest(dir string) (func(), error) {
 }
 
 func TestFirewallRuleState(t *testing.T) {
-	exe := `C:\Users\me\Downloads\woodpile.exe`
+	exe := `C:\Users\me\Downloads\woodshed.exe`
 	rule := func(name, enabled, action, program string) string {
 		return "Rule Name:                            " + name + "\r\n----------------------------------------------------------------------\r\n" +
 			"Enabled:                              " + enabled + "\r\nDirection:                            In\r\n" +
@@ -208,10 +208,10 @@ func TestFirewallRuleState(t *testing.T) {
 		want ruleState
 	}{
 		"none":            {other, ruleUnknown},
-		"allowed":         {other + "\r\n" + rule("woodpile.exe", "Yes", "Allow", exe), ruleAllows},
-		"blocked":         {other + "\r\n" + rule("woodpile.exe", "Yes", "Block", exe), ruleBlocks},
-		"disabled allow":  {rule("woodpile.exe", "No", "Allow", exe), ruleBlocks},
-		"block and allow": {rule("woodpile.exe", "Yes", "Block", exe) + "\r\n" + rule("Woodpile (portable)", "Yes", "Allow", strings.ToUpper(exe)), ruleAllows},
+		"allowed":         {other + "\r\n" + rule("woodshed.exe", "Yes", "Allow", exe), ruleAllows},
+		"blocked":         {other + "\r\n" + rule("woodshed.exe", "Yes", "Block", exe), ruleBlocks},
+		"disabled allow":  {rule("woodshed.exe", "No", "Allow", exe), ruleBlocks},
+		"block and allow": {rule("woodshed.exe", "Yes", "Block", exe) + "\r\n" + rule("Woodshed (portable)", "Yes", "Allow", strings.ToUpper(exe)), ruleAllows},
 	} {
 		if got := firewallRuleState(c.out, exe); got != c.want {
 			t.Errorf("%s: %v, want %v", name, got, c.want)
@@ -222,10 +222,10 @@ func TestFirewallRuleState(t *testing.T) {
 // Re-test N17: the suggested rules open only the syslog port, UDP and TCP, on
 // Private and Domain networks.
 func TestFirewallCommands(t *testing.T) {
-	c := firewallCommands(`C:\w\woodpile.exe`, 514)
+	c := firewallCommands(`C:\w\woodshed.exe`, 514)
 	for _, want := range []string{
-		`program="C:\w\woodpile.exe" protocol=UDP localport=514 profile=private,domain`,
-		`program="C:\w\woodpile.exe" protocol=TCP localport=514 profile=private,domain`,
+		`program="C:\w\woodshed.exe" protocol=UDP localport=514 profile=private,domain`,
+		`program="C:\w\woodshed.exe" protocol=TCP localport=514 profile=private,domain`,
 		"Public",
 	} {
 		if !strings.Contains(c, want) {

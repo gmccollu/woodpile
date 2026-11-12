@@ -3,7 +3,7 @@ package server
 import (
 	"context"
 
-	"github.com/gmccollu/woodpile/internal/api"
+	"github.com/gmccollu/woodshed/internal/api"
 )
 
 // In-process views for a caller that runs the server itself (portable mode's

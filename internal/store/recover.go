@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gmccollu/woodpile/internal/index"
-	"github.com/gmccollu/woodpile/internal/store/logfile"
+	"github.com/gmccollu/woodshed/internal/index"
+	"github.com/gmccollu/woodshed/internal/store/logfile"
 )
 
 // recover brings the data dir to a clean state at startup:

@@ -313,7 +313,7 @@
   ] as const;
   const isWindows = $derived(live.status?.os.startsWith('windows') ?? false);
   const firewallCmd = (port: number) =>
-    `netsh advfirewall firewall add rule name="Woodpile UI" dir=in action=allow protocol=TCP localport=${port}`;
+    `netsh advfirewall firewall add rule name="Woodshed UI" dir=in action=allow protocol=TCP localport=${port}`;
   const passwordSet = $derived(!!auth.session?.password_set);
   const isMac = $derived(live.status?.os.startsWith('darwin') ?? false);
   const REASON: Record<string, string> = { allowlist: 'not on the allowlist', blocked: 'blocked', per_source: 'too many TCP connections' };
@@ -379,7 +379,7 @@
     {#if undo.saved}
       <div class="undo" role="alert">
         <span>
-          Your last save stopped a listener ({undo.saved.broke}): Woodpile can't receive logs there.
+          Your last save stopped a listener ({undo.saved.broke}): Woodshed can't receive logs there.
           {#if undo.error}<b>{undo.error}</b>{/if}
         </span>
         <button type="button" class="pill-btn" onclick={undoLastSave} disabled={undo.busy}>{undo.busy ? 'Undoing…' : 'Undo last save'}</button>
@@ -397,7 +397,7 @@
 
     {#if moved}
       <div class="moved" role="status">
-        <p class="m-0 font-semibold">Woodpile is restarting its web UI at a new address.</p>
+        <p class="m-0 font-semibold">Woodshed is restarting its web UI at a new address.</p>
         <p class="m-0 mt-1 text-[14px]">
           {moved.lan ? 'LAN mode is on: the UI is now served over HTTPS and needs the password.' : 'The UI now answers only on this machine.'}
           This page stops updating; open the new address to carry on.
@@ -409,7 +409,7 @@
         </div>
         {#if moved.lan}
           <p class="m-0 mt-3 text-[13.5px]">
-            The browser will warn that the certificate isn't trusted, because Woodpile made it itself. That's expected the first time: check the address is
+            The browser will warn that the certificate isn't trusted, because Woodshed made it itself. That's expected the first time: check the address is
             this machine, then continue.
           </p>
         {/if}
@@ -564,7 +564,7 @@
 
     <section class="card">
       <h2 class="sec" id="storage">Storage</h2>
-      <p class="hint mt-0">Logs are deleted oldest first when either limit is reached. If the disk runs low, Woodpile deletes more, and never fills it.</p>
+      <p class="hint mt-0">Logs are deleted oldest first when either limit is reached. If the disk runs low, Woodshed deletes more, and never fills it.</p>
       <label class="lbl">
         <span>Data folder</span>
         <input class="field font-mono" value={form.dataDir} readonly aria-invalid={!!err('storage.data_dir')} aria-describedby="err-storage.data_dir hint-datadir" />
@@ -677,8 +677,8 @@
       {@render fieldError('ui.lan_mode')}
       {#if form.lanMode && !saved?.ui.lan_mode}
         <div class="lanwarn" role="note">
-          <b>Before you turn this on:</b> anyone on your network who can reach this machine will see the Woodpile login page, and with the password,
-          all of your logs. Use a strong password. Browsers will warn about the certificate the first time, because Woodpile creates its own
+          <b>Before you turn this on:</b> anyone on your network who can reach this machine will see the Woodshed login page, and with the password,
+          all of your logs. Use a strong password. Browsers will warn about the certificate the first time, because Woodshed creates its own
           (self-signed) certificate; that's expected, not an attack, as long as the address is this machine.
           {#if isWindows}Windows also needs a firewall rule for the UI port; the command is shown after you save.{/if}
         </div>
@@ -690,7 +690,7 @@
         <div class="fp mt-3">
           <p class="m-0 text-[13.5px]">
             <b>Certificate fingerprint (SHA-256).</b> When the browser warns about the certificate, open its details and check the SHA-256
-            fingerprint matches this one. If it doesn't, you aren't talking to this Woodpile.
+            fingerprint matches this one. If it doesn't, you aren't talking to this Woodshed.
           </p>
           <div class="mt-2 flex flex-wrap items-center gap-2">
             <code class="font-mono text-[12.5px] break-all">{live.status.ui_cert_fingerprint}</code>
@@ -727,7 +727,7 @@
       <details class="adv mt-4" open={!!(form.certFile || form.keyFile || err('ui.cert_file') || err('ui.key_file'))}>
         <summary class="cursor-pointer text-[14px] font-semibold">Advanced: use your own certificate</summary>
         <p class="hint mt-2">
-          For LAN mode. Leave both empty to use the certificate Woodpile generates. Paths are on the machine running Woodpile (PEM files).
+          For LAN mode. Leave both empty to use the certificate Woodshed generates. Paths are on the machine running Woodshed (PEM files).
         </p>
         <div class="grid gap-4 sm:grid-cols-2">
           <label class="lbl">

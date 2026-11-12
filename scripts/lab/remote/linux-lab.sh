@@ -1,9 +1,9 @@
 #!/bin/bash
-# Woodpile lab, Linux VM side. Copied to /opt/woodpile-lab on the VM by `wl stage`; called by
+# Woodshed lab, Linux VM side. Copied to /opt/woodpile-lab on the VM by `wl stage`; called by
 # the driver over ssh as the lab login, which needs passwordless sudo (a disposable test VM).
 #
 #   linux-lab.sh install PKG               apt/dnf install the package
-#   linux-lab.sh svc                       JSON: service state, account, caps, sockets, UI, woodpile status
+#   linux-lab.sh svc                       JSON: service state, account, caps, sockets, UI, woodshed status
 #   linux-lab.sh fw-state                  JSON: which host firewall is active and whether 514 is open
 #   linux-lab.sh fw-enable                 turn the firewall on if it's off (keeping SSH open)
 #   linux-lab.sh fw-open | fw-close        open / close UDP+TCP 514 exactly as docs/install.md says
@@ -19,13 +19,13 @@
 #   linux-lab.sh collect OUT.tgz           journal, unit, config, status, data listing, samples
 set -euo pipefail
 L=/opt/woodpile-lab
-DATA=/var/lib/woodpile
+DATA=/var/lib/woodshed
 UI=http://127.0.0.1:8514
 S="sudo -n"
 act=${1:?action}
 shift
 
-svc_pid() { systemctl show -p MainPID --value woodpile.service 2>/dev/null | grep -v '^0$' || true; }
+svc_pid() { systemctl show -p MainPID --value woodshed.service 2>/dev/null | grep -v '^0$' || true; }
 
 fw_kind() {
 	if command -v ufw >/dev/null && $S ufw status 2>/dev/null | grep -q "^Status: active"; then echo ufw
@@ -54,17 +54,17 @@ svc)
 		udp=$($S ss -H -lnup 'sport = :514' | grep -c "pid=$pid," || true)
 		tcp=$($S ss -H -lntp 'sport = :514' | grep -c "pid=$pid," || true)
 	fi
-	active=$(systemctl is-active woodpile.service || true)
-	enabled=$(systemctl is-enabled woodpile.service || true)
+	active=$(systemctl is-active woodshed.service || true)
+	enabled=$(systemctl is-enabled woodshed.service || true)
 	health=$(curl -fsS --max-time 3 "$UI/healthz" 2>/dev/null || echo "")
-	status=$(woodpile status 2>&1 | head -20 || true)
+	status=$(woodshed status 2>&1 | head -20 || true)
 	rmem=$(sysctl -n net.core.rmem_max)
 	python3 - "$active" "$enabled" "$pid" "$user" "$caps" "$udp" "$tcp" "$health" "$status" "$rmem" <<'PY'
 import json, sys
 a = sys.argv[1:]
 print(json.dumps({"active": a[0], "enabled": a[1], "pid": a[2], "user": a[3], "cap_eff": a[4],
                   "udp514_sockets": int(a[5] or 0), "tcp514_listen": int(a[6] or 0), "healthz": a[7],
-                  "woodpile_status": a[8], "rmem_max": a[9]}))
+                  "woodshed_status": a[8], "rmem_max": a[9]}))
 PY
 	;;
 fw-state)
@@ -154,11 +154,11 @@ soak-sampler)
 	;;
 portable)
 	op=${1:?start|stop|status} port=${2:-15514}
-	P=$HOME/woodpile-portable
+	P=$HOME/woodshed-portable
 	case "$op" in
 	start)
 		mkdir -p "$P/data"
-		cat >"$P/woodpile.toml" <<EOF
+		cat >"$P/woodshed.toml" <<EOF
 [listeners.udp]
 enabled = true
 port = $port
@@ -173,7 +173,7 @@ data_dir = "$P/data"
 [ui]
 port = 18514
 EOF
-		nohup "$P/woodpile" run --config "$P/woodpile.toml" >"$P/console.out" 2>&1 &
+		nohup "$P/woodshed" run --config "$P/woodshed.toml" >"$P/console.out" 2>&1 &
 		echo $! >"$P/pid"
 		for _ in $(seq 30); do curl -fsS --max-time 1 http://127.0.0.1:18514/healthz >/dev/null 2>&1 && break; sleep 1; done
 		echo "portable pid $(cat "$P/pid") as $(id -un) on UDP/TCP $port, data $P/data"
@@ -201,11 +201,11 @@ reboot) $S systemd-run --on-active=2 --quiet /bin/systemctl reboot && echo "rebo
 collect)
 	out=${1:?out.tgz}
 	d=$(mktemp -d)
-	$S journalctl -u woodpile --no-pager -n 5000 >"$d/journal.log" 2>&1 || true
-	systemctl status woodpile --no-pager >"$d/systemctl-status.txt" 2>&1 || true
-	systemctl cat woodpile >"$d/unit.txt" 2>&1 || true
-	$S cat /etc/woodpile/woodpile.toml >"$d/woodpile.toml" 2>/dev/null || true
-	woodpile status >"$d/woodpile-status.txt" 2>&1 || true
+	$S journalctl -u woodshed --no-pager -n 5000 >"$d/journal.log" 2>&1 || true
+	systemctl status woodshed --no-pager >"$d/systemctl-status.txt" 2>&1 || true
+	systemctl cat woodshed >"$d/unit.txt" 2>&1 || true
+	$S cat /etc/woodshed/woodshed.toml >"$d/woodshed.toml" 2>/dev/null || true
+	woodshed status >"$d/woodshed-status.txt" 2>&1 || true
 	$S ls -laR "$DATA" >"$d/data-listing.txt" 2>&1 || true
 	$S cp /var/tmp/woodpile-lab/*.csv /var/tmp/woodpile-lab/*.json "$d/" 2>/dev/null || true
 	$S ss -lunpt >"$d/sockets.txt" 2>&1 || true

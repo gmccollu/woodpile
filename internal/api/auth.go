@@ -31,9 +31,9 @@ import (
 // http://localhost, where browsers don't all keep Secure cookies, so that
 // cookie is HttpOnly and SameSite=Strict but not Secure.
 const (
-	SessionCookie      = "__Host-woodpile_session"
-	LocalSessionCookie = "woodpile_session"
-	SessionHeader      = "X-Woodpile-Session"
+	SessionCookie      = "__Host-woodshed_session"
+	LocalSessionCookie = "woodshed_session"
+	SessionHeader      = "X-Woodshed-Session"
 )
 
 // Session lifetimes and limits.
@@ -73,7 +73,7 @@ const (
 	maxClients      = 4096
 	maxHashers      = 2 // concurrent Argon2id verifications (each uses Memory KiB)
 
-	knownClientCookie = "woodpile_known_client"
+	knownClientCookie = "woodshed_known_client"
 	knownClientTTL    = 90 * 24 * time.Hour
 	maxKnownClients   = 1000
 	knownClientsFile  = "ui-known-clients"
@@ -688,7 +688,7 @@ type SessionInfo struct {
 	Authenticated bool   `json:"authenticated"` // always true when no login is required
 	PasswordSet   bool   `json:"password_set"`
 	// SessionSecret is set only in POST /api/login's response: the value of the
-	// X-Woodpile-Session header for this session. Never returned again.
+	// X-Woodshed-Session header for this session. Never returned again.
 	SessionSecret string `json:"session_secret,omitempty"`
 }
 
@@ -827,7 +827,7 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 // putPassword sets or changes the UI password. Once a password is set,
 // changing it needs the current one in both modes (security review M5: on a
 // shared machine any local user can reach localhost mode); with auth active it
-// also needs a session (requireSession). `woodpile reset-password` on the
+// also needs a session (requireSession). `woodshed reset-password` on the
 // machine is the only way to replace a password without knowing it.
 func (s *Server) putPassword(w http.ResponseWriter, r *http.Request) {
 	var in struct {

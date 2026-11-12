@@ -16,12 +16,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gmccollu/woodpile/internal/api"
-	"github.com/gmccollu/woodpile/internal/config"
-	"github.com/gmccollu/woodpile/internal/index"
-	"github.com/gmccollu/woodpile/internal/peer"
-	"github.com/gmccollu/woodpile/internal/server"
-	"github.com/gmccollu/woodpile/internal/service"
+	"github.com/gmccollu/woodshed/internal/api"
+	"github.com/gmccollu/woodshed/internal/config"
+	"github.com/gmccollu/woodshed/internal/index"
+	"github.com/gmccollu/woodshed/internal/peer"
+	"github.com/gmccollu/woodshed/internal/server"
+	"github.com/gmccollu/woodshed/internal/service"
 )
 
 // The service manager, through these so tests never reach the real one
@@ -38,8 +38,8 @@ var (
 
 func cmdInstall(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("install", "", `
-Install Woodpile as a system service (`+service.Name(runtime.GOOS)+`) and start it, set up
-the way Woodpile's installer package does it: the same service definition, the
+Install Woodshed as a system service (`+service.Name(runtime.GOOS)+`) and start it, set up
+the way Woodshed's installer package does it: the same service definition, the
 same unprivileged account (`+installAccount()+`), the same folders and
 permissions. The binary is copied to `+installedExe()+`.
 Needs administrator rights (sudo, or an administrator prompt on Windows).
@@ -52,7 +52,7 @@ service, install refuses, so there's never a second one.`, stderr)
 		return code
 	}
 	res, err := serviceInstall(service.InstallOptions{ConfigPath: *cfg, DataDir: *dataDir, Version: version,
-		Out: &headed{w: stdout, head: "Installing the Woodpile service:"}})
+		Out: &headed{w: stdout, head: "Installing the Woodshed service:"}})
 	if err != nil {
 		return fail(stderr, "install", err)
 	}
@@ -60,7 +60,7 @@ service, install refuses, so there's never a second one.`, stderr)
 		fmt.Fprintf(stdout, "  note: %s\n", n)
 	}
 	fmt.Fprintf(stdout, "Installed and started %s, running as %s.\n", res.Where, res.Account)
-	fmt.Fprintf(stdout, "Config: %s\nData:   %s\nUI:     %s (run `woodpile status` to check the listeners)\n",
+	fmt.Fprintf(stdout, "Config: %s\nData:   %s\nUI:     %s (run `woodshed status` to check the listeners)\n",
 		res.Config, res.DataDir, uiURL(readConfigOrDefault(res.Config)))
 	return 0
 }
@@ -93,24 +93,24 @@ func installAccount() string {
 
 func installedExe() string {
 	if runtime.GOOS == "windows" {
-		return `%ProgramFiles%\Woodpile\woodpile.exe`
+		return `%ProgramFiles%\Woodshed\woodshed.exe`
 	}
-	return "/usr/local/bin/woodpile"
+	return "/usr/local/bin/woodshed"
 }
 
 func cmdUninstall(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("uninstall", "", `
-Stop and remove the system service installed by "woodpile install", and the
+Stop and remove the system service installed by "woodshed install", and the
 binary it copied. The config and the received logs are kept unless you pass
 --delete-logs. Needs administrator rights.
 
-A service installed by Woodpile's package is left alone: remove the package
+A service installed by Woodshed's package is left alone: remove the package
 instead (the error says how).`, stderr)
-	deleteLogs := fs.Bool("delete-logs", false, "also delete the data folder (logs, index, config)"+map[bool]string{true: " and the _woodpile account"}[runtime.GOOS == "darwin"])
+	deleteLogs := fs.Bool("delete-logs", false, "also delete the data folder (logs, index, config)"+map[bool]string{true: " and the _woodshed account"}[runtime.GOOS == "darwin"])
 	if code, done := parse(fs, args, stdout); done {
 		return code
 	}
-	res, err := serviceUninstall(service.UninstallOptions{DeleteLogs: *deleteLogs, Out: &headed{w: stdout, head: "Removing the Woodpile service:"}})
+	res, err := serviceUninstall(service.UninstallOptions{DeleteLogs: *deleteLogs, Out: &headed{w: stdout, head: "Removing the Woodshed service:"}})
 	if err != nil {
 		return fail(stderr, "uninstall", err)
 	}
@@ -118,9 +118,9 @@ instead (the error says how).`, stderr)
 		fmt.Fprintf(stdout, "  note: %s\n", n)
 	}
 	if *deleteLogs {
-		fmt.Fprintln(stdout, "Woodpile is uninstalled, and its logs and config are deleted.")
+		fmt.Fprintln(stdout, "Woodshed is uninstalled, and its logs and config are deleted.")
 	} else {
-		fmt.Fprintln(stdout, "Woodpile is uninstalled. The logs and config are kept.")
+		fmt.Fprintln(stdout, "Woodshed is uninstalled. The logs and config are kept.")
 	}
 	return 0
 }
@@ -255,7 +255,7 @@ func fetchStatus(cfg config.Config) (api.Status, error) {
 		return st, fmt.Errorf("%s answered %s", url, resp.Status)
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&st); err != nil || st.Version == "" {
-		return st, fmt.Errorf("%s isn't Woodpile's API", url)
+		return st, fmt.Errorf("%s isn't Woodshed's API", url)
 	}
 	return st, nil
 }
@@ -323,7 +323,7 @@ func cmdReindex(args []string, stdout, stderr io.Writer) int {
 Rebuild the index (index.db) from the log files, which are always the source of
 truth. Device names, groups and hidden flags are kept.
 
-The server must be stopped: reindex refuses while Woodpile is running on the
+The server must be stopped: reindex refuses while Woodshed is running on the
 data folder.`, stderr)
 	cfgPath := configFlag(fs)
 	if code, done := parse(fs, args, stdout); done {
@@ -347,7 +347,7 @@ data folder.`, stderr)
 	}
 	lock, err := server.LockDataDir(dataDir)
 	if errors.Is(err, server.ErrLocked) {
-		return fail(stderr, "reindex", fmt.Errorf("Woodpile is running on %s; stop it first (%s, or Ctrl-C a foreground `woodpile run`), then run reindex again",
+		return fail(stderr, "reindex", fmt.Errorf("Woodshed is running on %s; stop it first (%s, or Ctrl-C a foreground `woodshed run`), then run reindex again",
 			dataDir, stopHint()))
 	}
 	if err != nil {
@@ -374,10 +374,10 @@ data folder.`, stderr)
 		return fail(stderr, "reindex", err)
 	}
 	took := time.Since(t0).Round(time.Millisecond)
-	text := fmt.Sprintf("Index rebuilt from the log files by `woodpile reindex`: %d files (%d read), %d devices, %d stale rows removed, "+
+	text := fmt.Sprintf("Index rebuilt from the log files by `woodshed reindex`: %d files (%d read), %d devices, %d stale rows removed, "+
 		"%d bad lines, %d bytes in torn last lines, in %v.", len(res.Files), res.Scanned, res.Devices, res.Removed, res.BadLines, res.TornBytes, took)
 	if err := idx.AddEvent(ctx, index.Event{Level: index.LevelInfo, Kind: index.KindRecover, Text: text}); err != nil {
-		fmt.Fprintf(stderr, "woodpile reindex: couldn't record the event: %v\n", err)
+		fmt.Fprintf(stderr, "woodshed reindex: couldn't record the event: %v\n", err)
 	}
 	fmt.Fprintf(stdout, "Reindexed %s in %v\n  files:   %d (%d read)\n  devices: %d\n  removed: %d stale rows\n",
 		dataDir, took, len(res.Files), res.Scanned, res.Devices, res.Removed)
@@ -393,18 +393,18 @@ data folder.`, stderr)
 func stopHint() string {
 	switch runtime.GOOS {
 	case "windows":
-		return "`sc stop Woodpile` from an administrator prompt"
+		return "`sc stop Woodshed` from an administrator prompt"
 	case "darwin":
 		return "`sudo launchctl bootout system/" + service.DarwinName + "`"
 	}
-	return "`sudo systemctl stop woodpile`"
+	return "`sudo systemctl stop woodshed`"
 }
 
 // ---- reset-password ----
 
 func cmdResetPassword(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("reset-password", "", `
-Forgot the UI password? On the Woodpile machine, run this as an administrator.
+Forgot the UI password? On the Woodshed machine, run this as an administrator.
 It deletes the password hash, turns LAN mode off in the config and restarts the
 service, so the UI is back on http://localhost:<port>/ (this machine only, no
 login). Set a new password in Settings to turn LAN mode on again. There is no
@@ -460,25 +460,25 @@ way to do this over the network, by design.`, stderr)
 	}
 	inUse, _ := server.DataDirInUse(dataDir)
 	if !inUse {
-		fmt.Fprintf(stdout, "The UI will be at %s when Woodpile starts.\n", url)
+		fmt.Fprintf(stdout, "The UI will be at %s when Woodshed starts.\n", url)
 		return 0
 	}
 	// The running server still has the old password and mode in memory.
 	if st, _ := serviceStatus(); st == service.StateRunning {
 		if err := serviceRestart(); err != nil {
-			fmt.Fprintf(stderr, "woodpile reset-password: couldn't restart the service: %v\nRestart it yourself to apply the change.\n", err)
+			fmt.Fprintf(stderr, "woodshed reset-password: couldn't restart the service: %v\nRestart it yourself to apply the change.\n", err)
 			return 1
 		}
 		fmt.Fprintf(stdout, "Restarted the service. The UI is back on %s\n", url)
 		return 0
 	}
-	fmt.Fprintf(stdout, "Woodpile is running in the foreground: stop it (Ctrl-C) and start it again, and the UI will be on %s\n", url)
+	fmt.Fprintf(stdout, "Woodshed is running in the foreground: stop it (Ctrl-C) and start it again, and the UI will be on %s\n", url)
 	return 0
 }
 
 // checkWritable reports whether a file can be created in dir.
 func checkWritable(dir string) error {
-	f, err := os.CreateTemp(dir, ".woodpile-write-check-*")
+	f, err := os.CreateTemp(dir, ".woodshed-write-check-*")
 	if err != nil {
 		return fmt.Errorf("can't write in %s: %w", dir, err)
 	}

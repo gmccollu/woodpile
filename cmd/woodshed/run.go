@@ -10,13 +10,13 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/gmccollu/woodpile/internal/server"
-	"github.com/gmccollu/woodpile/internal/service"
+	"github.com/gmccollu/woodshed/internal/server"
+	"github.com/gmccollu/woodshed/internal/service"
 )
 
 func cmdRun(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("run", "", `
-Run the Woodpile server in the foreground until Ctrl-C (or SIGTERM).
+Run the Woodshed server in the foreground until Ctrl-C (or SIGTERM).
 
 With no --config it uses this OS's service config file. A missing config file
 is created with defaults; a config created anywhere else than the default keeps
@@ -67,12 +67,12 @@ func serve(ctx context.Context, cfgPath string, log *slog.Logger, hello io.Write
 	})
 	if err != nil {
 		if errors.Is(err, os.ErrPermission) {
-			return fmt.Errorf("%w\n(pass --config with a file in a folder you can write, e.g. --config ./woodpile/woodpile.toml)", err)
+			return fmt.Errorf("%w\n(pass --config with a file in a folder you can write, e.g. --config ./woodshed/woodshed.toml)", err)
 		}
 		return err
 	}
 	if hello != nil {
-		fmt.Fprintf(hello, "Woodpile %s: config %s, data in %s. Press Ctrl-C to stop.\n", version, srv.ConfigPath(), srv.DataDir())
+		fmt.Fprintf(hello, "Woodshed %s: config %s, data in %s. Press Ctrl-C to stop.\n", version, srv.ConfigPath(), srv.DataDir())
 	}
 	if !so.service { // a copy started by hand: warn if the installed service runs (it's logged too)
 		if w := srv.PeerWarning(ctx); w != "" && hello != nil {

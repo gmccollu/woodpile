@@ -1,4 +1,4 @@
-// Package index is Woodpile's SQLite index (<data>/index.db): log files and their
+// Package index is Woodshed's SQLite index (<data>/index.db): log files and their
 // time checkpoints, devices, per-minute stats, the service's own events and the
 // storage (deletion) history.
 //
@@ -49,7 +49,7 @@ type DB struct {
 }
 
 // Open opens (creating if needed) the index at path, in WAL mode, and migrates its
-// schema to the current version. A database from a newer Woodpile is refused.
+// schema to the current version. A database from a newer Woodshed is refused.
 func Open(path string) (*DB, error) {
 	if strings.ContainsAny(path, "?#") {
 		return nil, fmt.Errorf("index: unsupported character in path %q", path)

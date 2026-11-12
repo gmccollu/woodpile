@@ -18,7 +18,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/gmccollu/woodpile/web"
+	"github.com/gmccollu/woodshed/web"
 )
 
 // DefaultPort is the UI port (SPEC §5).
@@ -64,7 +64,7 @@ type Options struct {
 // ErrNoPassword is the reason LAN mode didn't start: no password is set.
 var ErrNoPassword = errors.New("LAN mode needs a UI password; set one first")
 
-// State describes what the UI server is doing, for `woodpile status`.
+// State describes what the UI server is doing, for `woodshed status`.
 type State struct {
 	Listening bool
 	Addr      string // the bound address, e.g. "127.0.0.1:8514"

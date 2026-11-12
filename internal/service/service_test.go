@@ -37,26 +37,26 @@ func TestDetectAndRefusals(t *testing.T) {
 		installErr, unErr string // substrings; "" means allowed
 	}{
 		{name: "linux nothing", goos: "linux", p: fakeProber{},
-			unErr: "no Woodpile service"},
-		{name: "linux deb/rpm unit", goos: "linux", p: fakeProber{files: files("/usr/lib/systemd/system/woodpile.service")},
+			unErr: "no Woodshed service"},
+		{name: "linux deb/rpm unit", goos: "linux", p: fakeProber{files: files("/usr/lib/systemd/system/woodshed.service")},
 			exists: true, pkg: true, installErr: "package already installed", unErr: "installed by the package"},
-		{name: "linux old-style package unit", goos: "linux", p: fakeProber{files: files("/lib/systemd/system/woodpile.service")},
+		{name: "linux old-style package unit", goos: "linux", p: fakeProber{files: files("/lib/systemd/system/woodshed.service")},
 			exists: true, pkg: true, installErr: "package already installed", unErr: "package manager"},
 		{name: "linux both (package wins)", goos: "linux",
-			p:      fakeProber{files: files("/usr/lib/systemd/system/woodpile.service", "/etc/systemd/system/woodpile.service")},
+			p:      fakeProber{files: files("/usr/lib/systemd/system/woodshed.service", "/etc/systemd/system/woodshed.service")},
 			exists: true, pkg: true, installErr: "package", unErr: "package"},
-		{name: "linux manual unit", goos: "linux", p: fakeProber{files: files("/etc/systemd/system/woodpile.service")},
+		{name: "linux manual unit", goos: "linux", p: fakeProber{files: files("/etc/systemd/system/woodshed.service")},
 			exists: true, installErr: "uninstall` first"},
-		{name: "darwin nothing", goos: "darwin", p: fakeProber{}, unErr: "no Woodpile service"},
+		{name: "darwin nothing", goos: "darwin", p: fakeProber{}, unErr: "no Woodshed service"},
 		{name: "darwin pkg", goos: "darwin",
-			p:      fakeProber{files: files(darwinPlist, "/var/db/receipts/com.woodpile.pkg.plist", "/usr/local/share/woodpile/uninstall.sh")},
+			p:      fakeProber{files: files(darwinPlist, "/var/db/receipts/com.woodshed.pkg.plist", "/usr/local/share/woodshed/uninstall.sh")},
 			exists: true, pkg: true, installErr: "package already installed", unErr: "uninstall.sh"},
 		{name: "darwin pkg receipt without plist", goos: "darwin",
-			p:      fakeProber{files: files("/var/db/receipts/com.woodpile.pkg.bom")},
+			p:      fakeProber{files: files("/var/db/receipts/com.woodshed.pkg.bom")},
 			exists: true, pkg: true, installErr: "package", unErr: "package"},
 		{name: "darwin manual plist", goos: "darwin", p: fakeProber{files: files(darwinPlist)},
 			exists: true, installErr: "already installed"},
-		{name: "windows nothing", goos: "windows", p: fakeProber{}, unErr: "no Woodpile service"},
+		{name: "windows nothing", goos: "windows", p: fakeProber{}, unErr: "no Woodshed service"},
 		{name: "windows MSI", goos: "windows", p: fakeProber{svc: true, msi: true},
 			exists: true, pkg: true, installErr: "package already installed", unErr: "Apps"},
 		{name: "windows MSI key without its service", goos: "windows", p: fakeProber{msi: true},
@@ -97,7 +97,7 @@ func TestDetectWindowsError(t *testing.T) {
 }
 
 func TestNames(t *testing.T) {
-	for goos, want := range map[string]string{"windows": "Woodpile", "linux": "woodpile", "darwin": "com.woodpile.daemon"} {
+	for goos, want := range map[string]string{"windows": "Woodshed", "linux": "woodshed", "darwin": "com.woodshed.daemon"} {
 		if got := Name(goos); got != want {
 			t.Errorf("Name(%s) = %q, want %q", goos, got, want)
 		}

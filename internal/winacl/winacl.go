@@ -1,7 +1,7 @@
-// Package winacl is the single source for Woodpile's Windows folder ACLs (security
-// review M3): the data folder's SDDL (also in the MSI, packaging/windows/woodpile.wxs),
-// the reset that the MSI (packaging/windows/aclfix) and `woodpile install` run over the
-// data folder, and the protected ACL for folders `woodpile run` and portable mode create.
+// Package winacl is the single source for Woodshed's Windows folder ACLs (security
+// review M3): the data folder's SDDL (also in the MSI, packaging/windows/woodshed.wxs),
+// the reset that the MSI (packaging/windows/aclfix) and `woodshed install` run over the
+// data folder, and the protected ACL for folders `woodshed run` and portable mode create.
 // Elsewhere it does nothing: Unix folders get mode 0750 from the code that creates them.
 package winacl
 
@@ -12,10 +12,10 @@ import (
 
 // The Windows data folder's ACL, the same SDDL as the MSI's PermissionEx: owner
 // Administrators, a protected DACL with full control for SYSTEM and Administrators and
-// modify (no permission changes) for the service's virtual account NT SERVICE\Woodpile,
-// whose SID is S-1-5-80-<SHA-1 of "WOODPILE">.
+// modify (no permission changes) for the service's virtual account NT SERVICE\Woodshed,
+// whose SID is S-1-5-80-<SHA-1 of "WOODSHED">.
 const (
-	ServiceSID = "S-1-5-80-276366627-2944175572-1807786847-528126453-1705305312"
+	ServiceSID = "S-1-5-80-246480601-2135328064-241538422-929878615-662582935"
 	DataSDDL   = "O:BAG:SYD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1301bf;;;" + ServiceSID + ")"
 )
 

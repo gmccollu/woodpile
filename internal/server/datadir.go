@@ -6,8 +6,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/gmccollu/woodpile/internal/api"
-	"github.com/gmccollu/woodpile/internal/winacl"
+	"github.com/gmccollu/woodshed/internal/api"
+	"github.com/gmccollu/woodshed/internal/winacl"
 )
 
 func exists(p string) bool {
@@ -64,7 +64,7 @@ func checkSharedDataDir(dir string, createdHere bool, opts Options, log *slog.Lo
 	}
 	text := fmt.Sprintf("The data folder %s is open to %s, so other users of this machine can read the logs "+
 		"or plant files. Restrict it to SYSTEM, Administrators and the service account (reinstall or repair "+
-		"Woodpile, or run `woodpile install`).", dir, who)
+		"Woodshed, or run `woodshed install`).", dir, who)
 	if opts.Service && !opts.AllowSharedDataDir {
 		log.Error("refusing to start: " + text + " To start anyway, add --allow-shared-data-dir to the service's command line.")
 		return nil, fmt.Errorf("the data folder %s is open to %s; refusing to start (fix its permissions, or pass --allow-shared-data-dir)", dir, who)

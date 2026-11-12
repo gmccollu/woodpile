@@ -26,7 +26,7 @@ func consoleProcessCount() int {
 // where nobody can answer it.)
 func windowsFirewallNotes(port int) string {
 	var s strings.Builder
-	s.WriteString("\n  Windows may ask whether to allow Woodpile through the firewall. Choose Allow so devices can\n")
+	s.WriteString("\n  Windows may ask whether to allow Woodshed through the firewall. Choose Allow so devices can\n")
 	s.WriteString("  reach it (it may need an administrator).\n")
 	exe, err := os.Executable()
 	if err != nil {

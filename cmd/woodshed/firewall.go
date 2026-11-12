@@ -44,7 +44,7 @@ func firewallRuleState(netsh, exe string) ruleState {
 func firewallCommands(exe string, port int) string {
 	var s strings.Builder
 	for _, proto := range []string{"UDP", "TCP"} {
-		fmt.Fprintf(&s, "      netsh advfirewall firewall add rule name=\"Woodpile (portable) %s %d\" dir=in action=allow "+
+		fmt.Fprintf(&s, "      netsh advfirewall firewall add rule name=\"Woodshed (portable) %s %d\" dir=in action=allow "+
 			"program=\"%s\" protocol=%s localport=%d profile=private,domain enable=yes\n", proto, port, exe, proto, port)
 	}
 	s.WriteString("  These allow Private and Domain networks only. If the devices are on a network Windows calls\n" +

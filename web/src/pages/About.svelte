@@ -19,7 +19,7 @@
 
 <div class="mx-auto max-w-3xl space-y-4">
   <section class="card">
-    <h1 class="m-0 text-xl font-bold tracking-tight">About Woodpile</h1>
+    <h1 class="m-0 text-xl font-bold tracking-tight">About Woodshed</h1>
     {#if !st}
       <p class="text-muted">Loading…</p>
     {:else}
@@ -50,7 +50,7 @@
           {:else}
             <span class="text-muted">No public releases page yet.</span>
           {/if}
-          <p class="mt-1 mb-0 text-[13px] text-muted">Woodpile never checks for updates or connects out; compare this version with the releases page yourself.</p>
+          <p class="mt-1 mb-0 text-[13px] text-muted">Woodshed never checks for updates or connects out; compare this version with the releases page yourself.</p>
         </dd>
       </dl>
     {/if}
@@ -60,18 +60,18 @@
     <section class="card">
       <h2 class="m-0 mb-2 text-[17px] font-bold">Dropped messages</h2>
       <p class="m-0 text-[14.5px] leading-relaxed">
-        Woodpile counts every message it drops itself (when the low-disk guard pauses writing, or a write fails), and shows the count on the
+        Woodshed counts every message it drops itself (when the low-disk guard pauses writing, or a write fails), and shows the count on the
         dashboard.
       </p>
       {#if st.kernel_drops_visible}
         <p class="mt-2 mb-0 text-[14.5px] leading-relaxed">
-          On {osName} it also reads the kernel's UDP drop counter for its socket, so packets the OS discarded before Woodpile could read them
+          On {osName} it also reads the kernel's UDP drop counter for its socket, so packets the OS discarded before Woodshed could read them
           (for example when the receive buffer overflows) are counted too.
         </p>
       {:else}
         <p class="mt-2 mb-0 rounded-xl border border-[var(--warn-border)] bg-[var(--warn-bg)] px-3 py-2 text-[14.5px] leading-relaxed">
           <b>{osName} doesn't tell programs how many UDP packets the kernel dropped.</b> If the receive buffer overflows during a burst, those
-          messages are lost before Woodpile sees them, and no counter here can show it. A dropped count of 0 means Woodpile itself lost
+          messages are lost before Woodshed sees them, and no counter here can show it. A dropped count of 0 means Woodshed itself lost
           nothing; it can't prove the kernel didn't. Use TCP for senders where every message matters.
         </p>
       {/if}

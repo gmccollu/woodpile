@@ -18,14 +18,14 @@ import (
 	"golang.org/x/sys/windows/svc/eventlog"
 	"golang.org/x/sys/windows/svc/mgr"
 
-	"github.com/gmccollu/woodpile/internal/config"
-	"github.com/gmccollu/woodpile/internal/winacl"
+	"github.com/gmccollu/woodshed/internal/config"
+	"github.com/gmccollu/woodshed/internal/winacl"
 )
 
-// Firewall rules, named as the MSI names them (packaging/windows/woodpile.wxs).
+// Firewall rules, named as the MSI names them (packaging/windows/woodshed.wxs).
 var windowsFirewallRules = []struct{ name, proto string }{
-	{"Woodpile syslog (UDP 514)", "UDP"},
-	{"Woodpile syslog (TCP 514)", "TCP"},
+	{"Woodshed syslog (UDP 514)", "UDP"},
+	{"Woodshed syslog (TCP 514)", "TCP"},
 }
 
 func requireAdmin() error {
@@ -40,15 +40,15 @@ func windowsExe() string {
 	if pf == "" {
 		pf = `C:\Program Files`
 	}
-	return filepath.Join(pf, "Woodpile", "woodpile.exe")
+	return filepath.Join(pf, "Woodshed", "woodshed.exe")
 }
 
-// paramsKey holds what `woodpile install` recorded for uninstall (only
+// paramsKey holds what `woodshed install` recorded for uninstall (only
 // administrators can write it, unlike the config).
 const paramsKey = `SYSTEM\CurrentControlSet\Services\` + WindowsName + `\Parameters`
 
 // prepareWindowsDataDir checks the data folder (security review M1d, M2, M3):
-// not a system or home folder, not a reparse point, empty or Woodpile's; one that
+// not a system or home folder, not a reparse point, empty or Woodshed's; one that
 // isn't owned by SYSTEM or Administrators is moved aside first. Then it gets the MSI's
 // protected ACL, and everything inside loses any explicit entries (a planted
 // Everyone:F) and inherits it; links inside are removed (winacl.ResetDataDir).
@@ -167,7 +167,7 @@ func installOS(o InstallOptions) (Result, error) {
 		_, _ = h.run("netsh", "advfirewall", "firewall", "delete", "rule", "name="+r.name)
 		if _, err := h.run("netsh", "advfirewall", "firewall", "add", "rule", "name="+r.name, "dir=in", "action=allow",
 			"program="+exe, "protocol="+r.proto, "localport=514", "profile=any",
-			"description=Lets devices send syslog to Woodpile over "+r.proto+"."); err != nil {
+			"description=Lets devices send syslog to Woodshed over "+r.proto+"."); err != nil {
 			res.Notes = append(res.Notes, fmt.Sprintf("couldn't add the firewall rule %q: %v", r.name, err))
 		}
 	}

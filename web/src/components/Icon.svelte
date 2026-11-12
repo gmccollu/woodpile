@@ -1,5 +1,5 @@
 <script lang="ts" module>
-  // 24×24 stroke icons, drawn for Woodpile (no icon font, nothing fetched).
+  // 24×24 stroke icons, drawn for Woodshed (no icon font, nothing fetched).
   const PATHS = {
     home: 'M3 11.5 12 4l9 7.5M5.5 9.5V20h13V9.5',
     devices: 'M4 5h16v10H4zM8 19h8M12 15v4',

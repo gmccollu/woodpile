@@ -20,7 +20,7 @@ var geteuid = os.Geteuid
 // could plant a symlink or hard link named index.db, index.db-wal or index.db-shm,
 // and root's open, chmod or SQLite's own open would then act on the link's target
 // (/etc/shadow, say). Running as the data dir's owner needs no privileged file
-// operation at all, so that's the only supported way (`sudo -u woodpile woodpile
+// operation at all, so that's the only supported way (`sudo -u woodshed woodshed
 // reindex`).
 //
 // For everyone it creates a missing index.db with O_EXCL|O_NOFOLLOW at 0640, opens
@@ -34,7 +34,7 @@ func prepareFiles(path string) error {
 			return err
 		}
 		if sys, ok := st.Sys().(*syscall.Stat_t); ok && sys.Uid != 0 {
-			return fmt.Errorf("%w: %s belongs to uid %d; run this as that user (for example `sudo -u woodpile woodpile reindex`)",
+			return fmt.Errorf("%w: %s belongs to uid %d; run this as that user (for example `sudo -u woodshed woodshed reindex`)",
 				ErrRunAsOwner, dir, sys.Uid)
 		}
 	}

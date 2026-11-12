@@ -1,6 +1,6 @@
-// Package loadgen is Woodpile's test tooling, behind `woodpile send` and
-// `woodpile bench`. Send sends numbered syslog messages to any syslog server;
-// Bench runs an in-process Woodpile pipeline (listener, store, live hub) in a temp
+// Package loadgen is Woodshed's test tooling, behind `woodshed send` and
+// `woodshed bench`. Send sends numbered syslog messages to any syslog server;
+// Bench runs an in-process Woodshed pipeline (listener, store, live hub) in a temp
 // data dir, sends to it at a target rate, and then checks on disk that every
 // message arrived exactly once.
 package loadgen
@@ -22,7 +22,7 @@ import (
 // Defaults for SendOptions.
 const (
 	DefaultSize     = 200
-	DefaultHostname = "woodpile-send"
+	DefaultHostname = "woodshed-send"
 )
 
 // SendOptions configures Send.
@@ -39,7 +39,7 @@ type SendOptions struct {
 	Size     int    // approximate message size in bytes, padded (default 200)
 	RunID    string // tag carried in every message (default random)
 	FirstSeq int    // sequence number of the first message (default 0)
-	Hostname string // the message's HOSTNAME field (default "woodpile-send")
+	Hostname string // the message's HOSTNAME field (default "woodshed-send")
 
 	// Message, if set, replaces the padding: each message is the sequence tag and
 	// number, a space and Message, and Size is ignored. It can't contain CR, LF or
@@ -79,7 +79,7 @@ func message(dst []byte, o *SendOptions, seq int, now time.Time) []byte {
 	dst = now.UTC().AppendFormat(dst, "2006-01-02T15:04:05.000Z")
 	dst = append(dst, ' ')
 	dst = append(dst, o.Hostname...)
-	dst = append(dst, " woodpile - - - "...)
+	dst = append(dst, " woodshed - - - "...)
 	dst = append(dst, SeqTag(o.RunID)...)
 	dst = strconv.AppendInt(dst, int64(seq), 10)
 	if o.Message != "" {

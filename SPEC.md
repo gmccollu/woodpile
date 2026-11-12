@@ -1,6 +1,6 @@
-# Woodpile — v1 spec (draft)
+# Woodshed — v1 spec (draft)
 
-Woodpile is a syslog server you can install on any Windows, macOS or Linux machine in a minute. It stores
+Woodshed is a syslog server you can install on any Windows, macOS or Linux machine in a minute. It stores
 every message it receives as plain files, keeps them within a disk budget, and has a clean web UI for
 watching, searching and exporting logs.
 
@@ -45,7 +45,7 @@ proposal and can change.
 | Low-disk reserve | max(1 GiB, min(5% of the volume, 10 GiB)): 1 GiB on a 10 GB volume, 5 GiB on 100 GB, 10 GiB on 460 GB and 4 TB (§3.4) **(decided, 2026-11-11)** |
 | Retention fairness | Over the size cap or under the low-disk reserve, delete first from devices first seen in the last 24 h, then from established devices over their share, then oldest-first. Shares split the cap by each device's average bytes a day over the last 7 days (1 KiB floor; no share below a tenth of an equal split). Every device established for over 24 h keeps its last min(retention days, 2) calendar days; the size cap never takes them, the low-disk guard only once every newer device's data is gone. A device sending over half of the last 24 h's bytes gets a warn event, at most hourly (§3.4) **(decided, 2026-11-11, revised for rc2)** |
 | Devices cleanup | A device with no files left, no name, no group and not hidden, quiet for 24 h, is forgotten: index row, folder, and its exemption from the new-sender rate **(decided, 2026-11-11)** |
-| `reindex` as root | Refused when the data folder belongs to another user; run it as that user (`sudo -u woodpile woodpile reindex`). Index files that are links or not regular files are refused **(decided, 2026-11-11)** |
+| `reindex` as root | Refused when the data folder belongs to another user; run it as that user (`sudo -u woodshed woodshed reindex`). Index files that are links or not regular files are refused **(decided, 2026-11-11)** |
 | New-sender limits | At most 10,000 *active* senders (`max_devices`): a sender quiet for 10 min has its file closed early (its next message appends to the same file) and its memory freed, so the cap counts senders heard in about the last 10 min. Senders with no logs yet also need a token, first from their network's bucket (a /24, or a /48 for IPv6: burst 256, then 20 a minute), then from the global one (burst 5,000, then 200 a minute), so one network can't keep everyone else out and a new install on a 5,000-device network admits everyone at once; random sources spread over many networks can still drain the global bucket, and the sender allowlist is the answer to that. A sender with logs on disk is always admitted: at the cap it takes the least recently heard sender's slot (that sender's file is parked, not lost). While the cap is full, known senders that aren't in memory are readmitted at up to 500 a second (each evicts the least recently heard sender, whose file is parked); beyond that they're refused (reason `churn`); a sender already in memory is never refused. The cap and the global bucket are live settings. Refused messages count as dropped and raise the `device_limit` banner **(decided, 2026-11-11)** |
 | Checkpoints | Every 1 MiB, or every minute once 64 KiB has been written since the last one |
 | Durability | Plain `fsync` on every OS (on macOS that survives process and OS crashes, not necessarily power loss) |
@@ -89,7 +89,7 @@ frontend install.
   starting with "123 " from being read as a count.
 - Max message size is 64 KiB. Anything longer is truncated and counted (`truncated` counter), never dropped.
 - UDP socket receive buffer: ask for 32 MiB. On Linux the kernel caps this at `net.core.rmem_max`, so the deb/rpm
-  installs `/etc/sysctl.d/60-woodpile.conf` raising it to 32 MiB, and removes it on uninstall **(decided)**. On
+  installs `/etc/sysctl.d/60-woodshed.conf` raising it to 32 MiB, and removes it on uninstall **(decided)**. On
   every OS, log the buffer size we actually got at startup and show it on the About page.
 - Bind address: wildcard (`0.0.0.0` and `::`) by default. On macOS a non-root process may bind ports below 1024
   only on the wildcard address, not on a specific IP (tested on macOS 27.2, see §5). So on macOS a specific bind
@@ -110,7 +110,7 @@ frontend install.
 ### 3.3 Storage layout
 ```
 <data>/
-  woodpile.toml            config (Linux: /etc/woodpile/woodpile.toml instead)
+  woodshed.toml            config (Linux: /etc/woodshed/woodshed.toml instead)
   index.db                 SQLite: devices, files, time-range checkpoints, stats
   logs/
     10.1.0.1/
@@ -120,8 +120,8 @@ frontend install.
     fd00_1__5/             IPv6 addresses with ':' replaced by '_' (Windows-safe)
   exports/                 generated zips, deleted after 24 h
 ```
-- Default data dirs: Windows `C:\ProgramData\Woodpile`, macOS `/Library/Application Support/Woodpile`, Linux
-  `/var/lib/woodpile`.
+- Default data dirs: Windows `C:\ProgramData\Woodshed`, macOS `/Library/Application Support/Woodshed`, Linux
+  `/var/lib/woodshed`.
 - **Line format:** `<received UTC, RFC 3339 with ms> <sender IP> <raw message>`, one line per message. Embedded
   CR/LF in a message is escaped as `\r` / `\n` so one message is always one line. Example:
   `2026-11-10T20:41:07.112Z 10.1.0.1 <134>Nov 10 20:41:07 edge-fw-01 conn opened tcp ...`
@@ -166,7 +166,7 @@ frontend install.
 - One row per file: device, path, first and last received time, size, line count, compressed or not.
 - Checkpoints every 1 MiB or 1 minute: (time, byte offset, uncompressed). Search and export use them to jump
   to a time range instead of scanning from the start.
-- The index can be rebuilt from the files (`woodpile reindex`), so the files are always the source of truth.
+- The index can be rebuilt from the files (`woodshed reindex`), so the files are always the source of truth.
 
 ### 3.6 Live hub and stats
 - An in-memory ring buffer holds the last 5,000 messages. The UI live tail uses SSE with server-side filters
@@ -188,7 +188,7 @@ monospace text, high contrast and severity colors.
 
 | Page | Contents |
 |---|---|
-| Welcome (first run) | "Woodpile is listening": this machine's IPs, ports and protocols, listener status, a test command to send a message from this machine, and a link to the dashboard once the first message arrives |
+| Welcome (first run) | "Woodshed is listening": this machine's IPs, ports and protocols, listener status, a test command to send a message from this machine, and a link to the dashboard once the first message arrives |
 | Dashboard | Stat cards (msg/s with a 1 h sparkline, devices online/quiet, disk used against the cap with days kept, dropped messages); device tiles (name, IP, a green/amber/red last-heard dot, msg/min); group tabs; the live tail |
 | Devices | Table of all senders: rename, set group, show first/last seen and totals, "forget" (hides the device; its logs are kept until retention deletes them) |
 | Search | Text (case-insensitive substring; a toggle for regex), devices/groups, time range, severity. Results stream in, capped at 10,000 with "load more". A context view shows ±50 lines around a hit |
@@ -202,15 +202,15 @@ configurable.
 ### 4.1 Export zip
 - Only the raw log lines in the chosen range, one file per device per day. They're decompressed so whoever
   receives them can read them straight away.
-- `manifest.json`: Woodpile version, export time, range, devices (IP, name, group), per-file line count and
+- `manifest.json`: Woodshed version, export time, range, devices (IP, name, group), per-file line count and
   SHA-256, and any gaps in range (for example "listener down 14:02–14:09", from the service's own event log).
-- `woodpile-events.log`: the service's own events in the range (restarts, rotations, deletions, drops, bind
-  errors). This way the recipient can tell "the device sent nothing" apart from "Woodpile wasn't running".
+- `woodshed-events.log`: the service's own events in the range (restarts, rotations, deletions, drops, bind
+  errors). This way the recipient can tell "the device sent nothing" apart from "Woodshed wasn't running".
 
 ## 5. Security
 - The UI is on `127.0.0.1:8514` by default **(decided)**. 8514 is unassigned in the IANA registry (checked
   2026-11-10), isn't on the browsers' blocked-port list (Chrome loaded a page on it), and was free on the test
-  Mac. If it's taken at start-up, the service logs the error and `woodpile status` prints it.
+  Mac. If it's taken at start-up, the service logs the error and `woodshed status` prints it.
 - **LAN mode** (off by default):
   - Turning it on requires setting a password first (hashed with Argon2id).
   - The UI moves to HTTPS with a self-signed certificate generated on the machine. A user certificate can be
@@ -221,12 +221,12 @@ configurable.
   login and a static health check.
 - Export and file routes accept only IDs from the index, never paths, so path traversal isn't possible.
 - The service runs with the least privilege each OS allows:
-  - Linux: a `woodpile` system user with `CAP_NET_BIND_SERVICE` for port 514.
-  - Windows: a virtual service account (`NT SERVICE\Woodpile`) with write access only to its data folder.
-  - macOS: a launchd daemon running as a dedicated `_woodpile` user. Tested 2026-11-10 on macOS 27.2 as an
+  - Linux: a `woodshed` system user with `CAP_NET_BIND_SERVICE` for port 514.
+  - Windows: a virtual service account (`NT SERVICE\Woodshed`) with write access only to its data folder.
+  - macOS: a launchd daemon running as a dedicated `_woodshed` user. Tested 2026-11-10 on macOS 27.2 as an
     ordinary user: binding 514 on `0.0.0.0` and `::` succeeded over both UDP and TCP; binding 514 on `127.0.0.1`
     or the en0 address failed with "Permission denied". So the dedicated user works with the default wildcard
-    bind. Confirmed in CI (2026-11-11, macos-latest): the launchd daemon as `_woodpile` binds UDP and TCP 514 on the
+    bind. Confirmed in CI (2026-11-11, macos-latest): the launchd daemon as `_woodshed` binds UDP and TCP 514 on the
     wildcard. With the application firewall on, it reports the binary as permitted; no prompt appears headless.
     A prompt for a logged-in user on an unsigned binary is still unverified.
 - No outbound connections, no telemetry, no update checks. The CI test suite asserts that no code path dials
@@ -248,21 +248,21 @@ configurable.
   Gatekeeper and SmartScreen prompts.
 - Uninstall stops and removes the service but **keeps the logs** unless the user ticks "also delete logs".
 - Upgrade in place: the config and data folder are kept, and the index schema migrates on start.
-- CLI on the same binary: `woodpile run|install|uninstall|status|reindex|send|bench|version`.
+- CLI on the same binary: `woodshed run|install|uninstall|status|reindex|send|bench|version`.
 
 ## 7. Quality bar
 - Unit tests for the parser (plus fuzzing), framing, rotation and retention (with a fake clock and fake disk
   space), the index and export.
-- Integration test: send 1M messages over UDP and TCP from the built-in `woodpile send` tool and check that the
+- Integration test: send 1M messages over UDP and TCP from the built-in `woodshed send` tool and check that the
   counts on disk match exactly, including across a forced rotation and a service restart.
-- Benchmark: `woodpile bench` sustains 10k msg/s for 10 minutes with zero drops on the reference spec. It runs
+- Benchmark: `woodshed bench` sustains 10k msg/s for 10 minutes with zero drops on the reference spec. It runs
   in CI on every release tag, and the results are recorded in the release notes.
 - CI runs on Linux, Windows and macOS runners. The installers are installed, started, sent messages and
   uninstalled on each runner (an install smoke test).
 - A 24 h soak test before v1.0: steady load, a forced low disk, a listener port clash, and a reboot.
 
 ## 8. Milestones
-1. **M0 Skeleton:** repo, CI matrix, the binary serves the embedded "hello" UI, `woodpile run`.
+1. **M0 Skeleton:** repo, CI matrix, the binary serves the embedded "hello" UI, `woodshed run`.
 2. **M1 Core server:** listeners, parser, per-device files, rotation, gzip, retention, disk guard, index,
    events log, `send` and `bench`.
 3. **M2 UI:** welcome page, dashboard, devices, live tail, settings, light and dark.
@@ -274,8 +274,8 @@ configurable.
 Proven in CI on GitHub-hosted runners (`.github/workflows/install-smoke.yml`; on each: least-privilege account,
 UDP/TCP 514, the UI, 10,000 messages on disk exactly once, restart, uninstall keeping data, delete-logs removing it):
 - deb (Ubuntu, systemd, `CAP_NET_BIND_SERVICE` only), rpm (Fedora 41 container with systemd as PID 1), MSI
-  (`NT SERVICE\Woodpile`, protected ACL, 514-only firewall rules, event log, v0.0.1→v0.0.2 major upgrade), pkg
-  (launchd as `_woodpile`), and `woodpile install` / `uninstall` on all three OSes, which now matches the packages.
+  (`NT SERVICE\Woodshed`, protected ACL, 514-only firewall rules, event log, v0.0.1→v0.0.2 major upgrade), pkg
+  (launchd as `_woodshed`), and `woodshed install` / `uninstall` on all three OSes, which now matches the packages.
 - UI shutdown with an idle connection: 5.0 s → 0.14 s.
 - 2 h soak on macOS at 3,000 msg/s: 21.6M sent, every message on disk except the 183,000 counted as dropped during
   a forced low-disk pause (exactly equal), 0 duplicates; RSS 31→37 MiB (peak 45), 19–23 open files.
@@ -287,7 +287,7 @@ Still unproven:
 
 ## 9. Roadmap (after v1)
 
-**Scope rule:** Woodpile is an *evidence collector for troubleshooting*: it collects, keeps, searches and exports what
+**Scope rule:** Woodshed is an *evidence collector for troubleshooting*: it collects, keeps, searches and exports what
 network devices send, so it can be handed to whoever is helping. It isn't a monitoring system, a flow-analytics
 product or a SIEM. Each new data type has to fit that rule (decided 2026-11-11).
 
@@ -325,4 +325,4 @@ product or a SIEM. Each new data type has to fit that rule (decided 2026-11-11).
    github.com" in §2 (see the reply of 2026-11-10).
 2. Retention fairness: decided 2026-11-11 (fair shares, §3.4). An optional per-device cap or minimum
    days is still open.
-3. macOS launchd daemon as `_woodpile` and the application-firewall prompt: test in M0 (see §5).
+3. macOS launchd daemon as `_woodshed` and the application-firewall prompt: test in M0 (see §5).

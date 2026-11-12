@@ -15,8 +15,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gmccollu/woodpile/internal/config"
-	"github.com/gmccollu/woodpile/internal/model"
+	"github.com/gmccollu/woodshed/internal/config"
+	"github.com/gmccollu/woodshed/internal/model"
 )
 
 var quiet = slog.New(slog.NewTextHandler(io.Discard, nil))

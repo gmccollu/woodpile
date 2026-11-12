@@ -6,23 +6,23 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/gmccollu/woodpile/internal/config"
-	"github.com/gmccollu/woodpile/packaging"
+	"github.com/gmccollu/woodshed/internal/config"
+	"github.com/gmccollu/woodshed/packaging"
 )
 
-// Linux paths for `woodpile install` (the deb/rpm use /usr/bin and
+// Linux paths for `woodshed install` (the deb/rpm use /usr/bin and
 // /usr/lib/systemd/system).
 const (
-	linuxBin       = "/usr/local/bin/woodpile"
-	linuxSysctl    = "/etc/sysctl.d/60-woodpile.conf"
-	linuxPkgExec   = "/usr/bin/woodpile run --service --config /etc/woodpile/woodpile.toml"
-	linuxPkgRW     = "ReadWritePaths=/var/lib/woodpile /etc/woodpile"
-	linuxPkgWD     = "WorkingDirectory=/var/lib/woodpile"
-	installedByTag = "# Installed by `woodpile install`; remove it with `woodpile uninstall`."
+	linuxBin       = "/usr/local/bin/woodshed"
+	linuxSysctl    = "/etc/sysctl.d/60-woodshed.conf"
+	linuxPkgExec   = "/usr/bin/woodshed run --service --config /etc/woodshed/woodshed.toml"
+	linuxPkgRW     = "ReadWritePaths=/var/lib/woodshed /etc/woodshed"
+	linuxPkgWD     = "WorkingDirectory=/var/lib/woodshed"
+	installedByTag = "# Installed by `woodshed install`; remove it with `woodshed uninstall`."
 )
 
-// systemdUnit is the packaged unit (packaging/linux/woodpile.service) with this
-// install's binary, config and data paths. Everything else (the woodpile user,
+// systemdUnit is the packaged unit (packaging/linux/woodshed.service) with this
+// install's binary, config and data paths. Everything else (the woodshed user,
 // CAP_NET_BIND_SERVICE, the sandboxing) is the package's, unchanged.
 func systemdUnit(bin, cfgPath, dataDir string) (string, error) {
 	u := packaging.SystemdUnit
@@ -66,7 +66,7 @@ func nologinShell(h *host) string {
 func installSystemd(h *host, o InstallOptions, dataDir string) (Result, error) {
 	res := Result{Where: linuxManualUnit, Exe: linuxBin, Config: o.ConfigPath, DataDir: dataDir, Account: LinuxUser}
 	if !h.exists("/run/systemd/system") {
-		return res, fmt.Errorf("systemd isn't running here, so there's no service to install; run `woodpile run --config %s` instead", o.ConfigPath)
+		return res, fmt.Errorf("systemd isn't running here, so there's no service to install; run `woodshed run --config %s` instead", o.ConfigPath)
 	}
 	// The system user and group, exactly as packaging/linux/scripts/postinstall.sh.
 	if _, err := h.run("getent", "group", LinuxUser); err != nil {
@@ -76,8 +76,8 @@ func installSystemd(h *host, o InstallOptions, dataDir string) (Result, error) {
 		h.say("created group %s", LinuxUser)
 	}
 	if _, err := h.run("getent", "passwd", LinuxUser); err != nil {
-		if _, err := h.run("useradd", "--system", "--gid", LinuxUser, "--home-dir", "/var/lib/woodpile", "--no-create-home",
-			"--shell", nologinShell(h), "--comment", "Woodpile syslog server", LinuxUser); err != nil {
+		if _, err := h.run("useradd", "--system", "--gid", LinuxUser, "--home-dir", "/var/lib/woodshed", "--no-create-home",
+			"--shell", nologinShell(h), "--comment", "Woodshed syslog server", LinuxUser); err != nil {
 			return res, err
 		}
 		h.say("created user %s", LinuxUser)
@@ -119,7 +119,7 @@ func installSystemd(h *host, o InstallOptions, dataDir string) (Result, error) {
 		return res, err
 	}
 	if _, err := h.run("systemctl", "start", LinuxName+".service"); err != nil {
-		return res, fmt.Errorf("the service is installed but didn't start (see journalctl -u woodpile): %w", err)
+		return res, fmt.Errorf("the service is installed but didn't start (see journalctl -u woodshed): %w", err)
 	}
 	return res, nil
 }
@@ -209,7 +209,7 @@ func uninstallSystemd(h *host, o UninstallOptions) (Result, error) {
 // deleteData deletes the data folder and the config with DeleteLogs, or notes
 // where they were kept. The paths come from the installed unit, plist or
 // registry (never the config), and it refuses system and home folders, and a
-// folder that doesn't look like Woodpile's.
+// folder that doesn't look like Woodshed's.
 func deleteData(h *host, goos string, o UninstallOptions, res *Result, cfgPath, dataDir string) error {
 	if !o.DeleteLogs {
 		if dataDir != "" {
@@ -227,7 +227,7 @@ func deleteData(h *host, goos string, o UninstallOptions, res *Result, cfgPath, 
 		return err
 	}
 	h.say("deleted %s", dataDir)
-	if cfgPath != "" && filepath.Dir(cfgPath) != dataDir && filepath.Base(cfgPath) == "woodpile.toml" {
+	if cfgPath != "" && filepath.Dir(cfgPath) != dataDir && filepath.Base(cfgPath) == "woodshed.toml" {
 		if err := h.checkConfigPath(cfgPath); err != nil {
 			return fmt.Errorf("not deleting the config: %w", err)
 		}
@@ -311,7 +311,7 @@ func prepareFolders(h *host, goos, cfgPath, dataDir, user, group string) (notes 
 }
 
 // checkConfigDirContents refuses a config folder (other than the data folder)
-// holding anything but Woodpile's config: an install gives that folder to the
+// holding anything but Woodshed's config: an install gives that folder to the
 // service account.
 func (h *host) checkConfigDirContents(dir string) error {
 	entries, err := os.ReadDir(h.path(dir))
@@ -323,10 +323,10 @@ func (h *host) checkConfigDirContents(dir string) error {
 	}
 	for _, e := range entries {
 		n := e.Name()
-		if n == "woodpile.toml" || (strings.HasPrefix(n, ".woodpile.toml-") && strings.HasSuffix(n, ".tmp")) {
+		if n == "woodshed.toml" || (strings.HasPrefix(n, ".woodshed.toml-") && strings.HasSuffix(n, ".tmp")) {
 			continue
 		}
-		return fmt.Errorf("the config's folder %s holds other files (%s); put the config in a folder of its own, such as %s/woodpile",
+		return fmt.Errorf("the config's folder %s holds other files (%s); put the config in a folder of its own, such as %s/woodshed",
 			dir, n, dir)
 	}
 	return nil

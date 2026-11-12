@@ -13,9 +13,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gmccollu/woodpile/internal/api"
-	"github.com/gmccollu/woodpile/internal/index"
-	"github.com/gmccollu/woodpile/internal/loadgen"
+	"github.com/gmccollu/woodshed/internal/api"
+	"github.com/gmccollu/woodshed/internal/index"
+	"github.com/gmccollu/woodshed/internal/loadgen"
 )
 
 // searchPage is /api/search as a client reads it.

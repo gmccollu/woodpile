@@ -8,7 +8,7 @@ import (
 
 	"golang.org/x/sys/windows"
 
-	"github.com/gmccollu/woodpile/internal/winacl"
+	"github.com/gmccollu/woodshed/internal/winacl"
 )
 
 // trustedSIDs may own or be granted access to a data folder besides this
@@ -18,7 +18,7 @@ var trustedSIDs = []string{
 	"S-1-5-18",     // SYSTEM
 	"S-1-5-32-544", // Administrators
 	"S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464", // TrustedInstaller
-	winacl.ServiceSID, // NT SERVICE\Woodpile
+	winacl.ServiceSID, // NT SERVICE\Woodshed
 	"S-1-3-0",         // CREATOR OWNER (inherit-only placeholder)
 	"S-1-3-4",         // OWNER RIGHTS
 }
@@ -26,7 +26,7 @@ var trustedSIDs = []string{
 // dataDirExposure lists what makes the data folder shared (re-test N2, W1): broad
 // groups (Everyone, Users, Authenticated Users, Interactive), an owner that isn't
 // this user or a trusted account, and any other account an allow entry names.
-// An ordinary user could otherwise pre-create C:\ProgramData\Woodpile with a
+// An ordinary user could otherwise pre-create C:\ProgramData\Woodshed with a
 // protected ACL naming themselves and be accepted.
 func dataDirExposure(dir string) ([]string, error) {
 	out, err := winacl.SharedAccess(dir)

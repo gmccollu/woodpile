@@ -1,5 +1,5 @@
 #!/bin/bash
-# wl: the Woodpile lab driver (Phase 2: release-candidate install and network tests on real VMs).
+# wl: the Woodshed lab driver (Phase 2: release-candidate install and network tests on real VMs).
 # Every host, address and login comes from scripts/lab/lab.env (gitignored; see lab.env.example).
 # The driver reaches the sender host and the VMs only through ssh host aliases in LAB_SSH_CONFIG
 # (typically ProxyJump through the sender), so nothing here knows a hostname or an IP.
@@ -130,9 +130,9 @@ asset() { # asset <glob>: one matching release asset in LAB_ASSETS
 }
 pkg_for() {
 	case "$(tv KIND)" in
-	deb) asset 'woodpile_*_amd64.deb' ;;
-	rpm) asset 'woodpile-*.x86_64.rpm' ;;
-	msi) asset 'woodpile_*_windows_amd64.msi' ;;
+	deb) asset 'woodshed_*_amd64.deb' ;;
+	rpm) asset 'woodshed-*.x86_64.rpm' ;;
+	msi) asset 'woodshed_*_windows_amd64.msi' ;;
 	*) die "LAB_${target}_KIND must be deb, rpm or msi" ;;
 	esac
 }
@@ -164,7 +164,7 @@ cmd_tools() {
 	mkdir -p "$t"
 	(cd "$repo" && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o "$t/verifyseq-linux-amd64" ./scripts/verifyseq &&
 		CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -o "$t/verifyseq-windows-amd64.exe" ./scripts/verifyseq &&
-		CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o "$t/woodpile-linux-amd64" ./cmd/woodpile)
+		CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o "$t/woodshed-linux-amd64" ./cmd/woodshed)
 	ls -l "$t"
 }
 
@@ -175,7 +175,7 @@ cmd_setup_sender() {
 	[ "$n" -ge 8 ] || die "LAB_SENDER_IPS has $n addresses; the tests want at least 8"
 	b=$(mktemp -d)
 	cp "$here/sender/wl-netns" "$here/sender/wl-send" "$here/sender/woodpile-lab-senders.service" "$here/sender/install-sender.sh" "$b/"
-	cp "${LAB_SENDER_BIN:-$LAB_ASSETS/tools/woodpile-linux-amd64}" "$b/woodpile"
+	cp "${LAB_SENDER_BIN:-$LAB_ASSETS/tools/woodshed-linux-amd64}" "$b/woodshed"
 	printf 'PARENT=%s\nPREFIX=%s\nIPS="%s"\n' "$LAB_SENDER_PARENT" "$LAB_SENDER_PREFIX" "$LAB_SENDER_IPS" >"$b/senders.conf"
 	user=$("${SSH[@]}" "$LAB_SENDER" 'id -un')
 	"${SSH[@]}" "$LAB_SENDER" 'rm -rf ~/woodpile-lab-bundle && mkdir -p ~/woodpile-lab-bundle'
@@ -206,20 +206,20 @@ cmd_stage() {
 		vm_put "$t/verifyseq-windows-amd64.exe" C:/woodpile-lab/verifyseq.exe
 		vm_put "$pkg" "C:/woodpile-lab/$(basename "$pkg")"
 		tmp=$(mktemp -d)
-		python3 -c "import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])" "$(asset 'woodpile_*_windows_amd64.zip')" "$tmp"
-		vm_put "$(find "$tmp" -name woodpile.exe | head -1)" C:/woodpile-lab/portable/woodpile.exe
+		python3 -c "import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])" "$(asset 'woodshed_*_windows_amd64.zip')" "$tmp"
+		vm_put "$(find "$tmp" -name woodshed.exe | head -1)" C:/woodpile-lab/portable/woodshed.exe
 		rm -rf "$tmp"
 	else
-		"${SSH[@]}" "$(tv SSH)" 'sudo -n install -d -o "$(id -un)" /opt/woodpile-lab /var/tmp/woodpile-lab ~/woodpile-portable'
+		"${SSH[@]}" "$(tv SSH)" 'sudo -n install -d -o "$(id -un)" /opt/woodpile-lab /var/tmp/woodpile-lab ~/woodshed-portable'
 		vm_put "$here/remote/linux-lab.sh" /opt/woodpile-lab/linux-lab.sh
 		vm_put "$t/verifyseq-linux-amd64" /opt/woodpile-lab/verifyseq
 		vm_put "$pkg" "/opt/woodpile-lab/$(basename "$pkg")"
 		tmp=$(mktemp -d)
-		tar -C "$tmp" -xzf "$(asset 'woodpile_*_linux_amd64.tar.gz')"
-		d=$(find "$tmp" -type f -name woodpile | head -1)
-		vm_put "$d" woodpile-portable/woodpile
+		tar -C "$tmp" -xzf "$(asset 'woodshed_*_linux_amd64.tar.gz')"
+		d=$(find "$tmp" -type f -name woodshed | head -1)
+		vm_put "$d" woodshed-portable/woodshed
 		rm -rf "$tmp"
-		"${SSH[@]}" "$(tv SSH)" 'chmod 0755 /opt/woodpile-lab/linux-lab.sh /opt/woodpile-lab/verifyseq ~/woodpile-portable/woodpile'
+		"${SSH[@]}" "$(tv SSH)" 'chmod 0755 /opt/woodpile-lab/linux-lab.sh /opt/woodpile-lab/verifyseq ~/woodshed-portable/woodshed'
 	fi
 	echo "staged $(basename "$pkg") on $target"
 }
@@ -227,9 +227,9 @@ cmd_stage() {
 svc_ok() { # the service JSON says: running as its account, holding UDP and TCP 514, UI healthy
 	local j=$1
 	if [ "$(tv OS)" = windows ]; then
-		echo "$j" | python3 -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if d["state"]=="Running" and d["account"].lower()=="nt service\\woodpile" and d["udp514_sockets"]>0 and d["tcp514_listen"]>0 and "ok" in d["healthz"] else 1)'
+		echo "$j" | python3 -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if d["state"]=="Running" and d["account"].lower()=="nt service\\woodshed" and d["udp514_sockets"]>0 and d["tcp514_listen"]>0 and "ok" in d["healthz"] else 1)'
 	else
-		echo "$j" | python3 -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if d["active"]=="active" and d["user"]=="woodpile" and d["udp514_sockets"]>0 and d["tcp514_listen"]>0 and "ok" in d["healthz"] else 1)'
+		echo "$j" | python3 -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if d["active"]=="active" and d["user"]=="woodshed" and d["udp514_sockets"]>0 and d["tcp514_listen"]>0 and "ok" in d["healthz"] else 1)'
 	fi
 }
 svc_json() { vm svc | grep '^{' | tail -1 | tee -a "$step_dir/svc.jsonl"; }
@@ -272,7 +272,7 @@ cmd_check() {
 			if [ "$LAB_FW_ENABLE" = 1 ]; then log "turning the firewall on (every profile)"; vm fw-enable | tee -a "$step_dir/log"
 			else log "WARN a firewall profile is off: the firewall leg proves nothing"; fi
 		fi
-		check "the MSI's firewall rules exist" has "$fw" Woodpile
+		check "the MSI's firewall rules exist" has "$fw" Woodshed
 	else
 		case "$fw" in
 		*'"firewall": "ufw-inactive"'* | *'"firewall": "firewalld-inactive"'*)
@@ -493,7 +493,7 @@ cmd_portable() {
 		vm portable stop | tee -a "$step_dir/log"
 		vm portable start "$port" allow | tee -a "$step_dir/log"
 	else
-		d=$("${SSH[@]}" "$(tv SSH)" 'echo ~/woodpile-portable/data')
+		d=$("${SSH[@]}" "$(tv SSH)" 'echo ~/woodshed-portable/data')
 		vm portable start "$port" | tee -a "$step_dir/log"
 	fi
 	r=$(runid)
@@ -611,7 +611,7 @@ for f in m["files"]:
     ok = hashlib.sha256(data).hexdigest() == f["sha256"] and data.count(b"\n") == f["lines"]
     bad += not ok
     print(("ok  " if ok else "BAD ") + f"{f['path']}: {f['lines']} lines, {f['bytes']} bytes")
-print(f"manifest: {m['woodpile_version']}, {m['lines']} lines, {len(m['files'])} files, {m['events']} events; gaps: {json.dumps(m['gaps'])}")
+print(f"manifest: {m['woodshed_version']}, {m['lines']} lines, {len(m['files'])} files, {m['events']} events; gaps: {json.dumps(m['gaps'])}")
 if os.path.exists(sys.argv[2]):
     at = datetime.datetime.strptime(open(sys.argv[2]).read().strip(), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
     hit = [g for g in m["gaps"] if g["kind"] == "not_running" and

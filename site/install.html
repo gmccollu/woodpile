@@ -9,40 +9,40 @@
     />
     <meta name="referrer" content="no-referrer" />
     <meta name="color-scheme" content="light dark" />
-    <title>Install Woodpile: Windows, macOS and Linux</title>
-    <meta name="description" content="How to install Woodpile, or run it portable, on Windows, macOS and Linux, and point a device at it." />
+    <title>Install Woodshed: Windows, macOS and Linux</title>
+    <meta name="description" content="How to install Woodshed, or run it portable, on Windows, macOS and Linux, and point a device at it." />
     <link rel="icon" type="image/svg+xml" href="favicon.svg" />
     <link rel="stylesheet" href="style.css" />
     <meta property="og:type" content="article" />
-    <meta property="og:title" content="Install Woodpile" />
-    <meta property="og:description" content="Install Woodpile, or run it portable, on Windows, macOS and Linux." />
-    <meta property="og:url" content="https://gmccollu.github.io/woodpile/install.html" />
-    <meta property="og:image" content="https://gmccollu.github.io/woodpile/img/og.jpg" />
+    <meta property="og:title" content="Install Woodshed" />
+    <meta property="og:description" content="Install Woodshed, or run it portable, on Windows, macOS and Linux." />
+    <meta property="og:url" content="https://gmccollu.github.io/woodshed/install.html" />
+    <meta property="og:image" content="https://gmccollu.github.io/woodshed/img/og.jpg" />
     <script type="module" src="app.js"></script>
   </head>
   <body>
     <a class="skip" href="#main">Skip to content</a>
     <div class="wrap">
       <header class="top">
-        <a class="brand" href="./" aria-label="Woodpile home">
+        <a class="brand" href="./" aria-label="Woodshed home">
           <span class="logo"><img src="favicon.svg" width="28" height="28" alt="" /></span>
-          <b>Woodpile</b>
+          <b>Woodshed</b>
         </a>
         <nav aria-label="Site">
           <a href="./#download">Download</a>
           <a href="install.html" aria-current="page">Install guide</a>
-          <a href="https://github.com/gmccollu/woodpile/blob/main/FAQ.md" data-gh="/blob/main/FAQ.md">FAQ</a>
-          <a href="https://github.com/gmccollu/woodpile" data-gh="">GitHub</a>
+          <a href="https://github.com/gmccollu/woodshed/blob/main/FAQ.md" data-gh="/blob/main/FAQ.md">FAQ</a>
+          <a href="https://github.com/gmccollu/woodshed" data-gh="">GitHub</a>
         </nav>
       </header>
 
       <main id="main">
         <section class="card" aria-labelledby="t">
-          <h1 id="t">Install Woodpile</h1>
+          <h1 id="t">Install Woodshed</h1>
           <p>
-            Pick one. The <b>installer</b> runs Woodpile in the background as a service, also after a restart. <b>Portable</b> runs it only
+            Pick one. The <b>installer</b> runs Woodshed in the background as a service, also after a restart. <b>Portable</b> runs it only
             while its window is open, with nothing installed. Downloads are on the <a href="./#download">download section</a> and the
-            <a href="https://github.com/gmccollu/woodpile/releases/latest" data-releases>releases page</a>.
+            <a href="https://github.com/gmccollu/woodshed/releases/latest" data-releases>releases page</a>.
           </p>
           <div class="toc" role="navigation" aria-label="Operating systems">
             <a href="#windows">Windows</a>
@@ -52,8 +52,8 @@
           </div>
           <p class="small muted">
             This is the short version. The full
-            <a href="https://github.com/gmccollu/woodpile/blob/main/docs/install.md" data-gh="/blob/main/docs/install.md">install guide</a> and
-            <a href="https://github.com/gmccollu/woodpile/blob/main/docs/user-guide.md" data-gh="/blob/main/docs/user-guide.md">user guide</a>
+            <a href="https://github.com/gmccollu/woodshed/blob/main/docs/install.md" data-gh="/blob/main/docs/install.md">install guide</a> and
+            <a href="https://github.com/gmccollu/woodshed/blob/main/docs/user-guide.md" data-gh="/blob/main/docs/user-guide.md">user guide</a>
             are on GitHub.
           </p>
         </section>
@@ -62,74 +62,74 @@
           <h2 id="w">Windows</h2>
           <h3>Installer</h3>
           <ol class="steps">
-            <li>Download <code>woodpile_X.Y.Z_windows_amd64.msi</code> (<code>_arm64</code> for ARM PCs) and double-click it. Approve the administrator prompt.</li>
-            <li>It installs the <b>Woodpile</b> service, which starts with the computer, and opens Windows Firewall for UDP and TCP 514 only.</li>
-            <li>Open <code>http://localhost:8514/</code>, or the <b>Woodpile</b> shortcut in the Start menu.</li>
+            <li>Download <code>woodshed_X.Y.Z_windows_amd64.msi</code> (<code>_arm64</code> for ARM PCs) and double-click it. Approve the administrator prompt.</li>
+            <li>It installs the <b>Woodshed</b> service, which starts with the computer, and opens Windows Firewall for UDP and TCP 514 only.</li>
+            <li>Open <code>http://localhost:8514/</code>, or the <b>Woodshed</b> shortcut in the Start menu.</li>
           </ol>
-          <p class="small muted">Silent install from an administrator prompt: <code>msiexec /i woodpile_X.Y.Z_windows_amd64.msi /qn</code></p>
+          <p class="small muted">Silent install from an administrator prompt: <code>msiexec /i woodshed_X.Y.Z_windows_amd64.msi /qn</code></p>
           <h3>Portable</h3>
           <ol class="steps">
-            <li>Download <code>woodpile_X.Y.Z_windows_amd64.zip</code>, right-click it, <b>Extract All</b>.</li>
-            <li>Double-click <code>woodpile.exe</code>. When Windows asks whether to allow it through the firewall, choose <b>Allow</b>.</li>
+            <li>Download <code>woodshed_X.Y.Z_windows_amd64.zip</code>, right-click it, <b>Extract All</b>.</li>
+            <li>Double-click <code>woodshed.exe</code>. When Windows asks whether to allow it through the firewall, choose <b>Allow</b>.</li>
           </ol>
           <h3>Remove it</h3>
-          <p>Settings → Apps → Woodpile → Uninstall. Your logs in <code>C:\ProgramData\Woodpile</code> are kept; delete the folder to remove them.</p>
+          <p>Settings → Apps → Woodshed → Uninstall. Your logs in <code>C:\ProgramData\Woodshed</code> are kept; delete the folder to remove them.</p>
         </section>
 
         <section id="macos" class="card os" aria-labelledby="m">
           <h2 id="m">macOS</h2>
           <h3>Installer</h3>
           <ol class="steps">
-            <li>Download <code>woodpile_X.Y.Z_macos_universal.pkg</code> (Apple silicon and Intel) and double-click it.</li>
+            <li>Download <code>woodshed_X.Y.Z_macos_universal.pkg</code> (Apple silicon and Intel) and double-click it.</li>
             <li>Follow the installer; it needs an administrator password. When it finishes, the welcome page opens in your browser.</li>
           </ol>
           <h3>Portable</h3>
           <ol class="steps">
-            <li>Download <code>woodpile_X.Y.Z_darwin_universal.tar.gz</code> and double-click it to unpack.</li>
-            <li>Double-click <code>woodpile</code>.</li>
+            <li>Download <code>woodshed_X.Y.Z_darwin_universal.tar.gz</code> and double-click it to unpack.</li>
+            <li>Double-click <code>woodshed</code>.</li>
           </ol>
           <h3>Remove it</h3>
-          <pre><code>sudo /usr/local/share/woodpile/uninstall.sh                <span class="c"># keeps the logs</span>
-sudo /usr/local/share/woodpile/uninstall.sh --delete-logs  <span class="c"># also deletes them</span></code></pre>
-          <p class="small muted">If the macOS firewall is on and devices can't reach port 514, allow incoming connections for <code>/usr/local/bin/woodpile</code> in System Settings → Network → Firewall.</p>
+          <pre><code>sudo /usr/local/share/woodshed/uninstall.sh                <span class="c"># keeps the logs</span>
+sudo /usr/local/share/woodshed/uninstall.sh --delete-logs  <span class="c"># also deletes them</span></code></pre>
+          <p class="small muted">If the macOS firewall is on and devices can't reach port 514, allow incoming connections for <code>/usr/local/bin/woodshed</code> in System Settings → Network → Firewall.</p>
         </section>
 
         <section id="linux" class="card os" aria-labelledby="l">
           <h2 id="l">Linux</h2>
           <h3>Package</h3>
-          <pre><code>sudo apt install ./woodpile_X.Y.Z_amd64.deb        <span class="c"># Debian, Ubuntu</span>
-sudo dnf install ./woodpile-X.Y.Z-1.x86_64.rpm     <span class="c"># Fedora, RHEL</span>
-sudo zypper install ./woodpile-X.Y.Z-1.x86_64.rpm  <span class="c"># openSUSE</span></code></pre>
+          <pre><code>sudo apt install ./woodshed_X.Y.Z_amd64.deb        <span class="c"># Debian, Ubuntu</span>
+sudo dnf install ./woodshed-X.Y.Z-1.x86_64.rpm     <span class="c"># Fedora, RHEL</span>
+sudo zypper install ./woodshed-X.Y.Z-1.x86_64.rpm  <span class="c"># openSUSE</span></code></pre>
           <p>
-            The package starts the <code>woodpile</code> service and prints the web address. It doesn't change the firewall; if one is on,
+            The package starts the <code>woodshed</code> service and prints the web address. It doesn't change the firewall; if one is on,
             open port 514:
           </p>
           <pre><code>sudo ufw allow 514                                                                  <span class="c"># ufw</span>
 sudo firewall-cmd --permanent --add-port=514/udp --add-port=514/tcp &amp;&amp; sudo firewall-cmd --reload</code></pre>
           <h3>Portable</h3>
-          <pre><code>tar xzf woodpile_X.Y.Z_linux_amd64.tar.gz
-cd woodpile_X.Y.Z_linux_amd64
-sudo ./woodpile          <span class="c"># port 514 needs root, or: sudo setcap cap_net_bind_service=+ep ./woodpile</span></code></pre>
+          <pre><code>tar xzf woodshed_X.Y.Z_linux_amd64.tar.gz
+cd woodshed_X.Y.Z_linux_amd64
+sudo ./woodshed          <span class="c"># port 514 needs root, or: sudo setcap cap_net_bind_service=+ep ./woodshed</span></code></pre>
           <h3>Remove it</h3>
-          <pre><code>sudo apt remove woodpile   <span class="c"># keeps /var/lib/woodpile (apt purge also deletes it)</span>
-sudo dnf remove woodpile   <span class="c"># keeps /var/lib/woodpile</span></code></pre>
+          <pre><code>sudo apt remove woodshed   <span class="c"># keeps /var/lib/woodshed (apt purge also deletes it)</span>
+sudo dnf remove woodshed   <span class="c"># keeps /var/lib/woodshed</span></code></pre>
         </section>
 
         <section id="device" class="card" aria-labelledby="d">
           <h2 id="d">Point a device at it</h2>
           <ol class="steps">
-            <li>Open <code>http://localhost:8514/</code> on the Woodpile machine. The <b>Setup</b> page lists its addresses.</li>
+            <li>Open <code>http://localhost:8514/</code> on the Woodshed machine. The <b>Setup</b> page lists its addresses.</li>
             <li>
               In the device's logging or syslog settings, set the syslog server to one of those addresses, <b>port 514</b>, UDP (or TCP if
               the device offers it).
             </li>
             <li>Make the device log something (log in to it, or change a setting). The Setup page says when the first message arrives.</li>
           </ol>
-          <p>No device handy? Send a test message from the Woodpile machine:</p>
-          <pre><code>woodpile send --message "hello"   <span class="c"># portable: ./woodpile send ... (woodpile.exe on Windows)</span></code></pre>
+          <p>No device handy? Send a test message from the Woodshed machine:</p>
+          <pre><code>woodshed send --message "hello"   <span class="c"># portable: ./woodshed send ... (woodshed.exe on Windows)</span></code></pre>
           <p class="small muted">
             Nothing arriving? See
-            <a href="https://github.com/gmccollu/woodpile/blob/main/FAQ.md#devices-cant-reach-woodpile" data-gh="/blob/main/FAQ.md#devices-cant-reach-woodpile">devices can't reach Woodpile</a>
+            <a href="https://github.com/gmccollu/woodshed/blob/main/FAQ.md#devices-cant-reach-woodshed" data-gh="/blob/main/FAQ.md#devices-cant-reach-woodshed">devices can't reach Woodshed</a>
             in the FAQ.
           </p>
         </section>
@@ -142,9 +142,9 @@ sudo dnf remove woodpile   <span class="c"># keeps /var/lib/woodpile</span></cod
               <tr><th scope="col"></th><th scope="col">Installer</th><th scope="col">Portable</th></tr>
             </thead>
             <tbody>
-              <tr><td>Windows</td><td><code>C:\ProgramData\Woodpile\logs\</code></td><td><code>woodpile-data\logs\</code> next to <code>woodpile.exe</code></td></tr>
-              <tr><td>macOS</td><td><code>/Library/Application Support/Woodpile/logs/</code></td><td><code>woodpile-data/logs/</code> next to <code>woodpile</code></td></tr>
-              <tr><td>Linux</td><td><code>/var/lib/woodpile/logs/</code></td><td><code>woodpile-data/logs/</code> next to <code>woodpile</code></td></tr>
+              <tr><td>Windows</td><td><code>C:\ProgramData\Woodshed\logs\</code></td><td><code>woodshed-data\logs\</code> next to <code>woodshed.exe</code></td></tr>
+              <tr><td>macOS</td><td><code>/Library/Application Support/Woodshed/logs/</code></td><td><code>woodshed-data/logs/</code> next to <code>woodshed</code></td></tr>
+              <tr><td>Linux</td><td><code>/var/lib/woodshed/logs/</code></td><td><code>woodshed-data/logs/</code> next to <code>woodshed</code></td></tr>
             </tbody>
           </table>
         </section>
@@ -163,16 +163,16 @@ sudo dnf remove woodpile   <span class="c"># keeps /var/lib/woodpile</span></cod
 
       <footer>
         <div class="links">
-          <a href="https://github.com/gmccollu/woodpile" data-gh="">GitHub</a>
-          <a href="https://github.com/gmccollu/woodpile/blob/main/docs/user-guide.md" data-gh="/blob/main/docs/user-guide.md">User guide</a>
-          <a href="https://github.com/gmccollu/woodpile/blob/main/docs/install.md" data-gh="/blob/main/docs/install.md">Install docs</a>
-          <a href="https://github.com/gmccollu/woodpile/blob/main/FAQ.md" data-gh="/blob/main/FAQ.md">FAQ</a>
-          <a href="https://github.com/gmccollu/woodpile/blob/main/SECURITY.md" data-gh="/blob/main/SECURITY.md">Security</a>
-          <a href="https://github.com/gmccollu/woodpile/blob/main/CHANGELOG.md" data-gh="/blob/main/CHANGELOG.md">Changelog</a>
+          <a href="https://github.com/gmccollu/woodshed" data-gh="">GitHub</a>
+          <a href="https://github.com/gmccollu/woodshed/blob/main/docs/user-guide.md" data-gh="/blob/main/docs/user-guide.md">User guide</a>
+          <a href="https://github.com/gmccollu/woodshed/blob/main/docs/install.md" data-gh="/blob/main/docs/install.md">Install docs</a>
+          <a href="https://github.com/gmccollu/woodshed/blob/main/FAQ.md" data-gh="/blob/main/FAQ.md">FAQ</a>
+          <a href="https://github.com/gmccollu/woodshed/blob/main/SECURITY.md" data-gh="/blob/main/SECURITY.md">Security</a>
+          <a href="https://github.com/gmccollu/woodshed/blob/main/CHANGELOG.md" data-gh="/blob/main/CHANGELOG.md">Changelog</a>
         </div>
         <p class="muted">
-          Woodpile is free software under the
-          <a href="https://github.com/gmccollu/woodpile/blob/main/LICENSE" data-gh="/blob/main/LICENSE">MIT license</a>.
+          Woodshed is free software under the
+          <a href="https://github.com/gmccollu/woodshed/blob/main/LICENSE" data-gh="/blob/main/LICENSE">MIT license</a>.
         </p>
         <p class="muted small">
           This site has no analytics, no cookies, no external fonts and no third-party scripts. It makes no requests to other sites.

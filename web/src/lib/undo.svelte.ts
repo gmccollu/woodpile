@@ -4,7 +4,7 @@
 import { putSettings, type Settings } from './api';
 import { live, refreshStatus } from './status.svelte';
 
-const KEY = 'woodpile.undo';
+const KEY = 'woodshed.undo';
 
 interface Saved {
   prev: Settings;

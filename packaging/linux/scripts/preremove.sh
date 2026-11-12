@@ -1,5 +1,5 @@
 #!/bin/sh
-# Woodpile deb/rpm pre-remove script (nfpm).
+# Woodshed deb/rpm pre-remove script (nfpm).
 #
 # Called as:
 #   deb: prerm remove | upgrade <new-version> | deconfigure ... | failed-upgrade ...
@@ -9,7 +9,7 @@
 # running and the new package's postinstall restarts it.
 set -e
 
-SERVICE=woodpile.service
+SERVICE=woodshed.service
 
 case "$1" in
 	remove | deconfigure | 0) ;;

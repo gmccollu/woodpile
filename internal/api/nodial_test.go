@@ -20,7 +20,7 @@ import (
 	"time"
 )
 
-// Woodpile makes no outbound connections (SPEC §1, §5). Two checks: no
+// Woodshed makes no outbound connections (SPEC §1, §5). Two checks: no
 // non-test file in this package refers to a client-side network API, and
 // exercising every route with the default transport and resolver hooked records
 // no dial or lookup.

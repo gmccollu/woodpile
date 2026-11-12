@@ -102,7 +102,7 @@ func (h *host) writeFile(p, data string, perm os.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(h.path(p)), 0o755); err != nil {
 		return err
 	}
-	tmp := h.path(p) + ".woodpile-tmp"
+	tmp := h.path(p) + ".woodshed-tmp"
 	if err := os.WriteFile(tmp, []byte(data), perm); err != nil {
 		return err
 	}
@@ -131,7 +131,7 @@ func (h *host) copyFile(src, dst string, perm os.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(h.path(dst)), 0o755); err != nil {
 		return err
 	}
-	tmp := h.path(dst) + ".woodpile-tmp"
+	tmp := h.path(dst) + ".woodshed-tmp"
 	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
 	if err != nil {
 		return err

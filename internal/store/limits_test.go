@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gmccollu/woodpile/internal/index"
-	"github.com/gmccollu/woodpile/internal/model"
-	"github.com/gmccollu/woodpile/internal/store/logfile"
+	"github.com/gmccollu/woodshed/internal/index"
+	"github.com/gmccollu/woodshed/internal/model"
+	"github.com/gmccollu/woodshed/internal/store/logfile"
 )
 
 // v6 returns distinct senders from one /64 cycling its interface IDs (the review's

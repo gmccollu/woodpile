@@ -11,9 +11,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gmccollu/woodpile/internal/api"
-	"github.com/gmccollu/woodpile/internal/config"
-	"github.com/gmccollu/woodpile/internal/peer"
+	"github.com/gmccollu/woodshed/internal/api"
+	"github.com/gmccollu/woodshed/internal/config"
+	"github.com/gmccollu/woodshed/internal/peer"
 )
 
 // peerCacheFor is how long a peer lookup (a launchctl/systemctl/SCM query) is
@@ -29,7 +29,7 @@ type peerCache struct {
 	find func(context.Context, peer.Options) (peer.Info, bool) // peer.Find; tests replace it
 }
 
-// peer returns another running Woodpile (the installed service, or a copy
+// peer returns another running Woodshed (the installed service, or a copy
 // whose run-state file in the default data folder is readable), cached.
 func (b *backend) peer(ctx context.Context) (peer.Info, bool) {
 	c := &b.peers
@@ -53,9 +53,9 @@ func (b *backend) peer(ctx context.Context) (peer.Info, bool) {
 
 var holderPIDRE = regexp.MustCompile(`\(pid (\d+)\)`)
 
-// annotateHolders names another Woodpile as the holder of listeners that
+// annotateHolders names another Woodshed as the holder of listeners that
 // couldn't bind: when the OS names its PID, or when the holder can't be seen
-// at all (another user's socket) and a Woodpile is running.
+// at all (another user's socket) and a Woodshed is running.
 func annotateHolders(ls []api.Listener, p peer.Info, ok bool) {
 	if !ok {
 		return
@@ -77,9 +77,9 @@ func annotateHolders(ls []api.Listener, p peer.Info, ok bool) {
 
 // peerName is how banners name a peer.
 func peerName(p peer.Info) string {
-	name := "Another copy of Woodpile"
+	name := "Another copy of Woodshed"
 	if p.Kind == peer.KindService {
-		name = "The Woodpile service"
+		name = "The Woodshed service"
 	}
 	if p.PID != 0 {
 		name += fmt.Sprintf(" (PID %d)", p.PID)
@@ -87,7 +87,7 @@ func peerName(p peer.Info) string {
 	return name
 }
 
-// peerBanners are the banners about another Woodpile: listeners it holds, and
+// peerBanners are the banners about another Woodshed: listeners it holds, and
 // its UI shut out by this copy's UI port.
 func peerBanners(ls []api.Listener, p peer.Info, ok bool, uiPort int, uiListening bool) []api.Banner {
 	if !ok {
@@ -120,15 +120,15 @@ func peerBanners(ls []api.Listener, p peer.Info, ok bool, uiPort int, uiListenin
 	return out
 }
 
-// PeerWarning is the startup warning for `woodpile run` and portable mode when
-// another Woodpile is running ("" if none). It's logged too. The service itself
+// PeerWarning is the startup warning for `woodshed run` and portable mode when
+// another Woodshed is running ("" if none). It's logged too. The service itself
 // never warns about itself.
 func (s *Server) PeerWarning(ctx context.Context) string {
 	p, ok := s.be.peer(ctx)
 	if !ok || p.Kind != peer.KindService {
 		return ""
 	}
-	msg := "The Woodpile service is installed and running"
+	msg := "The Woodshed service is installed and running"
 	switch {
 	case p.PID != 0 && p.UIURL != "":
 		msg += fmt.Sprintf(" (PID %d, UI %s)", p.PID, p.UIURL)

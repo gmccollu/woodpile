@@ -1,6 +1,6 @@
 # Install smoke tests (SPEC §7): install every package for real on a fresh runner, check
 # the service (account, ports, UI, 10,000 messages on disk), restart, upgrade, uninstall
-# keeping the data and delete it on request; then the same with `woodpile install` (no
+# keeping the data and delete it on request; then the same with `woodshed install` (no
 # package). The checks live in scripts/smoke/.
 #
 # macOS and Windows minutes are expensive, so this runs only:
@@ -89,14 +89,14 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - name: Snapshot build (the before hook builds the UI)
         env:
-          WOODPILE_OWNER: ${{ github.repository_owner }}
-          WOODPILE_REPO: ${{ github.event.repository.name }}
+          WOODSHED_OWNER: ${{ github.repository_owner }}
+          WOODSHED_REPO: ${{ github.event.repository.name }}
         run: go run github.com/goreleaser/goreleaser/v2@"$GORELEASER_VERSION" release --snapshot --clean --skip=publish
       - name: Collect
         run: |
           mkdir -p out
           cp dist/*_amd64.deb dist/*.x86_64.rpm out/
-          cp "$(ls -d dist/woodpile_linux_amd64*/ | head -1)woodpile" out/woodpile
+          cp "$(ls -d dist/woodshed_linux_amd64*/ | head -1)woodshed" out/woodshed
           go build -o out/verifyseq ./scripts/verifyseq
           ls -la out
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -113,9 +113,9 @@ jobs:
           GOARCH=arm64 go build -o out-arm64/verifyseq ./scripts/verifyseq
           GOOS=windows GOARCH=arm64 go build -o out-arm64/verifyseq.exe ./scripts/verifyseq
           GOOS=windows GOARCH=arm64 go build -o out-arm64/consoleclose.exe ./scripts/smoke/consoleclose
-          GOOS=windows GOARCH=arm64 go build -trimpath -o out-arm64/woodpile-aclfix.exe ./packaging/windows/aclfix
+          GOOS=windows GOARCH=arm64 go build -trimpath -o out-arm64/woodshed-aclfix.exe ./packaging/windows/aclfix
           # The upgrade test needs a second version (the snapshot's web/dist is embedded).
-          GOOS=windows GOARCH=arm64 go build -trimpath -ldflags "-X main.version=0.0.2" -o out-arm64/woodpile-0.0.2.exe ./cmd/woodpile
+          GOOS=windows GOARCH=arm64 go build -trimpath -ldflags "-X main.version=0.0.2" -o out-arm64/woodshed-0.0.2.exe ./cmd/woodshed
           ls -la out-arm64
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -124,7 +124,7 @@ jobs:
           retention-days: 3
 
   deb:
-    name: deb on ubuntu (apt), then woodpile install
+    name: deb on ubuntu (apt), then woodshed install
     needs: linux-packages
     runs-on: ubuntu-latest
     steps:
@@ -133,17 +133,17 @@ jobs:
         with:
           name: linux-packages
           path: dist
-      - run: chmod +x dist/woodpile dist/verifyseq
+      - run: chmod +x dist/woodshed dist/verifyseq
       - name: deb (apt install, restart, remove, purge)
         env:
           VERIFYSEQ: dist/verifyseq
           SMOKE_LOGS: ${{ runner.temp }}/smoke-logs
         run: scripts/smoke/unix.sh deb dist/*_amd64.deb
-      - name: woodpile install / uninstall (no package)
+      - name: woodshed install / uninstall (no package)
         env:
           VERIFYSEQ: dist/verifyseq
           SMOKE_LOGS: ${{ runner.temp }}/smoke-logs
-        run: scripts/smoke/unix.sh manual dist/woodpile
+        run: scripts/smoke/unix.sh manual dist/woodshed
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()
         with:
@@ -160,7 +160,7 @@ jobs:
         with:
           name: linux-packages
           path: dist
-      - run: chmod +x dist/woodpile dist/verifyseq
+      - run: chmod +x dist/woodshed dist/verifyseq
       - name: Start Fedora with systemd as PID 1
         run: |
           cat >"$RUNNER_TEMP/Dockerfile" <<'EOF'
@@ -168,9 +168,9 @@ jobs:
           RUN dnf -y install systemd procps-ng iproute python3 openssl curl findutils && dnf clean all
           CMD ["/usr/sbin/init"]
           EOF
-          docker build -t woodpile-fedora-systemd "$RUNNER_TEMP"
+          docker build -t woodshed-fedora-systemd "$RUNNER_TEMP"
           docker run -d --name fedora --privileged --cgroupns=host -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
-            -v "$PWD":/src -w /src --tmpfs /run --tmpfs /tmp woodpile-fedora-systemd
+            -v "$PWD":/src -w /src --tmpfs /run --tmpfs /tmp woodshed-fedora-systemd
           for i in $(seq 30); do
             state=$(docker exec fedora systemctl is-system-running 2>/dev/null || true)
             echo "systemd: $state"
@@ -180,8 +180,8 @@ jobs:
           docker exec fedora test -d /run/systemd/system
       - name: rpm (dnf install, restart, remove)
         run: docker exec -e VERIFYSEQ=dist/verifyseq -e SMOKE_LOGS=/src/smoke-logs fedora scripts/smoke/unix.sh rpm "$(ls dist/*.x86_64.rpm)"
-      - name: woodpile install / uninstall (no package)
-        run: docker exec -e VERIFYSEQ=dist/verifyseq -e SMOKE_LOGS=/src/smoke-logs fedora scripts/smoke/unix.sh manual dist/woodpile
+      - name: woodshed install / uninstall (no package)
+        run: docker exec -e VERIFYSEQ=dist/verifyseq -e SMOKE_LOGS=/src/smoke-logs fedora scripts/smoke/unix.sh manual dist/woodshed
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()
         with:
@@ -189,7 +189,7 @@ jobs:
           path: smoke-logs
 
   windows:
-    name: msi on windows, then woodpile install
+    name: msi on windows, then woodshed install
     needs: plan
     if: needs.plan.outputs.windows == 'true'
     runs-on: windows-latest
@@ -209,15 +209,15 @@ jobs:
         run: |
           ./packaging/windows/build-msi.ps1 -Version 0.0.1 -Arch x64 -OutDir dist/v1
           ./packaging/windows/build-msi.ps1 -Version 0.0.2 -Arch x64 -OutDir dist/v2
-          go build -o dist/woodpile.exe ./cmd/woodpile
+          go build -o dist/woodshed.exe ./cmd/woodshed
           go build -o dist/verifyseq.exe ./scripts/verifyseq
           Get-ChildItem -Recurse dist
       - name: msi (install, upgrade, uninstall, DELETE_LOGS)
         shell: pwsh
         run: ./scripts/smoke/windows.ps1 -Mode msi -Msi (Resolve-Path dist/v1/*.msi) -UpgradeMsi (Resolve-Path dist/v2/*.msi) -Logs "$env:RUNNER_TEMP/smoke-logs"
-      - name: woodpile install / uninstall (no package)
+      - name: woodshed install / uninstall (no package)
         shell: pwsh
-        run: ./scripts/smoke/windows.ps1 -Mode manual -Binary dist/woodpile.exe -Logs "$env:RUNNER_TEMP/smoke-logs"
+        run: ./scripts/smoke/windows.ps1 -Mode manual -Binary dist/woodshed.exe -Logs "$env:RUNNER_TEMP/smoke-logs"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()
         with:
@@ -225,7 +225,7 @@ jobs:
           path: ${{ runner.temp }}/smoke-logs
 
   macos:
-    name: pkg on macos, then woodpile install
+    name: pkg on macos, then woodshed install
     needs: plan
     if: needs.plan.outputs.macos == 'true'
     runs-on: macos-latest
@@ -237,21 +237,21 @@ jobs:
       - name: Build the pkg, the binary and verifyseq
         run: |
           packaging/macos/build-pkg.sh --version 0.0.1 --out dist/macos
-          go build -o dist/woodpile ./cmd/woodpile
+          go build -o dist/woodshed ./cmd/woodshed
           go build -o dist/verifyseq ./scripts/verifyseq
           ls -la dist dist/macos
-      - name: pkg launcher app (/Applications/Woodpile.app)
+      - name: pkg launcher app (/Applications/Woodshed.app)
         run: scripts/smoke/mac-launcher.sh dist/macos/*.pkg
       - name: pkg (installer, restart, uninstall.sh, --delete-logs)
         env:
           VERIFYSEQ: dist/verifyseq
           SMOKE_LOGS: ${{ runner.temp }}/smoke-logs
         run: scripts/smoke/unix.sh pkg dist/macos/*.pkg
-      - name: woodpile install / uninstall (no package)
+      - name: woodshed install / uninstall (no package)
         env:
           VERIFYSEQ: dist/verifyseq
           SMOKE_LOGS: ${{ runner.temp }}/smoke-logs
-        run: scripts/smoke/unix.sh manual dist/woodpile
+        run: scripts/smoke/unix.sh manual dist/woodshed
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()
         with:
@@ -272,11 +272,11 @@ jobs:
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: go.mod
-      - name: Build woodpile, verifyseq and consoleclose
+      - name: Build woodshed, verifyseq and consoleclose
         shell: bash
         run: |
           ext=""; [ "$RUNNER_OS" = Windows ] && ext=.exe
-          go build -o dist/woodpile$ext ./cmd/woodpile
+          go build -o dist/woodshed$ext ./cmd/woodshed
           go build -o dist/verifyseq$ext ./scripts/verifyseq
           go build -o dist/consoleclose$ext ./scripts/smoke/consoleclose
       - name: Portable mode (Linux, macOS)
@@ -284,7 +284,7 @@ jobs:
         env:
           VERIFYSEQ: dist/verifyseq
           SMOKE_LOGS: ${{ runner.temp }}/smoke-logs
-        run: scripts/smoke/portable.sh dist/woodpile
+        run: scripts/smoke/portable.sh dist/woodshed
       - name: Portable mode (Windows, closing the console window)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -296,8 +296,8 @@ jobs:
           path: ${{ runner.temp }}/smoke-logs
 
   # arm64 (SPEC §6): the deb on Ubuntu arm64, then the Linux arm64 release tarball's own binary
-  # (woodpile install, and portable mode); the arm64 MSI on Windows on Arm around the Windows
-  # arm64 release zip's woodpile.exe, then the MSI hardening checks, woodpile install and
+  # (woodshed install, and portable mode); the arm64 MSI on Windows on Arm around the Windows
+  # arm64 release zip's woodshed.exe, then the MSI hardening checks, woodshed install and
   # portable mode. Gated in `plan` (see arm_linux / arm_windows).
   deb-arm64:
     name: deb and tarball on ubuntu arm64
@@ -316,7 +316,7 @@ jobs:
         run: |
           chmod +x dist/verifyseq
           tar -xzf dist/*_linux_arm64.tar.gz -C dist
-          bin=$(ls dist/woodpile_*_linux_arm64/woodpile)
+          bin=$(ls dist/woodshed_*_linux_arm64/woodshed)
           ls -la "$(dirname "$bin")"
           file "$bin"
           "$bin" version
@@ -326,7 +326,7 @@ jobs:
           VERIFYSEQ: dist/verifyseq
           SMOKE_LOGS: ${{ runner.temp }}/smoke-logs
         run: scripts/smoke/unix.sh deb dist/*_arm64.deb
-      - name: the tarball's binary, woodpile install / uninstall
+      - name: the tarball's binary, woodshed install / uninstall
         env:
           VERIFYSEQ: dist/verifyseq
           SMOKE_LOGS: ${{ runner.temp }}/smoke-logs
@@ -351,7 +351,7 @@ jobs:
           path: ${{ runner.temp }}/smoke-logs
 
   windows-arm64:
-    name: msi (arm64) on windows on arm, then woodpile install and portable
+    name: msi (arm64) on windows on arm, then woodshed install and portable
     needs: [plan, linux-packages]
     if: needs.plan.outputs.arm_windows == 'true'
     runs-on: windows-11-arm
@@ -369,28 +369,28 @@ jobs:
       - name: Install WiX
         shell: pwsh
         run: dotnet tool install --global wix --version $env:WIX_VERSION
-      - name: Build v0.0.1 (the release zip's woodpile.exe) and v0.0.2 arm64 MSIs
+      - name: Build v0.0.1 (the release zip's woodshed.exe) and v0.0.2 arm64 MSIs
         shell: pwsh
         run: |
           Expand-Archive (Resolve-Path dist/*_windows_arm64.zip) -DestinationPath dist/zip
-          $exe = (Get-ChildItem dist/zip -Recurse -Filter woodpile.exe).FullName
+          $exe = (Get-ChildItem dist/zip -Recurse -Filter woodshed.exe).FullName
           Get-ChildItem (Split-Path $exe)
           & $exe version
-          ./packaging/windows/build-msi.ps1 -Version 0.0.1 -Arch arm64 -Binary $exe -AclFix dist/woodpile-aclfix.exe -OutDir dist/v0.0.1
-          ./packaging/windows/build-msi.ps1 -Version 0.0.2 -Arch arm64 -Binary dist/woodpile-0.0.2.exe -AclFix dist/woodpile-aclfix.exe -OutDir dist/v0.0.2
-          Copy-Item $exe dist/woodpile.exe
+          ./packaging/windows/build-msi.ps1 -Version 0.0.1 -Arch arm64 -Binary $exe -AclFix dist/woodshed-aclfix.exe -OutDir dist/v0.0.1
+          ./packaging/windows/build-msi.ps1 -Version 0.0.2 -Arch arm64 -Binary dist/woodshed-0.0.2.exe -AclFix dist/woodshed-aclfix.exe -OutDir dist/v0.0.2
+          Copy-Item $exe dist/woodshed.exe
       - name: MSI hardening checks (ACL reset over a hostile folder, required privileges)
         shell: pwsh
         run: ./scripts/smoke/msi-hardening.ps1 -Msi (Resolve-Path dist/v0.0.1/*.msi).Path -Logs "$env:RUNNER_TEMP/smoke-logs"
       - name: msi (install, upgrade, uninstall, DELETE_LOGS)
         shell: pwsh
         run: ./scripts/smoke/windows.ps1 -Mode msi -Msi (Resolve-Path dist/v0.0.1/*.msi) -UpgradeMsi (Resolve-Path dist/v0.0.2/*.msi) -VerifySeq dist/verifyseq.exe -Logs "$env:RUNNER_TEMP/smoke-logs"
-      - name: woodpile install / uninstall (no package)
+      - name: woodshed install / uninstall (no package)
         shell: pwsh
-        run: ./scripts/smoke/windows.ps1 -Mode manual -Binary dist/woodpile.exe -VerifySeq dist/verifyseq.exe -Logs "$env:RUNNER_TEMP/smoke-logs"
+        run: ./scripts/smoke/windows.ps1 -Mode manual -Binary dist/woodshed.exe -VerifySeq dist/verifyseq.exe -Logs "$env:RUNNER_TEMP/smoke-logs"
       - name: portable mode (closing the console window)
         shell: pwsh
-        run: ./scripts/smoke/portable.ps1 -Binary dist/woodpile.exe -VerifySeq dist/verifyseq.exe -ConsoleClose dist/consoleclose.exe -Logs "$env:RUNNER_TEMP/smoke-logs"
+        run: ./scripts/smoke/portable.ps1 -Binary dist/woodshed.exe -VerifySeq dist/verifyseq.exe -ConsoleClose dist/consoleclose.exe -Logs "$env:RUNNER_TEMP/smoke-logs"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()
         with:

@@ -13,11 +13,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gmccollu/woodpile/internal/hub"
-	"github.com/gmccollu/woodpile/internal/model"
-	"github.com/gmccollu/woodpile/internal/store"
-	"github.com/gmccollu/woodpile/internal/store/logfile"
-	"github.com/gmccollu/woodpile/internal/syslog"
+	"github.com/gmccollu/woodshed/internal/hub"
+	"github.com/gmccollu/woodshed/internal/model"
+	"github.com/gmccollu/woodshed/internal/store"
+	"github.com/gmccollu/woodshed/internal/store/logfile"
+	"github.com/gmccollu/woodshed/internal/syslog"
 )
 
 func TestSeverityAgreesWithParse(t *testing.T) {

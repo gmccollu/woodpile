@@ -1,4 +1,4 @@
-// Package logfile defines Woodpile's on-disk log format: the line format, the file
+// Package logfile defines Woodshed's on-disk log format: the line format, the file
 // names, the checkpoint rule and a streaming scanner. The store writes with it, and the
 // index, search and export read with it, so every reader and writer agrees on one set
 // of rules.

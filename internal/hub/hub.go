@@ -1,4 +1,4 @@
-// Package hub is Woodpile's live tail (SPEC §3.6): an in-memory ring buffer of the
+// Package hub is Woodshed's live tail (SPEC §3.6): an in-memory ring buffer of the
 // most recent messages, and subscribers with server-side filters that receive new
 // messages as they arrive, sampled down to about 50 a second each. ServeSSE serves
 // /api/live (docs/api.md) on top of it.
@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gmccollu/woodpile/internal/model"
+	"github.com/gmccollu/woodshed/internal/model"
 )
 
 // Defaults for Options.

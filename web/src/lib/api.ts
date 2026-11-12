@@ -1,4 +1,4 @@
-// Typed wrappers for the Woodpile HTTP API (docs/api.md). The UI talks to the
+// Typed wrappers for the Woodshed HTTP API (docs/api.md). The UI talks to the
 // server only through this module. In mock mode (VITE_MOCK=1) main.ts swaps the
 // transport for the in-browser fake in ./mock, and nothing else changes.
 
@@ -17,13 +17,13 @@ export interface Listener {
   /** Process holding the port, when the OS lets the server find out. */
   holder?: string;
   /**
-   * docs/api.md (0d039ea): the holder is another Woodpile, the installed service or another
+   * docs/api.md (0d039ea): the holder is another Woodshed, the installed service or another
    * running copy; omitted (or "") otherwise. When the holder can't be seen (another user's
    * process), a running service is reported as the likely holder.
    */
-  holder_kind?: 'woodpile_service' | 'woodpile' | '' | (string & {});
+  holder_kind?: 'woodshed_service' | 'woodshed' | '' | (string & {});
   holder_pid?: number;
-  /** That Woodpile's UI address, when known. */
+  /** That Woodshed's UI address, when known. */
   holder_ui_url?: string;
 }
 
@@ -321,13 +321,13 @@ function retryAfterSeconds(h: string | null): number {
 // ---------- Session secret and 401 handling ----------
 //
 // docs/api.md: when login is required, every /api/ request needs the session cookie AND an
-// X-Woodpile-Session header with the secret from POST /api/login. The cookie isn't port-
+// X-Woodshed-Session header with the secret from POST /api/login. The cookie isn't port-
 // scoped; localStorage is scoped to the exact origin (scheme, host and port), so the secret
 // lives there, under a key per origin, and is read on every request (a logout in another
 // tab takes effect here too).
 
-const SECRET_KEY = `woodpile.session.${location.origin}`;
-export const SESSION_HEADER = 'X-Woodpile-Session';
+const SECRET_KEY = `woodshed.session.${location.origin}`;
+export const SESSION_HEADER = 'X-Woodshed-Session';
 
 export function sessionSecret(): string {
   try {
@@ -530,7 +530,7 @@ export const deleteExport = (id: string) => request<void>('DELETE', `/api/export
 export const exportDownloadUrl = (id: string) => `/api/exports/${encodeURIComponent(id)}/download`;
 /**
  * A one-use, 60 s download URL (docs/api.md): a browser download can't send the
- * X-Woodpile-Session header, so the ticket stands in for it. Ask for a new one each time.
+ * X-Woodshed-Session header, so the ticket stands in for it. Ask for a new one each time.
  */
 export const exportTicket = (id: string) =>
   request<{ url: string }>('POST', `/api/exports/${encodeURIComponent(id)}/ticket`);

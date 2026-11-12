@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- productbuild distribution for the Woodpile installer. build-pkg.sh substitutes the version placeholder. -->
+<!-- productbuild distribution for the Woodshed installer. build-pkg.sh substitutes the version placeholder. -->
 <installer-gui-script minSpecVersion="2">
-    <title>Woodpile</title>
+    <title>Woodshed</title>
     <license file="LICENSE.txt"/>
     <conclusion file="conclusion.html" mime-type="text/html"/>
     <options customize="never" require-scripts="true" rootVolumeOnly="true" hostArchitectures="arm64,x86_64"/>
@@ -14,12 +14,12 @@
     </volume-check>
     <choices-outline>
         <line choice="default">
-            <line choice="com.woodpile.pkg"/>
+            <line choice="com.woodshed.pkg"/>
         </line>
     </choices-outline>
     <choice id="default"/>
-    <choice id="com.woodpile.pkg" visible="false">
-        <pkg-ref id="com.woodpile.pkg"/>
+    <choice id="com.woodshed.pkg" visible="false">
+        <pkg-ref id="com.woodshed.pkg"/>
     </choice>
-    <pkg-ref id="com.woodpile.pkg" version="@VERSION@" onConclusion="none">woodpile-component.pkg</pkg-ref>
+    <pkg-ref id="com.woodshed.pkg" version="@VERSION@" onConclusion="none">woodshed-component.pkg</pkg-ref>
 </installer-gui-script>

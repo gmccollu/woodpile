@@ -1,11 +1,11 @@
 #!/bin/sh
-# /Applications/Woodpile.app/Contents/MacOS/Woodpile: opens the Woodpile web UI.
+# /Applications/Woodshed.app/Contents/MacOS/Woodshed: opens the Woodshed web UI.
 #
-# The service (launchd daemon com.woodpile.daemon) does the work; this only opens its UI
+# The service (launchd daemon com.woodshed.daemon) does the work; this only opens its UI
 # in the browser, or explains how to start it when it isn't answering. It talks to
-# localhost only. Installed by the pkg and by `woodpile install`.
+# localhost only. Installed by the pkg and by `woodshed install`.
 
-STATE="/Library/Application Support/Woodpile/woodpile.state.json"
+STATE="/Library/Application Support/Woodshed/woodshed.state.json"
 URL="http://localhost:8514/"
 
 # The running service writes its UI address here (only readable by its account and
@@ -27,10 +27,10 @@ fi
 
 answer=$(/usr/bin/osascript - "$URL" <<'EOF' 2>/dev/null
 on run argv
-	set msg to "The Woodpile service isn't answering at " & item 1 of argv & "." & return & return & ¬
+	set msg to "The Woodshed service isn't answering at " & item 1 of argv & "." & return & return & ¬
 		"To start it, run this in Terminal (it asks for your password):" & return & return & ¬
-		"sudo launchctl kickstart -k system/com.woodpile.daemon"
-	set r to display dialog msg with title "Woodpile" buttons {"Open anyway", "OK"} default button "OK" with icon caution
+		"sudo launchctl kickstart -k system/com.woodshed.daemon"
+	set r to display dialog msg with title "Woodshed" buttons {"Open anyway", "OK"} default button "OK" with icon caution
 	return button returned of r
 end run
 EOF

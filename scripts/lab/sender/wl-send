@@ -1,5 +1,5 @@
 #!/bin/bash
-# wl-send: send one numbered `woodpile send` run from several sender namespaces at once.
+# wl-send: send one numbered `woodshed send` run from several sender namespaces at once.
 # The count and the rate are split evenly over the chosen namespaces, each with its own
 # contiguous block of sequence numbers, so `verifyseq -n COUNT` checks the whole run.
 #
@@ -16,7 +16,7 @@
 # Exit status 0 when every sender sent its whole share. Run as root (ip netns exec).
 set -euo pipefail
 LAB=${WL_HOME:-/opt/woodpile-lab}
-WP=$LAB/bin/woodpile
+WP=$LAB/bin/woodshed
 CONF=${WL_CONF:-$LAB/senders.conf}
 DRY=${WL_DRYRUN:-}
 

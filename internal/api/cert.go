@@ -193,7 +193,7 @@ func generateCertWithKey(id hostIdentity, now time.Time, key *ecdsa.PrivateKey) 
 	if err != nil {
 		return nil, nil, err
 	}
-	cn := "woodpile"
+	cn := "woodshed"
 	for _, n := range id.Names {
 		if n != "localhost" {
 			cn = n
@@ -202,7 +202,7 @@ func generateCertWithKey(id hostIdentity, now time.Time, key *ecdsa.PrivateKey) 
 	}
 	tmpl := &x509.Certificate{
 		SerialNumber:          serial,
-		Subject:               pkix.Name{CommonName: cn, Organization: []string{"Woodpile (self-signed)"}},
+		Subject:               pkix.Name{CommonName: cn, Organization: []string{"Woodshed (self-signed)"}},
 		NotBefore:             now.Add(-time.Hour),
 		NotAfter:              now.Add(certValidity),
 		KeyUsage:              x509.KeyUsageDigitalSignature,

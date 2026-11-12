@@ -1,4 +1,4 @@
-// Package e2e tests the real woodpile binary end to end: it builds it, runs it on
+// Package e2e tests the real woodshed binary end to end: it builds it, runs it on
 // high ports with a temporary data dir, sends it syslog with loadgen, and checks
 // the API, the files on disk, a clean SIGTERM and a restart.
 //
@@ -25,9 +25,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gmccollu/woodpile/internal/config"
-	"github.com/gmccollu/woodpile/internal/index"
-	"github.com/gmccollu/woodpile/internal/loadgen"
+	"github.com/gmccollu/woodshed/internal/config"
+	"github.com/gmccollu/woodshed/internal/index"
+	"github.com/gmccollu/woodshed/internal/loadgen"
 )
 
 var binary string // built once by TestMain
@@ -37,20 +37,20 @@ func TestMain(m *testing.M) {
 		if testingShort() {
 			return m.Run()
 		}
-		dir, err := os.MkdirTemp("", "woodpile-e2e-bin-*")
+		dir, err := os.MkdirTemp("", "woodshed-e2e-bin-*")
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 1
 		}
 		defer os.RemoveAll(dir)
-		binary = filepath.Join(dir, "woodpile"+exeSuffix())
+		binary = filepath.Join(dir, "woodshed"+exeSuffix())
 		root, err := moduleRoot()
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "e2e:", err)
 			return 1
 		}
 		trackSources(root)
-		cmd := exec.Command(goTool(), "build", "-o", binary, "./cmd/woodpile")
+		cmd := exec.Command(goTool(), "build", "-o", binary, "./cmd/woodshed")
 		cmd.Dir = root
 		cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
 		if out, err := cmd.CombinedOutput(); err != nil {
@@ -125,9 +125,9 @@ type proc struct {
 	exitErr error
 }
 
-func startWoodpile(t *testing.T, cfgPath, dataDir string, uiPort int) *proc {
+func startWoodshed(t *testing.T, cfgPath, dataDir string, uiPort int) *proc {
 	t.Helper()
-	logPath := filepath.Join(filepath.Dir(cfgPath), fmt.Sprintf("woodpile-%d.log", time.Now().UnixNano()))
+	logPath := filepath.Join(filepath.Dir(cfgPath), fmt.Sprintf("woodshed-%d.log", time.Now().UnixNano()))
 	logf, err := os.Create(logPath)
 	if err != nil {
 		t.Fatal(err)
@@ -154,7 +154,7 @@ func startWoodpile(t *testing.T, cfgPath, dataDir string, uiPort int) *proc {
 		}
 		if t.Failed() {
 			b, _ := os.ReadFile(logPath)
-			t.Logf("woodpile log (%s):\n%s", logPath, tail(string(b), 60))
+			t.Logf("woodshed log (%s):\n%s", logPath, tail(string(b), 60))
 		}
 	})
 	deadline := time.Now().Add(20 * time.Second)
@@ -169,11 +169,11 @@ func startWoodpile(t *testing.T, cfgPath, dataDir string, uiPort int) *proc {
 		select {
 		case <-p.exited:
 			b, _ := os.ReadFile(logPath)
-			t.Fatalf("woodpile exited at startup: %v\n%s", p.exitErr, b)
+			t.Fatalf("woodshed exited at startup: %v\n%s", p.exitErr, b)
 		default:
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("woodpile's UI didn't answer within 20 s: %v", err)
+			t.Fatalf("woodshed's UI didn't answer within 20 s: %v", err)
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
@@ -189,10 +189,10 @@ func (p *proc) stop() {
 	select {
 	case <-p.exited:
 	case <-time.After(30 * time.Second):
-		p.t.Fatal("woodpile didn't exit within 30 s of SIGTERM")
+		p.t.Fatal("woodshed didn't exit within 30 s of SIGTERM")
 	}
 	if p.exitErr != nil {
-		p.t.Fatalf("woodpile exited with %v after SIGTERM", p.exitErr)
+		p.t.Fatalf("woodshed exited with %v after SIGTERM", p.exitErr)
 	}
 	b, _ := os.ReadFile(p.logPath)
 	if !strings.Contains(string(b), "stopped cleanly") {
@@ -524,7 +524,7 @@ func writeConfig(t *testing.T, dir string, syslogPort, uiPort int) (cfgPath, dat
 	c.Listeners.TCP = config.Listener{Enabled: true, Addr: "127.0.0.1", Port: syslogPort}
 	c.Storage.DataDir = filepath.Join(dir, "data")
 	c.UI.Port = uiPort
-	cfgPath = filepath.Join(dir, "woodpile.toml")
+	cfgPath = filepath.Join(dir, "woodshed.toml")
 	if err := config.Save(cfgPath, c); err != nil {
 		t.Fatal(err)
 	}
@@ -574,7 +574,7 @@ func TestEndToEnd(t *testing.T) {
 	syslogPort, uiPort := pickPorts(t)
 	cfgPath, dataDir := writeConfig(t, dir, syslogPort, uiPort)
 	t.Logf("syslog on 127.0.0.1:%d (UDP and TCP), UI on 127.0.0.1:%d, data in %s", syslogPort, uiPort, dataDir)
-	p := startWoodpile(t, cfgPath, dataDir, uiPort)
+	p := startWoodshed(t, cfgPath, dataDir, uiPort)
 
 	// Before any message: the welcome-page state.
 	var st map[string]any
@@ -744,11 +744,11 @@ func TestEndToEnd(t *testing.T) {
 	}
 	shape(t, "patched device", dev, deviceShape)
 
-	// `woodpile status` reads the same API.
+	// `woodshed status` reads the same API.
 	out, err := exec.Command(binary, "status", "--config", cfgPath).CombinedOutput()
 	if err != nil || !strings.Contains(string(out), fmt.Sprintf("UDP 127.0.0.1:%d: listening", syslogPort)) ||
 		!strings.Contains(string(out), fmt.Sprintf("http://localhost:%d/", uiPort)) {
-		t.Errorf("woodpile status: %v\n%s", err, out)
+		t.Errorf("woodshed status: %v\n%s", err, out)
 	}
 
 	// SIGTERM right after a burst: whatever was received must be on disk. Wait
@@ -777,7 +777,7 @@ func TestEndToEnd(t *testing.T) {
 	checkEvents(t, dataDir, 1)
 
 	// Restart on the same data: devices, names and totals are back.
-	p2 := startWoodpile(t, cfgPath, dataDir, uiPort)
+	p2 := startWoodshed(t, cfgPath, dataDir, uiPort)
 	st = nil
 	p2.getJSON("/api/status", &st)
 	if st["first_message_at"] != firstMsg {
@@ -833,7 +833,7 @@ func checkEvents(t *testing.T, dataDir string, runs int) {
 	n := map[index.Kind]int{}
 	for _, e := range evs {
 		if e.Kind == index.KindStart || e.Kind == index.KindStop {
-			if strings.HasPrefix(e.Text, "Woodpile") {
+			if strings.HasPrefix(e.Text, "Woodshed") {
 				n[e.Kind]++
 			}
 		}
@@ -841,7 +841,7 @@ func checkEvents(t *testing.T, dataDir string, runs int) {
 	if n[index.KindStart] != runs || n[index.KindStop] != runs {
 		t.Errorf("service start/stop events = %v, want %d each", n, runs)
 	}
-	if last := evs[len(evs)-1]; last.Kind != index.KindStop || last.Text != "Woodpile stopped." {
+	if last := evs[len(evs)-1]; last.Kind != index.KindStop || last.Text != "Woodshed stopped." {
 		t.Errorf("last event = %+v, want a clean stop", last)
 	}
 }
@@ -859,7 +859,7 @@ func TestPortClash(t *testing.T) {
 	}
 	defer hold.Close()
 
-	p := startWoodpile(t, cfgPath, dataDir, uiPort) // the UI starts despite the clash
+	p := startWoodshed(t, cfgPath, dataDir, uiPort) // the UI starts despite the clash
 	var st map[string]any
 	p.getJSON("/api/status", &st)
 	checkStatus(t, st)

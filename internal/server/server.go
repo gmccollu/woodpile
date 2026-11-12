@@ -1,4 +1,4 @@
-// Package server assembles Woodpile's parts into the running service: the config,
+// Package server assembles Woodshed's parts into the running service: the config,
 // the index, the store, the syslog listeners, the live hub and the HTTP API.
 //
 // Open loads (or creates) the config, validates it, takes the data dir's lock and
@@ -22,15 +22,15 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gmccollu/woodpile/internal/api"
-	"github.com/gmccollu/woodpile/internal/config"
-	"github.com/gmccollu/woodpile/internal/export"
-	"github.com/gmccollu/woodpile/internal/hub"
-	"github.com/gmccollu/woodpile/internal/index"
-	"github.com/gmccollu/woodpile/internal/listen"
-	"github.com/gmccollu/woodpile/internal/peer"
-	"github.com/gmccollu/woodpile/internal/search"
-	"github.com/gmccollu/woodpile/internal/store"
+	"github.com/gmccollu/woodshed/internal/api"
+	"github.com/gmccollu/woodshed/internal/config"
+	"github.com/gmccollu/woodshed/internal/export"
+	"github.com/gmccollu/woodshed/internal/hub"
+	"github.com/gmccollu/woodshed/internal/index"
+	"github.com/gmccollu/woodshed/internal/listen"
+	"github.com/gmccollu/woodshed/internal/peer"
+	"github.com/gmccollu/woodshed/internal/search"
+	"github.com/gmccollu/woodshed/internal/store"
 )
 
 // DefaultShutdownTimeout bounds the whole shutdown. It stays under the 20 s the
@@ -52,12 +52,12 @@ type Options struct {
 	Service            bool
 	AllowSharedDataDir bool
 
-	// FindPeer looks for another running Woodpile (default peer.Find, which asks
+	// FindPeer looks for another running Woodshed (default peer.Find, which asks
 	// the OS service manager). Tests replace it.
 	FindPeer func(context.Context, peer.Options) (peer.Info, bool)
 }
 
-// Server is an opened Woodpile service. Call Run once.
+// Server is an opened Woodshed service. Call Run once.
 type Server struct {
 	opts    Options
 	log     *slog.Logger
@@ -142,7 +142,7 @@ func Open(cfgPath string, opts Options) (*Server, error) {
 
 	if s.lock, err = LockDataDir(dataDir); err != nil {
 		if errors.Is(err, ErrLocked) {
-			return nil, fmt.Errorf("%w: stop it first (`woodpile status` shows what's running)", err)
+			return nil, fmt.Errorf("%w: stop it first (`woodshed status` shows what's running)", err)
 		}
 		return nil, fmt.Errorf("data folder %s: %w", dataDir, err)
 	}
@@ -217,14 +217,14 @@ func Open(cfgPath string, opts Options) (*Server, error) {
 // LoadConfig reads the config at path, creating it with defaults when it's
 // missing, and reports whether it did. A new config at the OS's default path
 // gets the OS's default data dir; one anywhere else keeps its data next to it
-// (woodpile-data in the config file's folder), so `woodpile run --config
-// ./x/woodpile.toml` is self-contained. LoadConfig doesn't validate.
+// (woodshed-data in the config file's folder), so `woodshed run --config
+// ./x/woodshed.toml` is self-contained. LoadConfig doesn't validate.
 func LoadConfig(path string) (config.Config, bool, error) {
 	def := config.Default()
 	if !samePath(path, config.DefaultConfigPath()) {
-		// woodpile-data next to the config, never the config's folder itself:
-		// `--config /etc/woodpile.toml` must not make /etc the data folder (review M2).
-		def.Storage.DataDir = filepath.Join(filepath.Dir(path), "woodpile-data")
+		// woodshed-data next to the config, never the config's folder itself:
+		// `--config /etc/woodshed.toml` must not make /etc the data folder (review M2).
+		def.Storage.DataDir = filepath.Join(filepath.Dir(path), "woodshed-data")
 	}
 	c, created, err := config.LoadOrCreate(path, def)
 	if err != nil {
@@ -290,7 +290,7 @@ func (s *Server) Run(ctx context.Context) error {
 	started := time.Now().UTC()
 	s.be.startedAt = started
 	s.be.serviceEvent(index.LevelInfo, index.KindStart,
-		fmt.Sprintf("Woodpile %s (%s) started on %s/%s; data folder %s.", s.opts.Version, s.opts.Commit, runtime.GOOS, runtime.GOARCH, cfg.Storage.DataDir))
+		fmt.Sprintf("Woodshed %s (%s) started on %s/%s; data folder %s.", s.opts.Version, s.opts.Commit, runtime.GOOS, runtime.GOARCH, cfg.Storage.DataDir))
 
 	ln, err := listen.Start(cfg.Listeners, listen.Options{
 		Sink:    s.be.sink,
@@ -388,9 +388,9 @@ func (s *Server) shutdown(ln *listen.Server, apiCancel context.CancelFunc, apiDo
 		u := s.store.Usage()
 		s.log.Info("store closed", "written", u.Written, "dropped", u.Dropped, "flushed_at_stop", u.Written-before)
 		level := index.LevelInfo
-		text := "Woodpile stopped."
+		text := "Woodshed stopped."
 		if len(errs) > 0 {
-			level, text = index.LevelError, "Woodpile stopped with errors: "+errors.Join(errs...).Error()
+			level, text = index.LevelError, "Woodshed stopped with errors: "+errors.Join(errs...).Error()
 		}
 		s.be.serviceEvent(level, index.KindStop, text)
 		setStep("closing the index")
@@ -452,7 +452,7 @@ func (s *Server) Close() error {
 	return nil
 }
 
-// watchState keeps the run-state file (read by `woodpile status`) current until
+// watchState keeps the run-state file (read by `woodshed status`) current until
 // stop closes.
 func (s *Server) watchState(started time.Time, stop <-chan struct{}) {
 	dataDir := s.be.config().Storage.DataDir
@@ -488,7 +488,7 @@ func (s *Server) watchState(started time.Time, stop <-chan struct{}) {
 				last = rs
 			}
 		}
-		// The UI's state changes are written at once (woodpile status reads the
+		// The UI's state changes are written at once (woodshed status reads the
 		// file); the tick retries failed writes.
 		select {
 		case <-stop:

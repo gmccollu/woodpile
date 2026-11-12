@@ -23,14 +23,14 @@
 
   function command(o: OS, l: Listener): string {
     const h = host(l);
-    const msg = '<14>woodpile-test: Hello from Woodpile';
+    const msg = '<14>woodshed-test: Hello from Woodshed';
     if (o === 'windows') {
       return l.proto === 'udp'
         ? `$c = New-Object System.Net.Sockets.UdpClient; $b = [Text.Encoding]::ASCII.GetBytes('${msg}'); [void]$c.Send($b, $b.Length, '${h}', ${l.port}); $c.Close()`
         : `$c = New-Object System.Net.Sockets.TcpClient('${h}', ${l.port}); $b = [Text.Encoding]::ASCII.GetBytes("${msg}\`n"); $c.GetStream().Write($b, 0, $b.Length); $c.Close()`;
     }
     if (o === 'linux') {
-      return `logger ${l.proto === 'udp' ? '--udp' : '--tcp'} --server ${h} --port ${l.port} "Hello from Woodpile"`;
+      return `logger ${l.proto === 'udp' ? '--udp' : '--tcp'} --server ${h} --port ${l.port} "Hello from Woodshed"`;
     }
     return `echo '${msg}' | nc ${l.proto === 'udp' ? '-u ' : ''}-w1 ${h} ${l.port}`;
   }
@@ -70,7 +70,7 @@
       <span class="pulse" class:still={!okListeners.length} aria-hidden="true"></span>
     </div>
     <h1 class="m-0 text-3xl font-bold tracking-tight">
-      {#if !st}Starting…{:else if okListeners.length}Woodpile is listening{:else}Woodpile can't listen yet{/if}
+      {#if !st}Starting…{:else if okListeners.length}Woodshed is listening{:else}Woodshed can't listen yet{/if}
     </h1>
     <p class="mx-auto mt-2 mb-0 max-w-xl text-[15px] text-muted">
       Point your devices' syslog at this machine. Every message is kept as plain text files, within a disk budget.

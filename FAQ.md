@@ -1,10 +1,10 @@
-# Woodpile FAQ
+# Woodshed FAQ
 
-New to Woodpile? Start with the [user guide](docs/user-guide.md). Installer details are in
+New to Woodshed? Start with the [user guide](docs/user-guide.md). Installer details are in
 [docs/install.md](docs/install.md).
 
 - [Why port 514, and why UDP?](#why-port-514-and-why-udp)
-- [Devices can't reach Woodpile](#devices-cant-reach-woodpile)
+- [Devices can't reach Woodshed](#devices-cant-reach-woodshed)
 - [What does the installer change in the firewall?](#what-does-the-installer-change-in-the-firewall)
 - [Windows or macOS warns me about the download](#windows-or-macos-warns-me-about-the-download)
 - [Where are the logs?](#where-are-the-logs)
@@ -12,22 +12,22 @@ New to Woodpile? Start with the [user guide](docs/user-guide.md). Installer deta
 - [Can I open the UI from another computer?](#can-i-open-the-ui-from-another-computer)
 - [I forgot the UI password](#i-forgot-the-ui-password)
 - [How do I uninstall it?](#how-do-i-uninstall-it)
-- [Does Woodpile connect to the internet?](#does-woodpile-connect-to-the-internet)
+- [Does Woodshed connect to the internet?](#does-woodshed-connect-to-the-internet)
 
 ## Why port 514, and why UDP?
 
-514 is the standard syslog port, and it's what almost every device sends to by default, so Woodpile works without
+514 is the standard syslog port, and it's what almost every device sends to by default, so Woodshed works without
 changing anything on the device. Most devices send syslog over **UDP**: it's simple and doesn't slow the device down,
-but a message lost on the network isn't resent. Woodpile also listens on **TCP 514** for devices that offer it
+but a message lost on the network isn't resent. Woodshed also listens on **TCP 514** for devices that offer it
 (more reliable, in order). Both are on by default; you can change the ports in **Settings → Listeners**.
 
-If something else already uses port 514 (often the computer's own syslog service), Woodpile still starts and the UI
-shows a red banner saying which program has the port. Stop that program, or move Woodpile to another port, then press
+If something else already uses port 514 (often the computer's own syslog service), Woodshed still starts and the UI
+shows a red banner saying which program has the port. Stop that program, or move Woodshed to another port, then press
 **Retry**.
 
-## Devices can't reach Woodpile
+## Devices can't reach Woodshed
 
-1. Send a test from the Woodpile computer itself: `woodpile send --message "hello"`. If that shows up, Woodpile works
+1. Send a test from the Woodshed computer itself: `woodshed send --message "hello"`. If that shows up, Woodshed works
    and the problem is between the device and this computer.
 2. Check the address: the device must use one of the addresses on the **Setup** page, port 514, UDP or TCP as set on
    the device.
@@ -38,31 +38,31 @@ shows a red banner saying which program has the port. Stop that program, or move
 
 ## What does the installer change in the firewall?
 
-- **Windows:** the MSI (and `woodpile install`) adds two inbound rules for `woodpile.exe`, **Woodpile syslog (UDP
-  514)** and **Woodpile syslog (TCP 514)**, and nothing else. The UI port (8514) is never opened.
+- **Windows:** the MSI (and `woodshed install`) adds two inbound rules for `woodshed.exe`, **Woodshed syslog (UDP
+  514)** and **Woodshed syslog (TCP 514)**, and nothing else. The UI port (8514) is never opened.
   The rules apply to **all network profiles, including Public**: Windows often calls a network "Public" just because
   it hasn't been told otherwise, and devices on such a network would otherwise be silently blocked. To allow syslog
   only on Domain and Private networks, run this in an administrator PowerShell:
 
   ```powershell
-  Get-NetFirewallRule -DisplayName "Woodpile syslog (*)" | Set-NetFirewallRule -Profile Domain,Private
+  Get-NetFirewallRule -DisplayName "Woodshed syslog (*)" | Set-NetFirewallRule -Profile Domain,Private
   ```
 
   An upgrade or repair of the MSI re-creates the rules for all profiles, so run it again after one.
-- **macOS:** nothing. If the macOS firewall is on, allow `/usr/local/bin/woodpile` in **System Settings → Network →
+- **macOS:** nothing. If the macOS firewall is on, allow `/usr/local/bin/woodshed` in **System Settings → Network →
   Firewall → Options**.
 - **Linux:** nothing (see the commands above).
-- **Portable mode:** nothing is installed. On Windows, the first run asks whether to allow Woodpile through the
+- **Portable mode:** nothing is installed. On Windows, the first run asks whether to allow Woodshed through the
   firewall; choose **Allow**.
 
 ## Windows or macOS warns me about the download
 
-Woodpile's downloads aren't code-signed yet, so the first time you open one:
+Woodshed's downloads aren't code-signed yet, so the first time you open one:
 
 - **Windows (SmartScreen):** your browser may say the file "isn't commonly downloaded"; choose **Keep**. When you open
   it, "Windows protected your PC" appears: click **More info**, then **Run anyway**.
 - **macOS (Gatekeeper):** it says the file "can't be opened" because Apple can't check it. Click **Done**, open
-  **System Settings → Privacy & Security**, scroll down to the message about Woodpile and click **Open Anyway**, then
+  **System Settings → Privacy & Security**, scroll down to the message about Woodshed and click **Open Anyway**, then
   confirm. (Control-click → Open no longer skips this on current macOS.)
 
 You only need to do this once per download. To check a download hasn't been changed, compare it with `checksums.txt`
@@ -74,17 +74,17 @@ As plain text files, one folder per device and one file per day (dates in UTC), 
 
 | | Installed | Portable |
 |---|---|---|
-| Windows | `C:\ProgramData\Woodpile\logs\` | `woodpile-data\logs\` next to `woodpile.exe` |
-| macOS | `/Library/Application Support/Woodpile/logs/` | `woodpile-data/logs/` next to `woodpile` |
-| Linux | `/var/lib/woodpile/logs/` | `woodpile-data/logs/` next to `woodpile` |
+| Windows | `C:\ProgramData\Woodshed\logs\` | `woodshed-data\logs\` next to `woodshed.exe` |
+| macOS | `/Library/Application Support/Woodshed/logs/` | `woodshed-data/logs/` next to `woodshed` |
+| Linux | `/var/lib/woodshed/logs/` | `woodshed-data/logs/` next to `woodshed` |
 
 The installed folders are readable only by the service and administrators: open them as an administrator, or with
-`sudo`. Each line is the time Woodpile received the message, the sender's address and the message exactly as it
+`sudo`. Each line is the time Woodshed received the message, the sender's address and the message exactly as it
 arrived. Any text tool can read them; `.log.gz` files open with any unzip tool. To hand logs to someone, use
-**Export** in the UI rather than copying files: the zip also says when Woodpile wasn't running.
+**Export** in the UI rather than copying files: the zip also says when Woodshed wasn't running.
 
-Woodpile's own log (start-up errors and the like): Windows Event Viewer → Windows Logs → Application, source
-`Woodpile`; macOS `/Library/Logs/Woodpile/woodpile.log`; Linux `journalctl -u woodpile`; portable mode prints to its
+Woodshed's own log (start-up errors and the like): Windows Event Viewer → Windows Logs → Application, source
+`Woodshed`; macOS `/Library/Logs/Woodshed/woodshed.log`; Linux `journalctl -u woodshed`; portable mode prints to its
 window.
 
 ## How much disk does it use, and how long does it keep logs?
@@ -97,13 +97,13 @@ shows how much disk the logs use and how many days that covers.
 
 ## Can I open the UI from another computer?
 
-Not by default: the UI answers only on the computer Woodpile runs on (`http://localhost:8514/`). To open it from
+Not by default: the UI answers only on the computer Woodshed runs on (`http://localhost:8514/`). To open it from
 other computers, turn on **LAN mode** in **Settings → UI access**:
 
 1. Set a password first (in the same section).
 2. Turn on **LAN mode** and save. The UI moves to **HTTPS** at `https://<this computer's address>:8514/`, and every
    visitor has to log in.
-3. Your browser warns about the certificate the first time, because Woodpile makes its own; you can load your own
+3. Your browser warns about the certificate the first time, because Woodshed makes its own; you can load your own
    certificate under **Advanced** instead.
 4. On Windows, the UI port also needs a firewall rule; Settings shows the exact command to run as an administrator.
 
@@ -112,11 +112,11 @@ After 10 wrong passwords, logins are refused for a while.
 
 ## I forgot the UI password
 
-On the Woodpile computer, as an administrator, run:
+On the Woodshed computer, as an administrator, run:
 
 ```sh
-sudo woodpile reset-password            # macOS, Linux
-woodpile reset-password                 # Windows, in an administrator prompt
+sudo woodshed reset-password            # macOS, Linux
+woodshed reset-password                 # Windows, in an administrator prompt
 ```
 
 It removes the password, turns LAN mode off and restarts the service, so the UI is back on
@@ -128,16 +128,16 @@ do this over the network, on purpose.
 Uninstalling removes the program and the service but **keeps your logs and settings**, unless you ask for them to be
 deleted.
 
-- **Windows:** Settings → Apps → Woodpile → Uninstall (keeps the logs). To delete them too:
-  `msiexec /x woodpile_X.Y.Z_windows_amd64.msi DELETE_LOGS=1`, or delete `C:\ProgramData\Woodpile` afterwards.
-- **macOS:** `sudo /usr/local/share/woodpile/uninstall.sh` (keeps the logs) or add `--delete-logs`.
-- **Linux:** `sudo apt remove woodpile` (keeps the logs) or `sudo apt purge woodpile` (deletes them);
-  `sudo dnf remove woodpile` keeps them (delete `/var/lib/woodpile` and `/etc/woodpile` yourself).
-- **Installed with `woodpile install`:** `woodpile uninstall`, or `woodpile uninstall --delete-logs`, as an
+- **Windows:** Settings → Apps → Woodshed → Uninstall (keeps the logs). To delete them too:
+  `msiexec /x woodshed_X.Y.Z_windows_amd64.msi DELETE_LOGS=1`, or delete `C:\ProgramData\Woodshed` afterwards.
+- **macOS:** `sudo /usr/local/share/woodshed/uninstall.sh` (keeps the logs) or add `--delete-logs`.
+- **Linux:** `sudo apt remove woodshed` (keeps the logs) or `sudo apt purge woodshed` (deletes them);
+  `sudo dnf remove woodshed` keeps them (delete `/var/lib/woodshed` and `/etc/woodshed` yourself).
+- **Installed with `woodshed install`:** `woodshed uninstall`, or `woodshed uninstall --delete-logs`, as an
   administrator.
-- **Portable:** close it and delete its folder (the logs are in `woodpile-data`).
+- **Portable:** close it and delete its folder (the logs are in `woodshed-data`).
 
-## Does Woodpile connect to the internet?
+## Does Woodshed connect to the internet?
 
 No. It makes no outbound connections at all: no telemetry, no update checks. The version is on the **About** page,
 with a link to the releases page if you want to check for a newer one yourself.

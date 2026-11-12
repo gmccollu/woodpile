@@ -11,9 +11,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/gmccollu/woodpile/internal/index"
-	"github.com/gmccollu/woodpile/internal/model"
-	"github.com/gmccollu/woodpile/internal/store/logfile"
+	"github.com/gmccollu/woodshed/internal/index"
+	"github.com/gmccollu/woodshed/internal/model"
+	"github.com/gmccollu/woodshed/internal/store/logfile"
 )
 
 // fileState is what is known about the active file's contents.

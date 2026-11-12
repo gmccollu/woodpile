@@ -1,4 +1,4 @@
-// Package listen runs Woodpile's syslog listeners (SPEC §3.1): one UDP socket and
+// Package listen runs Woodshed's syslog listeners (SPEC §3.1): one UDP socket and
 // one TCP listener, each framing messages, applying the sender allowlist, parsing,
 // and handing every message to a Sink.
 //
@@ -20,9 +20,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/gmccollu/woodpile/internal/config"
-	"github.com/gmccollu/woodpile/internal/model"
-	"github.com/gmccollu/woodpile/internal/syslog"
+	"github.com/gmccollu/woodshed/internal/config"
+	"github.com/gmccollu/woodshed/internal/model"
+	"github.com/gmccollu/woodshed/internal/syslog"
 )
 
 // Defaults for Options.

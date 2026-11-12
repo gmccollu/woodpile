@@ -14,13 +14,13 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/gmccollu/woodpile/internal/config"
-	"github.com/gmccollu/woodpile/internal/hub"
-	"github.com/gmccollu/woodpile/internal/index"
-	"github.com/gmccollu/woodpile/internal/listen"
-	"github.com/gmccollu/woodpile/internal/model"
-	"github.com/gmccollu/woodpile/internal/store"
-	"github.com/gmccollu/woodpile/internal/store/logfile"
+	"github.com/gmccollu/woodshed/internal/config"
+	"github.com/gmccollu/woodshed/internal/hub"
+	"github.com/gmccollu/woodshed/internal/index"
+	"github.com/gmccollu/woodshed/internal/listen"
+	"github.com/gmccollu/woodshed/internal/model"
+	"github.com/gmccollu/woodshed/internal/store"
+	"github.com/gmccollu/woodshed/internal/store/logfile"
 )
 
 // Defaults for BenchOptions.
@@ -148,7 +148,7 @@ func Bench(ctx context.Context, o BenchOptions) (BenchResult, error) {
 
 	dir := o.DataDir
 	if dir == "" {
-		d, err := os.MkdirTemp("", "woodpile-bench-*")
+		d, err := os.MkdirTemp("", "woodshed-bench-*")
 		if err != nil {
 			return res, err
 		}

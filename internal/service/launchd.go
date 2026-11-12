@@ -5,20 +5,20 @@ import (
 	"os"
 	"strings"
 
-	"github.com/gmccollu/woodpile/packaging"
+	"github.com/gmccollu/woodshed/packaging"
 )
 
 // macOS paths, the same as the pkg's (packaging/macos).
 const (
-	darwinBin       = "/usr/local/bin/woodpile"
-	darwinNewsyslog = "/etc/newsyslog.d/com.woodpile.daemon.conf"
-	darwinLogDir    = "/Library/Logs/Woodpile"
-	darwinPkgConfig = "/Library/Application Support/Woodpile/woodpile.toml"
-	darwinPkgData   = "/Library/Application Support/Woodpile"
-	darwinApp       = "/Applications/Woodpile.app"
+	darwinBin       = "/usr/local/bin/woodshed"
+	darwinNewsyslog = "/etc/newsyslog.d/com.woodshed.daemon.conf"
+	darwinLogDir    = "/Library/Logs/Woodshed"
+	darwinPkgConfig = "/Library/Application Support/Woodshed/woodshed.toml"
+	darwinPkgData   = "/Library/Application Support/Woodshed"
+	darwinApp       = "/Applications/Woodshed.app"
 )
 
-// installMacApp writes /Applications/Woodpile.app, the pkg's launcher for the web UI.
+// installMacApp writes /Applications/Woodshed.app, the pkg's launcher for the web UI.
 func installMacApp(h *host, version string) error {
 	if version == "" {
 		version = "1.0"
@@ -28,8 +28,8 @@ func installMacApp(h *host, version string) error {
 		mode       uint32
 	}{
 		{darwinApp + "/Contents/Info.plist", strings.ReplaceAll(packaging.MacAppInfoPlist, "@VERSION@", version), 0o644},
-		{darwinApp + "/Contents/MacOS/Woodpile", packaging.MacAppLauncher, 0o755},
-		{darwinApp + "/Contents/Resources/woodpile.icns", packaging.MacAppIcon, 0o644},
+		{darwinApp + "/Contents/MacOS/Woodshed", packaging.MacAppLauncher, 0o755},
+		{darwinApp + "/Contents/Resources/woodshed.icns", packaging.MacAppIcon, 0o644},
 	}
 	for _, f := range files {
 		if err := h.writeFile(f.path, f.data, os.FileMode(f.mode)); err != nil {
@@ -40,7 +40,7 @@ func installMacApp(h *host, version string) error {
 	return nil
 }
 
-// launchdPlist is the packaged plist (packaging/macos/com.woodpile.daemon.plist)
+// launchdPlist is the packaged plist (packaging/macos/com.woodshed.daemon.plist)
 // with this install's config and data paths (the same as the pkg's by default).
 func launchdPlist(cfgPath, dataDir string) (string, error) {
 	for what, v := range map[string]string{"the config path": cfgPath, "the data folder": dataDir} {
@@ -58,7 +58,7 @@ func launchdPlist(cfgPath, dataDir string) (string, error) {
 	}
 	p = strings.Replace(p, cfgLine, "<string>"+xmlEscape(cfgPath)+"</string>", 1)
 	p = strings.Replace(p, wdLine, "<key>WorkingDirectory</key>\n\t<string>"+xmlEscape(dataDir)+"</string>", 1)
-	return strings.Replace(p, "<plist version=\"1.0\">", "<!-- Installed by `woodpile install`; remove it with `woodpile uninstall`. -->\n<plist version=\"1.0\">", 1), nil
+	return strings.Replace(p, "<plist version=\"1.0\">", "<!-- Installed by `woodshed install`; remove it with `woodshed uninstall`. -->\n<plist version=\"1.0\">", 1), nil
 }
 
 func xmlEscape(s string) string {
@@ -88,7 +88,7 @@ func plistPaths(plist string) (cfgPath, dataDir string) {
 }
 
 // ensureMacAccount runs the pkg's own ensure_service_account
-// (packaging/macos/scripts/common.sh) to create _woodpile.
+// (packaging/macos/scripts/common.sh) to create _woodshed.
 func ensureMacAccount(h *host) error { return runPkgFunction(h, "ensure_service_account") }
 
 // runPkgFunction runs one function of the pkg's common.sh. The script goes to sh
@@ -97,7 +97,7 @@ func runPkgFunction(h *host, fn string) error {
 	out, err := h.runInput(packaging.MacAccountScript+"\nset -e\n"+fn+"\n", "/bin/sh", "-s")
 	if out != "" {
 		for _, l := range strings.Split(out, "\n") {
-			h.say("%s", strings.TrimPrefix(l, "woodpile: "))
+			h.say("%s", strings.TrimPrefix(l, "woodshed: "))
 		}
 	}
 	return err
@@ -114,7 +114,7 @@ func installLaunchd(h *host, o InstallOptions, dataDir string) (Result, error) {
 		return res, err
 	}
 	// The daemon's own log folder, exactly as the pkg sets it (prepare_log_dir):
-	// root-owned, with one _woodpile-owned log file and no symlinks, so the
+	// root-owned, with one _woodshed-owned log file and no symlinks, so the
 	// service account can't point root at another file.
 	if err := runPkgFunction(h, "prepare_log_dir"); err != nil {
 		return res, fmt.Errorf("prepare %s: %w", darwinLogDir, err)
@@ -137,7 +137,7 @@ func installLaunchd(h *host, o InstallOptions, dataDir string) (Result, error) {
 	if err := h.writeFile(darwinNewsyslog, packaging.NewsyslogConf, 0o644); err != nil {
 		return res, err
 	}
-	h.say("installed %s (runs as %s; its own log is %s/woodpile.log)", darwinPlist, DarwinUser, darwinLogDir)
+	h.say("installed %s (runs as %s; its own log is %s/woodshed.log)", darwinPlist, DarwinUser, darwinLogDir)
 	if err := installMacApp(h, o.Version); err != nil {
 		return res, fmt.Errorf("install %s: %w", darwinApp, err)
 	}
@@ -148,7 +148,7 @@ func installLaunchd(h *host, o InstallOptions, dataDir string) (Result, error) {
 		_, _ = h.run("launchctl", "bootout", target)
 	}
 	if _, err := h.run("launchctl", "bootstrap", "system", darwinPlist); err != nil {
-		return res, fmt.Errorf("the daemon is installed but didn't load (see %s/woodpile.log): %w", darwinLogDir, err)
+		return res, fmt.Errorf("the daemon is installed but didn't load (see %s/woodshed.log): %w", darwinLogDir, err)
 	}
 	return res, nil
 }

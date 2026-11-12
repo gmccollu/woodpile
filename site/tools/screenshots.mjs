@@ -20,20 +20,20 @@ const PORT = 9800 + Math.floor(Math.random() * 100);
 
 // The release's file names (packaging commit 79b5d2f); X is the version.
 const namesFor = (X) => [
-  `woodpile_${X}_windows_amd64.msi`, `woodpile_${X}_windows_arm64.msi`, `woodpile_${X}_macos_universal.pkg`,
-  `woodpile_${X}_amd64.deb`, `woodpile_${X}_arm64.deb`, `woodpile-${X}-1.x86_64.rpm`, `woodpile-${X}-1.aarch64.rpm`,
-  `woodpile_${X}_windows_amd64.zip`, `woodpile_${X}_windows_arm64.zip`, `woodpile_${X}_darwin_universal.tar.gz`,
-  `woodpile_${X}_linux_amd64.tar.gz`, `woodpile_${X}_linux_arm64.tar.gz`, 'checksums.txt',
+  `woodshed_${X}_windows_amd64.msi`, `woodshed_${X}_windows_arm64.msi`, `woodshed_${X}_macos_universal.pkg`,
+  `woodshed_${X}_amd64.deb`, `woodshed_${X}_arm64.deb`, `woodshed-${X}-1.x86_64.rpm`, `woodshed-${X}-1.aarch64.rpm`,
+  `woodshed_${X}_windows_amd64.zip`, `woodshed_${X}_windows_arm64.zip`, `woodshed_${X}_darwin_universal.tar.gz`,
+  `woodshed_${X}_linux_amd64.tar.gz`, `woodshed_${X}_linux_arm64.tar.gz`, 'checksums.txt',
 ];
 const hex = (i) => [...Array(64)].map((_, k) => '0123456789abcdef'[(i * 7 + k * 13) % 16]).join('');
 const releaseFor = (X) =>
   JSON.stringify({
     tag_name: `v${X}`,
-    html_url: `https://github.com/gmccollu/woodpile/releases/tag/v${X}`,
+    html_url: `https://github.com/gmccollu/woodshed/releases/tag/v${X}`,
     assets: namesFor(X).map((name, i) => ({
       name,
       size: name === 'checksums.txt' ? 1200 : 9_000_000 + i * 731_000,
-      browser_download_url: `https://github.com/gmccollu/woodpile/releases/download/v${X}/${name}`,
+      browser_download_url: `https://github.com/gmccollu/woodshed/releases/download/v${X}/${name}`,
       digest: name === 'checksums.txt' ? null : `sha256:${hex(i + 1)}`,
     })),
   });
@@ -68,7 +68,7 @@ const SHOTS = [
   { name: 'home-prerelease-dark', mode: 'dark', path: '/#download', w: 1400, h: 900, client: WIN, rel: 'rc',
     check: `document.querySelector('#dl-status').textContent === 'Release candidate 0.9.0-rc2 is available for testing. Downloads for Windows:'
       && document.querySelector('#dl-status b').textContent === 'Release candidate 0.9.0-rc2 is available for testing.'
-      && !!document.getElementById('dl-rc-note') && [...document.querySelectorAll('#dl-primary .asset .f')][0].textContent.startsWith('woodpile_0.9.0-rc2_windows_amd64.msi')` },
+      && !!document.getElementById('dl-rc-note') && [...document.querySelectorAll('#dl-primary .asset .f')][0].textContent.startsWith('woodshed_0.9.0-rc2_windows_amd64.msi')` },
   { name: 'home-mac-light', mode: 'light', path: '/#download', w: 1400, h: 900, client: MAC, rel: 'release',
     check: `[...document.querySelectorAll('#dl-primary .asset .n')].map((x) => x.textContent).join('|') === 'macOS installer (Intel and Apple silicon)|macOS portable (Intel and Apple silicon)'` },
   { name: 'home-linux-arm-dark', mode: 'dark', path: '/#download', w: 1400, h: 900, client: LINUX_ARM, rel: 'release',
@@ -83,7 +83,7 @@ const SHOTS = [
 ];
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const profile = mkdtempSync(join(tmpdir(), 'woodpile-site-'));
+const profile = mkdtempSync(join(tmpdir(), 'woodshed-site-'));
 const chrome = spawn(CHROME, ['--headless=new', `--remote-debugging-port=${PORT}`, `--user-data-dir=${profile}`, '--hide-scrollbars', '--no-first-run', '--disable-extensions', 'about:blank'], { stdio: 'ignore' });
 
 async function target() {

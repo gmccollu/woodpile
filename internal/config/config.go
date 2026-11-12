@@ -1,4 +1,4 @@
-// Package config is Woodpile's configuration: the TOML file (woodpile.toml) and the
+// Package config is Woodshed's configuration: the TOML file (woodshed.toml) and the
 // object behind /api/settings (docs/api.md). The JSON shape of Config is exactly
 // the settings object; a few tuning knobs exist only in the file (json:"-").
 //
@@ -21,7 +21,7 @@ import (
 )
 
 // FileName is the config file's base name.
-const FileName = "woodpile.toml"
+const FileName = "woodshed.toml"
 
 // Defaults (SPEC §2, §3.1, §3.4, §4, §5).
 const (
@@ -246,7 +246,7 @@ func LoadOrCreate(path string, def Config) (Config, bool, error) {
 	return c, false, nil
 }
 
-const header = `# Woodpile configuration. The service reads it at start; the web UI's Settings page
+const header = `# Woodshed configuration. The service reads it at start; the web UI's Settings page
 # edits it too (and rewrites this file, without your comments).
 # Sizes are in bytes. See SPEC.md for what each setting does.
 

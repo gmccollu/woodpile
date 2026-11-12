@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gmccollu/woodpile/internal/loadgen"
+	"github.com/gmccollu/woodshed/internal/loadgen"
 )
 
 // syncBuf is a goroutine-safe buffer for a child's stdout.
@@ -24,7 +24,7 @@ type syncBuf struct {
 func (s *syncBuf) Write(p []byte) (int, error) { s.mu.Lock(); defer s.mu.Unlock(); return s.b.Write(p) }
 func (s *syncBuf) String() string              { s.mu.Lock(); defer s.mu.Unlock(); return s.b.String() }
 
-// TestPortable runs `woodpile portable` (on high loopback ports, since tests never
+// TestPortable runs `woodshed portable` (on high loopback ports, since tests never
 // bind 514), with its UI port already taken so it falls back, checks the console
 // banner and the UI, sends from two protocols, watches the new-device line, then
 // stops it with SIGTERM (Ctrl-Break on Windows) and checks everything was flushed.
@@ -34,7 +34,7 @@ func TestPortable(t *testing.T) {
 	}
 	dir := t.TempDir()
 	syslogPort, uiPort := pickPorts(t)
-	// Something else (an installed Woodpile, say) has the UI port.
+	// Something else (an installed Woodshed, say) has the UI port.
 	hold, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", uiPort))
 	if err != nil {
 		t.Fatal(err)
@@ -108,7 +108,7 @@ func TestPortable(t *testing.T) {
 	// A second copy on the same folder is refused, kindly.
 	second, _ := exec.Command(binary, "portable", "--dir", dir, "--no-browser", "--port", fmt.Sprint(syslogPort),
 		"--listen", "127.0.0.1", "--ui-port", fmt.Sprint(ui)).CombinedOutput()
-	if !strings.Contains(string(second), "Woodpile is already running on "+dir) {
+	if !strings.Contains(string(second), "Woodshed is already running on "+dir) {
 		t.Errorf("second copy: %s", second)
 	}
 
@@ -127,7 +127,7 @@ func TestPortable(t *testing.T) {
 		t.Fatal("portable didn't stop within 10 s")
 	}
 	took := time.Since(t0)
-	if !strings.Contains(out.String(), "Woodpile stopped; everything is saved in "+dir) {
+	if !strings.Contains(out.String(), "Woodshed stopped; everything is saved in "+dir) {
 		t.Errorf("no clean-stop line")
 	}
 	if took > 5*time.Second {
@@ -140,7 +140,7 @@ func TestPortable(t *testing.T) {
 	t.Logf("portable: UI fell back %d -> %d, 4000/4000 on disk, stopped in %v", uiPort, ui, took.Round(time.Millisecond))
 }
 
-// startPortable starts `woodpile portable` on loopback ports and waits for its banner.
+// startPortable starts `woodshed portable` on loopback ports and waits for its banner.
 func startPortable(t *testing.T, dir string, syslogPort, uiPort int) (*exec.Cmd, *syncBuf, chan error) {
 	t.Helper()
 	out := &syncBuf{}
@@ -183,7 +183,7 @@ func stopPortable(t *testing.T, cmd *exec.Cmd, out *syncBuf, exited chan error) 
 	case <-time.After(10 * time.Second):
 		t.Fatal("portable didn't stop within 10 s")
 	}
-	if !strings.Contains(out.String(), "Woodpile stopped; everything is saved") {
+	if !strings.Contains(out.String(), "Woodshed stopped; everything is saved") {
 		t.Error("no clean-stop line")
 	}
 }

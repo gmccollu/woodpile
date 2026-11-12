@@ -1,16 +1,16 @@
 <#
 .SYNOPSIS
-  Builds the Woodpile MSI with WiX v5.
+  Builds the Woodshed MSI with WiX v5.
 
 .DESCRIPTION
-  Stages woodpile.exe, adds the WiX Util and Firewall extensions, and runs `wix build`
-  on woodpile.wxs. Without -Binary it builds woodpile.exe with `go build` first (build
+  Stages woodshed.exe, adds the WiX Util and Firewall extensions, and runs `wix build`
+  on woodshed.wxs. Without -Binary it builds woodshed.exe with `go build` first (build
   the frontend before that, so the real UI is embedded).
 
   Needs the WiX v5 .NET tool:  dotnet tool install --global wix --version 5.0.2
 
 .EXAMPLE
-  ./packaging/windows/build-msi.ps1 -Version v1.2.3 -Arch x64 -Binary dist/windows/amd64/woodpile.exe
+  ./packaging/windows/build-msi.ps1 -Version v1.2.3 -Arch x64 -Binary dist/windows/amd64/woodshed.exe
 
 .EXAMPLE
   ./packaging/windows/build-msi.ps1 -Version 1.2.3 -Arch arm64
@@ -22,12 +22,12 @@ param(
     [string]$Version = "",
     [ValidateSet("x64", "arm64")]
     [string]$Arch = "x64",
-    # A prebuilt woodpile.exe for -Arch. Built with `go build` when omitted.
+    # A prebuilt woodshed.exe for -Arch. Built with `go build` when omitted.
     [string]$Binary = "",
-    # A prebuilt woodpile-aclfix.exe (./packaging/windows/aclfix) for -Arch. Built when omitted.
+    # A prebuilt woodshed-aclfix.exe (./packaging/windows/aclfix) for -Arch. Built when omitted.
     [string]$AclFix = "",
     [string]$OutDir = "",
-    [string]$ProjectUrl = "https://github.com/gmccollu/woodpile",
+    [string]$ProjectUrl = "https://github.com/gmccollu/woodshed",
     [string]$WixVersion = "5.0.2"
 )
 
@@ -65,7 +65,7 @@ $stage = Join-Path $OutDir "stage-$goarch"
 New-Item -ItemType Directory -Force -Path $stage | Out-Null
 
 if ($Binary) {
-    Copy-Item -Force $Binary (Join-Path $stage "woodpile.exe")
+    Copy-Item -Force $Binary (Join-Path $stage "woodshed.exe")
 } else {
     $commit = (git -C $repo rev-parse --short HEAD 2>$null)
     if (-not $commit) { $commit = "none" }
@@ -76,21 +76,21 @@ if ($Binary) {
     try {
         Invoke-Native go @("-C", $repo, "build", "-trimpath",
             "-ldflags", "-s -w -X main.version=$fullVersion -X main.commit=$commit",
-            "-o", (Join-Path $stage "woodpile.exe"), "./cmd/woodpile")
+            "-o", (Join-Path $stage "woodshed.exe"), "./cmd/woodshed")
     } finally {
         Remove-Item Env:GOOS, Env:GOARCH, Env:CGO_ENABLED -ErrorAction SilentlyContinue
     }
 }
 
-# The data-folder ACL reset the MSI runs as a custom action (see woodpile.wxs).
+# The data-folder ACL reset the MSI runs as a custom action (see woodshed.wxs).
 if ($AclFix) {
-    Copy-Item -Force $AclFix (Join-Path $stage "woodpile-aclfix.exe")
+    Copy-Item -Force $AclFix (Join-Path $stage "woodshed-aclfix.exe")
 } else {
-    Write-Host "==> go build woodpile-aclfix windows/$goarch"
+    Write-Host "==> go build woodshed-aclfix windows/$goarch"
     $env:CGO_ENABLED = "0"; $env:GOOS = "windows"; $env:GOARCH = $goarch
     try {
         Invoke-Native go @("-C", $repo, "build", "-trimpath", "-ldflags", "-s -w",
-            "-o", (Join-Path $stage "woodpile-aclfix.exe"), "./packaging/windows/aclfix")
+            "-o", (Join-Path $stage "woodshed-aclfix.exe"), "./packaging/windows/aclfix")
     } finally {
         Remove-Item Env:GOOS, Env:GOARCH, Env:CGO_ENABLED -ErrorAction SilentlyContinue
     }
@@ -101,7 +101,7 @@ Copy-Item -Force (Join-Path $repo "LICENSE") (Join-Path $stage "LICENSE.txt")
 $notices = Join-Path $repo "THIRD_PARTY_NOTICES.txt"
 if (-not (Test-Path $notices)) { throw "THIRD_PARTY_NOTICES.txt is missing; run scripts/third_party_notices.py" }
 Copy-Item -Force $notices (Join-Path $stage "THIRD_PARTY_NOTICES.txt")
-Copy-Item -Force (Join-Path $repo "packaging\icons\woodpile.ico") (Join-Path $stage "woodpile.ico")
+Copy-Item -Force (Join-Path $repo "packaging\icons\woodshed.ico") (Join-Path $stage "woodshed.ico")
 
 if (-not (Get-Command wix -ErrorAction SilentlyContinue)) {
     $tools = Join-Path $env:USERPROFILE ".dotnet\tools"
@@ -116,7 +116,7 @@ if (-not $wixInstalled.StartsWith("5.")) {
 Write-Host "==> wix extensions"
 Invoke-Native wix @("extension", "add", "-g", "WixToolset.Util.wixext/$wixInstalled", "WixToolset.Firewall.wixext/$wixInstalled")
 
-$msi = Join-Path $OutDir "woodpile_${fullVersion}_windows_${goarch}.msi"
+$msi = Join-Path $OutDir "woodshed_${fullVersion}_windows_${goarch}.msi"
 Write-Host "==> wix build $msi"
 Invoke-Native wix @("build",
     "-arch", $Arch,
@@ -126,7 +126,7 @@ Invoke-Native wix @("build",
     "-d", "BinDir=$stage",
     "-d", "ProjectUrl=$ProjectUrl",
     "-o", $msi,
-    (Join-Path $here "woodpile.wxs"))
+    (Join-Path $here "woodshed.wxs"))
 
 Remove-Item -Recurse -Force $stage
 Write-Host "==> $msi"

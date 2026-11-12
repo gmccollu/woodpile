@@ -1,16 +1,16 @@
 #!/bin/bash
 # Install smoke test for Linux and macOS (SPEC §7), run by .github/workflows/install-smoke.yml
-# on a disposable CI machine. It installs Woodpile for real, as root: never run it on a
+# on a disposable CI machine. It installs Woodshed for real, as root: never run it on a
 # machine you care about.
 #
-#   scripts/smoke/unix.sh deb    dist/woodpile_X_amd64.deb   # apt install / restart / remove / purge
-#   scripts/smoke/unix.sh rpm    dist/woodpile-X.x86_64.rpm  # dnf install / restart / remove
-#   scripts/smoke/unix.sh pkg    dist/macos/woodpile_X.pkg   # installer / kickstart / uninstall.sh
-#   scripts/smoke/unix.sh manual path/to/woodpile            # woodpile install / uninstall
+#   scripts/smoke/unix.sh deb    dist/woodshed_X_amd64.deb   # apt install / restart / remove / purge
+#   scripts/smoke/unix.sh rpm    dist/woodshed-X.x86_64.rpm  # dnf install / restart / remove
+#   scripts/smoke/unix.sh pkg    dist/macos/woodshed_X.pkg   # installer / kickstart / uninstall.sh
+#   scripts/smoke/unix.sh manual path/to/woodshed            # woodshed install / uninstall
 #
 # Each mode checks: the service runs as the unprivileged account, holds UDP and TCP 514,
-# the UI answers on 8514, 10,000 messages sent with `woodpile send` are all on disk
-# exactly once (scripts/verifyseq), `woodpile status` works, a restart keeps the data,
+# the UI answers on 8514, 10,000 messages sent with `woodshed send` are all on disk
+# exactly once (scripts/verifyseq), `woodshed status` works, a restart keeps the data,
 # removal keeps the data, and the delete-logs path deletes it.
 # VERIFYSEQ points at a built scripts/verifyseq; SMOKE_LOGS is where logs are collected.
 set -euo pipefail
@@ -24,12 +24,12 @@ SUDO=""
 [ "$(id -u)" -eq 0 ] || SUDO=sudo
 os=$(uname -s)
 if [ "$os" = Darwin ]; then
-	DATA="/Library/Application Support/Woodpile"
-	ACCOUNT=_woodpile
-	LABEL=com.woodpile.daemon
+	DATA="/Library/Application Support/Woodshed"
+	ACCOUNT=_woodshed
+	LABEL=com.woodshed.daemon
 else
-	DATA=/var/lib/woodpile
-	ACCOUNT=woodpile
+	DATA=/var/lib/woodshed
+	ACCOUNT=woodshed
 fi
 UI=http://127.0.0.1:8514
 passes=0
@@ -47,12 +47,12 @@ die() {
 collect_logs() {
 	set +e
 	if [ "$os" = Darwin ]; then
-		$SUDO cp /Library/Logs/Woodpile/*.log "$LOGS/" 2>/dev/null
+		$SUDO cp /Library/Logs/Woodshed/*.log "$LOGS/" 2>/dev/null
 		$SUDO launchctl print "system/$LABEL" >"$LOGS/launchctl.txt" 2>&1
-		$SUDO log show --last 10m --predicate 'process == "woodpile"' >"$LOGS/unified.log" 2>&1
+		$SUDO log show --last 10m --predicate 'process == "woodshed"' >"$LOGS/unified.log" 2>&1
 	else
-		$SUDO journalctl -u woodpile --no-pager -n 500 >"$LOGS/journal-$mode.log" 2>&1
-		$SUDO systemctl status woodpile --no-pager >"$LOGS/status-$mode.txt" 2>&1
+		$SUDO journalctl -u woodshed --no-pager -n 500 >"$LOGS/journal-$mode.log" 2>&1
+		$SUDO systemctl status woodshed --no-pager >"$LOGS/status-$mode.txt" 2>&1
 	fi
 	$SUDO ls -laR "$DATA" >"$LOGS/data-$mode.txt" 2>&1
 	$SUDO chmod -R a+r "$LOGS" 2>/dev/null
@@ -63,7 +63,7 @@ service_pid() {
 	if [ "$os" = Darwin ]; then
 		$SUDO launchctl print "system/$LABEL" 2>/dev/null | awk '$1 == "pid" && $2 == "=" {print $3; exit}'
 	else
-		systemctl show -p MainPID --value woodpile.service 2>/dev/null | grep -v '^0$' || true
+		systemctl show -p MainPID --value woodshed.service 2>/dev/null | grep -v '^0$' || true
 	fi
 }
 
@@ -111,8 +111,8 @@ check_running() {
 traffic() { # traffic <run id>: 5,000 over UDP and 5,000 over TCP, then verify
 	local run=$1
 	say "send 10,000 messages (run $run) to 127.0.0.1:514 and find them on disk"
-	woodpile_cmd send --port 514 --proto udp --count 5000 --rate 2000 --run "$run" --first-seq 0 >/dev/null
-	woodpile_cmd send --port 514 --proto tcp --count 5000 --rate 5000 --run "$run" --first-seq 5000 >/dev/null
+	woodshed_cmd send --port 514 --proto udp --count 5000 --rate 2000 --run "$run" --first-seq 0 >/dev/null
+	woodshed_cmd send --port 514 --proto tcp --count 5000 --rate 5000 --run "$run" --first-seq 5000 >/dev/null
 	$SUDO "$VERIFYSEQ" -data "$DATA" -run "$run" -n 10000 -wait 30s || die "messages missing on disk"
 	ok "10,000 of 10,000 on disk, no duplicates"
 }
@@ -122,25 +122,25 @@ still_there() { # still_there <run id> <what>
 	ok "run $1 still complete after $2"
 }
 
-woodpile_cmd() {
-	if command -v woodpile >/dev/null 2>&1; then woodpile "$@"; else "$BIN" "$@"; fi
+woodshed_cmd() {
+	if command -v woodshed >/dev/null 2>&1; then woodshed "$@"; else "$BIN" "$@"; fi
 }
 
 check_status_cmd() {
-	say "woodpile status (as $(id -un))"
+	say "woodshed status (as $(id -un))"
 	local out
-	out=$(woodpile_cmd status) || die "woodpile status failed: $out"
+	out=$(woodshed_cmd status) || die "woodshed status failed: $out"
 	echo "$out"
 	echo "$out" | grep -q "Service: *running" || die "status doesn't say the service is running"
 	echo "$out" | grep -q "UDP 0.0.0.0:514: listening" || die "status doesn't show UDP listening"
-	ok "woodpile status shows the service and listeners"
+	ok "woodshed status shows the service and listeners"
 }
 
 restart_service() {
 	say "restart"
 	local before
 	before=$(service_pid)
-	if [ "$os" = Darwin ]; then $SUDO launchctl kickstart -k "system/$LABEL"; else $SUDO systemctl restart woodpile.service; fi
+	if [ "$os" = Darwin ]; then $SUDO launchctl kickstart -k "system/$LABEL"; else $SUDO systemctl restart woodshed.service; fi
 	sleep 2
 	wait_up
 	[ "$(service_pid)" != "$before" ] || die "the pid didn't change after the restart"
@@ -160,7 +160,7 @@ gone() { # the service is no longer running or defined
 	if [ "$os" = Darwin ]; then
 		$SUDO launchctl print "system/$LABEL" >/dev/null 2>&1 && die "the daemon is still loaded"
 	else
-		systemctl is-active --quiet woodpile.service && die "the service is still active"
+		systemctl is-active --quiet woodshed.service && die "the service is still active"
 	fi
 	curl -fsS --max-time 2 "$UI/healthz" >/dev/null 2>&1 && die "the UI still answers"
 	ok "the service is stopped and gone"
@@ -184,43 +184,43 @@ deb | rpm)
 	curl -fsS "$UI/api/stats" | python3 -c 'import json,sys; d=json.load(sys.stdin); v=d["kernel_dropped_24h"]; print("kernel_dropped_24h", v); sys.exit(0 if isinstance(v, int) else 1)' ||
 		die "kernel_dropped_24h isn't a number on Linux"
 	ok "kernel UDP drops are visible on Linux"
-	refuses "package already installed" $SUDO "$(command -v woodpile)" install
-	refuses "installed by the package" $SUDO "$(command -v woodpile)" uninstall
+	refuses "package already installed" $SUDO "$(command -v woodshed)" install
+	refuses "installed by the package" $SUDO "$(command -v woodshed)" uninstall
 	restart_service
 	still_there "$r1" "a restart"
 	say "reindex: refused as root, works as the service's user (re-test N1)"
-	$SUDO systemctl stop woodpile.service
-	refuses "sudo -u woodpile" $SUDO "$(command -v woodpile)" reindex
-	wp=$(command -v woodpile)
+	$SUDO systemctl stop woodshed.service
+	refuses "sudo -u woodshed" $SUDO "$(command -v woodshed)" reindex
+	wp=$(command -v woodshed)
 	if [ -n "$SUDO" ]; then
-		sudo -u woodpile "$wp" reindex || die "reindex as the woodpile user failed"
+		sudo -u woodshed "$wp" reindex || die "reindex as the woodshed user failed"
 	else
-		# Root in a minimal container (no sudo or runuser): drop to woodpile with Python.
-		python3 -c 'import os, pwd, sys; p = pwd.getpwnam("woodpile"); os.setgroups([]); os.setgid(p.pw_gid); os.setuid(p.pw_uid); os.execv(sys.argv[1], sys.argv[1:])' \
-			"$wp" reindex || die "reindex as the woodpile user failed"
+		# Root in a minimal container (no sudo or runuser): drop to woodshed with Python.
+		python3 -c 'import os, pwd, sys; p = pwd.getpwnam("woodshed"); os.setgroups([]); os.setgid(p.pw_gid); os.setuid(p.pw_uid); os.execv(sys.argv[1], sys.argv[1:])' \
+			"$wp" reindex || die "reindex as the woodshed user failed"
 	fi
-	ok "reindex runs as the woodpile user"
-	$SUDO test ! -O "$DATA/woodpile.lock" || die "the lock file is root's"
-	$SUDO systemctl start woodpile.service
+	ok "reindex runs as the woodshed user"
+	$SUDO test ! -O "$DATA/woodshed.lock" || die "the lock file is root's"
+	$SUDO systemctl start woodshed.service
 	wait_up
 	still_there "$r1" "a reindex"
 	if [ "$mode" = deb ]; then
 		say "apt-get remove keeps the data"
-		$SUDO apt-get remove -y woodpile
+		$SUDO apt-get remove -y woodshed
 	else
 		say "dnf remove keeps the data"
-		$SUDO dnf remove -y woodpile
+		$SUDO dnf remove -y woodshed
 	fi
 	gone
 	data_kept
-	$SUDO test -f /etc/woodpile/woodpile.toml || die "/etc/woodpile/woodpile.toml was deleted"
+	$SUDO test -f /etc/woodshed/woodshed.toml || die "/etc/woodshed/woodshed.toml was deleted"
 	still_there "$r1" "the package removal"
 	if [ "$mode" = deb ]; then
 		say "apt-get purge deletes it"
-		$SUDO apt-get purge -y woodpile
+		$SUDO apt-get purge -y woodshed
 		data_gone
-		$SUDO test ! -e /etc/woodpile || die "/etc/woodpile still exists after purge"
-		ok "/etc/woodpile deleted"
+		$SUDO test ! -e /etc/woodshed || die "/etc/woodshed still exists after purge"
+		ok "/etc/woodshed deleted"
 	fi
 	;;
 pkg)
@@ -236,17 +236,17 @@ pkg)
 	check_status_cmd
 	{
 		echo "global: $("$fwtool" --getglobalstate 2>&1)"
-		echo "woodpile: $($SUDO "$fwtool" --getappblocked /usr/local/bin/woodpile 2>&1)"
+		echo "woodshed: $($SUDO "$fwtool" --getappblocked /usr/local/bin/woodshed 2>&1)"
 		echo "apps:"
 		$SUDO "$fwtool" --listapps 2>&1
 	} | tee "$LOGS/firewall.txt"
 	ok "application firewall on during the install: state above (no GUI session, so no prompt could show); traffic arrived"
-	refuses "package already installed" $SUDO "$(command -v woodpile)" install
-	refuses "installed by the package" $SUDO "$(command -v woodpile)" uninstall
+	refuses "package already installed" $SUDO "$(command -v woodshed)" install
+	refuses "installed by the package" $SUDO "$(command -v woodshed)" uninstall
 	restart_service
 	still_there "$r1" "a restart"
 	say "uninstall.sh keeps the data"
-	$SUDO /usr/local/share/woodpile/uninstall.sh
+	$SUDO /usr/local/share/woodshed/uninstall.sh
 	gone
 	data_kept
 	still_there "$r1" "uninstall.sh"
@@ -254,25 +254,25 @@ pkg)
 	$SUDO installer -pkg "$artifact" -target /
 	wait_up
 	still_there "$r1" "a reinstall"
-	$SUDO /usr/local/share/woodpile/uninstall.sh --delete-logs
+	$SUDO /usr/local/share/woodshed/uninstall.sh --delete-logs
 	gone
 	data_gone
-	dscl . -read /Users/_woodpile >/dev/null 2>&1 && die "the _woodpile user is still there"
-	ok "the _woodpile account is deleted"
+	dscl . -read /Users/_woodshed >/dev/null 2>&1 && die "the _woodshed user is still there"
+	ok "the _woodshed account is deleted"
 	;;
 manual)
 	BIN=$(realpath "$artifact")
-	say "woodpile install (no package)"
+	say "woodshed install (no package)"
 	$SUDO "$BIN" install
 	if [ "$os" = Darwin ]; then
-		grep -q "<string>_woodpile</string>" /Library/LaunchDaemons/com.woodpile.daemon.plist || die "the plist doesn't run as _woodpile"
-		ok "the plist runs as _woodpile"
+		grep -q "<string>_woodshed</string>" /Library/LaunchDaemons/com.woodshed.daemon.plist || die "the plist doesn't run as _woodshed"
+		ok "the plist runs as _woodshed"
 	else
-		for l in "User=woodpile" "AmbientCapabilities=CAP_NET_BIND_SERVICE" "ProtectSystem=strict"; do
-			grep -qx "$l" /etc/systemd/system/woodpile.service || die "the unit lacks $l"
+		for l in "User=woodshed" "AmbientCapabilities=CAP_NET_BIND_SERVICE" "ProtectSystem=strict"; do
+			grep -qx "$l" /etc/systemd/system/woodshed.service || die "the unit lacks $l"
 		done
-		ok "the unit is the packaged one (User=woodpile, CAP_NET_BIND_SERVICE, ProtectSystem=strict)"
-		systemd-analyze verify /etc/systemd/system/woodpile.service && ok "systemd-analyze verify"
+		ok "the unit is the packaged one (User=woodshed, CAP_NET_BIND_SERVICE, ProtectSystem=strict)"
+		systemd-analyze verify /etc/systemd/system/woodshed.service && ok "systemd-analyze verify"
 	fi
 	check_running
 	r1=$(run_id)
@@ -281,23 +281,23 @@ manual)
 	refuses "already installed" $SUDO "$BIN" install
 	restart_service
 	still_there "$r1" "a restart"
-	say "woodpile uninstall keeps the data"
-	$SUDO /usr/local/bin/woodpile uninstall
+	say "woodshed uninstall keeps the data"
+	$SUDO /usr/local/bin/woodshed uninstall
 	gone
 	data_kept
-	[ ! -e /usr/local/bin/woodpile ] || die "/usr/local/bin/woodpile is still there"
+	[ ! -e /usr/local/bin/woodshed ] || die "/usr/local/bin/woodshed is still there"
 	ok "the installed binary is removed"
-	still_there "$r1" "woodpile uninstall"
+	still_there "$r1" "woodshed uninstall"
 	say "install again over the kept data, then uninstall --delete-logs"
 	$SUDO "$BIN" install
 	wait_up
 	still_there "$r1" "a reinstall"
-	$SUDO /usr/local/bin/woodpile uninstall --delete-logs
+	$SUDO /usr/local/bin/woodshed uninstall --delete-logs
 	gone
 	data_gone
 	if [ "$os" = Darwin ]; then
-		dscl . -read /Users/_woodpile >/dev/null 2>&1 && die "the _woodpile user is still there"
-		ok "the _woodpile account is deleted"
+		dscl . -read /Users/_woodshed >/dev/null 2>&1 && die "the _woodshed user is still there"
+		ok "the _woodshed account is deleted"
 	fi
 	;;
 *)

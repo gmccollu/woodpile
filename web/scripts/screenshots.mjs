@@ -98,7 +98,7 @@ const SHOTS = [
     mode: 'light',
     url: '/?mock_panel=0#/about',
     act: `__btn('Dark').click();`,
-    check: `localStorage.getItem('woodpile.theme') === 'dark' && document.documentElement.classList.contains('dark')`,
+    check: `localStorage.getItem('woodshed.theme') === 'dark' && document.documentElement.classList.contains('dark')`,
   },
   {
     name: 'settings-save-ok',
@@ -208,10 +208,10 @@ const SHOTS = [
     name: 'tail-debug-only-light',
     mode: 'light',
     url: '/?mock_panel=0#/dashboard',
-    act: `window.__woodpileMock.livePaths.length = 0;
+    act: `window.__woodshedMock.livePaths.length = 0;
       document.querySelector('[aria-label="Live tail severities"] button[title^="Debug"]').dispatchEvent(new MouseEvent('click', { bubbles: true, altKey: true }));`,
     after: 2500,
-    check: `(() => { const p = window.__woodpileMock.livePaths; const s = [...document.querySelectorAll('[role=log] .logline .c.s')];
+    check: `(() => { const p = window.__woodshedMock.livePaths; const s = [...document.querySelectorAll('[role=log] .logline .c.s')];
       return p.length > 0 && /[?&]severities=7(&|$)/.test(p[p.length - 1]) && s.length > 0 && s.every((x) => x.textContent === 'debug'); })()`,
   },
   {
@@ -341,7 +341,7 @@ const SHOTS = [
     act: `const box = __field('Require login on this machine too'); if (box.disabled) throw new Error('disabled with a password set');
       box.click(); await __tick(); __btn('Save').click(); await new Promise((r) => setTimeout(r, 1500));
       if (!__field('Password')) throw new Error('no login form after turning on require_login_local');
-      __set(__field('Password'), 'woodpile-demo'); await __tick(); __btn('Log in').click();`,
+      __set(__field('Password'), 'woodshed-demo'); await __tick(); __btn('Log in').click();`,
     after: 1500,
     check: `location.hash.startsWith('#/settings') && __field('Require login on this machine too').checked && !!__btn('Log out')`,
   },
@@ -410,7 +410,7 @@ const SHOTS = [
       && l.every((x) => x.textContent.includes('\\\\u202e') && !x.textContent.includes('\u202e')); })()`,
   },
 
-  // ---- Recovering from a bad save; dismissing banners; another Woodpile on the port ----
+  // ---- Recovering from a bad save; dismissing banners; another Woodshed on the port ----
   {
     name: 'settings-undo-after-bad-save-light',
     mode: 'light',
@@ -437,15 +437,15 @@ const SHOTS = [
       document.querySelector('.banner .pill-btn').click();`,
     after: 2000,
     check: `(() => { const ports = [...document.querySelectorAll('fieldset input[type=number]')];
-      return ports[0].value === '15514' && ports[1].value === '15514' && !document.body.innerText.includes('in use by another Woodpile')
-        && !document.body.innerText.includes('Your last save stopped a listener') && !sessionStorage.getItem('woodpile.undo'); })()`,
+      return ports[0].value === '15514' && ports[1].value === '15514' && !document.body.innerText.includes('in use by another Woodshed')
+        && !document.body.innerText.includes('Your last save stopped a listener') && !sessionStorage.getItem('woodshed.undo'); })()`,
   },
   {
-    name: 'banner-woodpile-service-light',
+    name: 'banner-woodshed-service-light',
     mode: 'light',
     url: '/?mock_panel=0&mock_service_514=1&mock_listen_514=1#/dashboard',
     check: `(() => { const h = [...document.querySelectorAll('[data-holder]')];
-      return h.length === 1 && h[0].textContent.trim().startsWith("Another copy of Woodpile is using port 514: the installed service. This copy can't receive logs; stop it, or use the service's page.")
+      return h.length === 1 && h[0].textContent.trim().startsWith("Another copy of Woodshed is using port 514: the installed service. This copy can't receive logs; stop it, or use the service's page.")
         && h[0].querySelector('a')?.getAttribute('href') === 'http://localhost:8514/'; })()`,
   },
   {
@@ -467,7 +467,7 @@ const SHOTS = [
       if (!__btn('1 hidden alert')) throw new Error('no hidden-alert pill');
       location.hash = '#/devices'; await new Promise((r) => setTimeout(r, 1500));
       if (document.body.innerText.includes('New senders are being refused')) throw new Error('back after navigation');
-      window.__woodpileMock.bannerNote = ' Updated.';
+      window.__woodshedMock.bannerNote = ' Updated.';
       await new Promise((r) => setTimeout(r, 6000));`,
     after: 200,
     check: `document.body.innerText.includes('Their messages count as dropped. Updated.') && !__btn('1 hidden alert')`,
@@ -488,7 +488,7 @@ const SHOTS = [
     url: '/?mock_panel=0&mock_clash=1#/dashboard',
     act: `document.querySelector('.banner.error [aria-label="Hide this alert"]').click(); await __tick();`,
     after: 300,
-    check: `!document.body.innerText.includes('TCP 514 is in use') && !(sessionStorage.getItem('woodpile.dismissed') ?? '').includes('listener_bind')`,
+    check: `!document.body.innerText.includes('TCP 514 is in use') && !(sessionStorage.getItem('woodshed.dismissed') ?? '').includes('listener_bind')`,
   },
 
   // ---- Blocking a sender ----
@@ -500,7 +500,7 @@ const SHOTS = [
     act: `document.querySelector('[aria-label="More for edge-fw-02"]').click(); await __tick();
       [...document.querySelectorAll('[role=menuitem]')].find((b) => b.textContent.startsWith('Block this sender')).click(); await __tick();
       const dlg = document.querySelector('[role=alertdialog]');
-      if (!dlg || !dlg.textContent.includes('Block 10.1.0.2 (edge-fw-02)?') || !dlg.textContent.includes("Woodpile will refuse and count its messages. Its existing logs stay searchable.")) throw new Error('no confirmation');
+      if (!dlg || !dlg.textContent.includes('Block 10.1.0.2 (edge-fw-02)?') || !dlg.textContent.includes("Woodshed will refuse and count its messages. Its existing logs stay searchable.")) throw new Error('no confirmation');
       [...dlg.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Block').click();
       await new Promise((r) => setTimeout(r, 1500));
       window.__n0 = [...document.querySelectorAll('[role=log] .logline .c.h')].filter((h) => h.textContent === 'edge-fw-02').length;
@@ -756,9 +756,9 @@ const SHOTS = [
     noshot: true,
     mode: 'light',
     url: '/?mock_panel=0#/dashboard',
-    act: `window.__woodpileMock.livePaths.length = 0; __btn('None').click();`,
+    act: `window.__woodshedMock.livePaths.length = 0; __btn('None').click();`,
     after: 1500,
-    check: `(() => { const p = window.__woodpileMock.livePaths; return p.length > 0 && /[?&]severities=none(&|$)/.test(p[p.length - 1])
+    check: `(() => { const p = window.__woodshedMock.livePaths; return p.length > 0 && /[?&]severities=none(&|$)/.test(p[p.length - 1])
       && document.querySelectorAll('[role=log] .logline').length === 0 && document.body.innerText.includes('No levels selected'); })()`,
   },
 
@@ -813,7 +813,7 @@ const SHOTS = [
     mode: 'light',
     url: '/?mock_panel=0&mock_devices=10000#/export',
     wait: 2500,
-    check: `(() => { const b = JSON.parse(window.__woodpileMock.lastExportBody || '{}');
+    check: `(() => { const b = JSON.parse(window.__woodshedMock.lastExportBody || '{}');
       return b.all_devices === true && !('devices' in b) && /Up to [\\d,]+ lines/.test(document.body.innerText)
         && /[\\d,]{5,} devices/.test(document.body.innerText); })()`,
   },
@@ -834,7 +834,7 @@ const SHOTS = [
     mode: 'light',
     url,
     wait: 2000,
-    act: `const m = window.__woodpileMock;
+    act: `const m = window.__woodshedMock;
       if (await m.navigateStatus('/api/exports/exp_7Hq2/download') !== 401) throw new Error('a plain link should get 401');
       document.querySelector('li[data-state=ready] a[download]').click();
       await new Promise((r) => setTimeout(r, 1500));
@@ -883,7 +883,7 @@ const SHOTS = [
     mode: 'light',
     url: '/?mock_panel=0&mock_auth=1#/devices',
     act: `document.querySelector('details summary').click();`,
-    check: `document.body.innerText.includes('woodpile reset-password') && document.body.innerText.includes('http://localhost:5173/')`,
+    check: `document.body.innerText.includes('woodshed reset-password') && document.body.innerText.includes('http://localhost:5173/')`,
   },
   {
     name: 'login-wrong-password-light',
@@ -897,7 +897,7 @@ const SHOTS = [
     name: 'login-locked-light',
     mode: 'light',
     url: '/?mock_panel=0&mock_auth=1&mock_locked=1#/devices',
-    act: `__set(__field('Password'), 'woodpile-demo'); await __tick(); __btn('Log in').click();`,
+    act: `__set(__field('Password'), 'woodshed-demo'); await __tick(); __btn('Log in').click();`,
     after: 1200,
     check: `/locked for 1[45] min \\d+ s/.test(document.body.innerText) && __btn('Log in').disabled`,
   },
@@ -906,13 +906,13 @@ const SHOTS = [
     noshot: true,
     mode: 'light',
     url: '/?mock_panel=0&mock_auth=1#/devices',
-    act: `__set(__field('Password'), 'woodpile-demo'); await __tick(); __btn('Log in').click();
+    act: `__set(__field('Password'), 'woodshed-demo'); await __tick(); __btn('Log in').click();
       await new Promise(r => setTimeout(r, 1500));
       document.querySelector('[aria-label="Rename edge-fw-01"]').click(); await new Promise(r => setTimeout(r, 200));
       const i = document.getElementById('edit-name-10.1.0.1'); __set(i, 'edge-fw-01b');
       i.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));`,
     after: 900,
-    check: `(() => { const m = window.__woodpileMock; const key = 'woodpile.session.' + location.origin;
+    check: `(() => { const m = window.__woodshedMock; const key = 'woodshed.session.' + location.origin;
       return location.hash === '#/devices' && !!__btn('Log out') && document.body.innerText.includes('edge-fw-01b')
         && m.secret.length === 32 && localStorage.getItem(key) === m.secret
         && m.lastWriteHeader === m.secret && m.lastGetHeader === m.secret
@@ -924,7 +924,7 @@ const SHOTS = [
     mode: 'light',
     url: '/?mock_panel=0&mock_auth=1&mock_loggedin=1#/dashboard',
     wait: 3000,
-    check: `(() => { const m = window.__woodpileMock; return !!m.secret && m.lastGetHeader === m.secret && m.lastLiveHeader === m.secret
+    check: `(() => { const m = window.__woodshedMock; return !!m.secret && m.lastGetHeader === m.secret && m.lastLiveHeader === m.secret
       && document.querySelectorAll('[role=log] .logline').length > 0; })()`,
   },
   {
@@ -933,12 +933,12 @@ const SHOTS = [
     mode: 'light',
     url: '/?mock_panel=0&mock_auth=1&mock_loggedin=1#/devices',
     wait: 1500,
-    act: `window.__woodpileMock.cookieOnly = true;
+    act: `window.__woodshedMock.cookieOnly = true;
       await new Promise((r) => setTimeout(r, 6000));
       if (!__field('Password') || document.querySelector('nav')) throw new Error('no login after a cookie-only 401');
-      if (localStorage.getItem('woodpile.session.' + location.origin)) throw new Error('secret not cleared on 401');
-      window.__woodpileMock.cookieOnly = false;
-      __set(__field('Password'), 'woodpile-demo'); await __tick(); __btn('Log in').click();`,
+      if (localStorage.getItem('woodshed.session.' + location.origin)) throw new Error('secret not cleared on 401');
+      window.__woodshedMock.cookieOnly = false;
+      __set(__field('Password'), 'woodshed-demo'); await __tick(); __btn('Log in').click();`,
     after: 1500,
     check: `location.hash === '#/devices' && document.querySelectorAll('tbody tr').length > 5`,
   },
@@ -950,7 +950,7 @@ const SHOTS = [
     wait: 1500,
     act: `__btn('Log out').click();`,
     after: 1200,
-    check: `!!__field('Password') && !localStorage.getItem('woodpile.session.' + location.origin)`,
+    check: `!!__field('Password') && !localStorage.getItem('woodshed.session.' + location.origin)`,
   },
   {
     name: 'expired-session-401-shows-login',
@@ -960,7 +960,7 @@ const SHOTS = [
     act: `__btn('Mock data ▸').click(); await new Promise(r => setTimeout(r, 200)); __btn('Expire session').click();
       await new Promise(r => setTimeout(r, 1200));
       if (!__field('Password') || document.querySelector('nav')) throw new Error('no login form after the 401');
-      __set(__field('Password'), 'woodpile-demo'); await __tick(); __btn('Log in').click();`,
+      __set(__field('Password'), 'woodshed-demo'); await __tick(); __btn('Log in').click();`,
     after: 1500,
     check: `location.hash === '#/settings' && document.body.innerText.includes('UI access') && !!document.querySelector('nav')`,
   },
@@ -992,7 +992,7 @@ const SHOTS = [
     url: '/?mock_panel=0&mock_password=1&mock_os=windows#/settings',
     act: `document.querySelector('[aria-describedby^="hint-lan"]').click(); __btn('Save').click();`,
     after: 900,
-    check: `document.body.innerText.includes('netsh advfirewall firewall add rule name="Woodpile UI" dir=in action=allow protocol=TCP localport=8514')
+    check: `document.body.innerText.includes('netsh advfirewall firewall add rule name="Woodshed UI" dir=in action=allow protocol=TCP localport=8514')
       && [...document.querySelectorAll('a')].some((a) => a.textContent.trim() === 'Go there' && a.href.startsWith('https://'))`,
   },
   {
@@ -1006,7 +1006,7 @@ const SHOTS = [
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-const profile = mkdtempSync(join(tmpdir(), 'woodpile-shots-'));
+const profile = mkdtempSync(join(tmpdir(), 'woodshed-shots-'));
 const chrome = spawn(
   CHROME,
   [
@@ -1083,7 +1083,7 @@ try {
       await sleep(150);
       await send('Page.navigate', { url: `${BASE}${s.url}` });
       await sleep(400);
-      await evaluate(`localStorage.removeItem('woodpile.theme'); document.documentElement.classList.toggle('dark', ${s.mode === 'dark'});`);
+      await evaluate(`localStorage.removeItem('woodshed.theme'); document.documentElement.classList.toggle('dark', ${s.mode === 'dark'});`);
       await sleep(s.wait ?? 2000);
       if (s.act) {
         await evaluate(s.act);

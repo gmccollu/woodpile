@@ -63,7 +63,7 @@
   });
 
   $effect(() => {
-    document.title = `${TITLES[router.route]} · Woodpile`;
+    document.title = `${TITLES[router.route]} · Woodshed`;
   });
 
   const filterable = $derived(router.route === 'dashboard' || router.route === 'devices');
@@ -79,10 +79,10 @@
 <div class="mx-auto max-w-[2400px] p-3 sm:p-5 xl:p-6">
   <div class="shell">
     <header class="mb-5 flex flex-wrap items-center gap-3 sm:gap-5">
-      <a class="brand glass" href={href('dashboard')} aria-label="Woodpile dashboard">
+      <a class="brand glass" href={href('dashboard')} aria-label="Woodshed dashboard">
         <span class="grid size-11 place-items-center rounded-full bg-chip shadow-[var(--shadow-chip)]"><Logo /></span>
         <span class="text-[22px] leading-tight font-bold tracking-tight">
-          Woodpile<small class="block text-[11px] font-medium tracking-normal text-muted">syslog server</small>
+          Woodshed<small class="block text-[11px] font-medium tracking-normal text-muted">syslog server</small>
         </span>
       </a>
 

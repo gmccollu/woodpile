@@ -17,7 +17,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gmccollu/woodpile/internal/loadgen"
+	"github.com/gmccollu/woodshed/internal/loadgen"
 )
 
 type searchResult struct {
@@ -48,7 +48,7 @@ func TestSearchContextExport(t *testing.T) {
 	dir := t.TempDir()
 	syslogPort, uiPort := pickPorts(t)
 	cfgPath, dataDir := writeConfig(t, dir, syslogPort, uiPort)
-	p := startWoodpile(t, cfgPath, dataDir, uiPort)
+	p := startWoodshed(t, cfgPath, dataDir, uiPort)
 
 	const per = 2000
 	run := loadgen.NewRunID()
@@ -159,7 +159,7 @@ func TestSearchContextExport(t *testing.T) {
 	}
 	zb, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
-	if cd := resp.Header.Get("Content-Disposition"); !strings.HasPrefix(cd, `attachment; filename="woodpile-`) {
+	if cd := resp.Header.Get("Content-Disposition"); !strings.HasPrefix(cd, `attachment; filename="woodshed-`) {
 		t.Errorf("Content-Disposition %q", cd)
 	}
 	zr, err := zip.NewReader(bytes.NewReader(zb), int64(len(zb)))
@@ -202,8 +202,8 @@ func TestSearchContextExport(t *testing.T) {
 			t.Errorf("%s: %d lines, manifest says %d", f.Path, n, f.Lines)
 		}
 	}
-	if !bytes.Contains(contents["woodpile-events.log"], []byte(" info start ")) {
-		t.Errorf("events log:\n%s", contents["woodpile-events.log"])
+	if !bytes.Contains(contents["woodshed-events.log"], []byte(" info start ")) {
+		t.Errorf("events log:\n%s", contents["woodshed-events.log"])
 	}
 	t.Logf("export: %d bytes, %d lines, %d gaps", len(zb), man.Lines, len(man.Gaps))
 
@@ -225,7 +225,7 @@ func TestSearchContextExport(t *testing.T) {
 }
 
 // shutdownTook reads the last "shutting down" and "stopped cleanly" times from a
-// woodpile log.
+// woodshed log.
 func shutdownTook(logPath string) (time.Duration, bool) {
 	b, err := os.ReadFile(logPath)
 	if err != nil {

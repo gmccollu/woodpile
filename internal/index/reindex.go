@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gmccollu/woodpile/internal/store/logfile"
+	"github.com/gmccollu/woodshed/internal/store/logfile"
 )
 
 // ReindexResult describes a Reindex or Reconcile run.
@@ -27,7 +27,7 @@ type ReindexResult struct {
 // totals keep the larger, so files deleted by retention don't shrink a device's
 // history. Stats, events and the storage history are left alone.
 //
-// The store must not be running on dataDir (use `woodpile reindex` with the service
+// The store must not be running on dataDir (use `woodshed reindex` with the service
 // stopped). Files are only read, never changed.
 func (d *DB) Reindex(ctx context.Context, dataDir string) (ReindexResult, error) {
 	return d.rebuild(ctx, dataDir, true)

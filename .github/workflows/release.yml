@@ -5,9 +5,9 @@
 #   goreleaser  archives (also the portable downloads), deb/rpm, checksums.txt and the cask/Scoop
 #               manifests from that web/dist; creates the release as a DRAFT with the notes from
 #               CHANGELOG.md; hands its Windows and macOS binaries to the installer jobs
-#   msi         Windows MSIs (x64 + arm64) around GoReleaser's own woodpile.exe -> the draft
+#   msi         Windows MSIs (x64 + arm64) around GoReleaser's own woodshed.exe -> the draft
 #   pkg         macOS .pkg around GoReleaser's own universal binary             -> the draft
-#   bench       `woodpile bench` on the release's linux/amd64 binary, 10 min at 10,000 msg/s
+#   bench       `woodshed bench` on the release's linux/amd64 binary, 10 min at 10,000 msg/s
 #               (SPEC §7)                                                       -> the notes
 #   publish     adds the MSI and pkg hashes to checksums.txt, appends the bench results, attests
 #               build provenance (public repos), and publishes. Tags with a prerelease part
@@ -129,13 +129,13 @@ jobs:
           name: web-dist
           path: web/dist
 
-      # WOODPILE_WEB_PREBUILT: the before hook uses web/dist as is instead of running npm.
+      # WOODSHED_WEB_PREBUILT: the before hook uses web/dist as is instead of running npm.
       - name: GoReleaser (creates the draft release)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          WOODPILE_OWNER: ${{ github.repository_owner }}
-          WOODPILE_REPO: ${{ github.event.repository.name }}
-          WOODPILE_WEB_PREBUILT: "1"
+          WOODSHED_OWNER: ${{ github.repository_owner }}
+          WOODSHED_REPO: ${{ github.event.repository.name }}
+          WOODSHED_WEB_PREBUILT: "1"
           TAP_GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
         run: >-
           go run github.com/goreleaser/goreleaser/v2@"$GORELEASER_VERSION" release --clean
@@ -154,17 +154,17 @@ jobs:
           }
           for a in amd64 arm64; do
             mkdir -p "bins/windows-$a"
-            cp "$(pick Binary windows "$a" woodpile)" "bins/windows-$a/woodpile.exe"
-            cp "$(pick Binary windows "$a" aclfix)" "bins/windows-$a/woodpile-aclfix.exe"
+            cp "$(pick Binary windows "$a" woodshed)" "bins/windows-$a/woodshed.exe"
+            cp "$(pick Binary windows "$a" aclfix)" "bins/windows-$a/woodshed-aclfix.exe"
           done
           mkdir -p bins/darwin-universal bins/linux-amd64
-          cp "$(pick Binary darwin all woodpile-universal)" bins/darwin-universal/woodpile
-          cp "$(pick Binary linux amd64 woodpile)" bins/linux-amd64/woodpile
+          cp "$(pick Binary darwin all woodshed-universal)" bins/darwin-universal/woodshed
+          cp "$(pick Binary linux amd64 woodshed)" bins/linux-amd64/woodshed
           (cd bins && find . -type f | sort | xargs sha256sum) | tee "$RUNNER_TEMP/sha256.txt"
           {
-            echo "sha256<<WOODPILE_SHA_EOF"
+            echo "sha256<<WOODSHED_SHA_EOF"
             cat "$RUNNER_TEMP/sha256.txt"
-            echo "WOODPILE_SHA_EOF"
+            echo "WOODSHED_SHA_EOF"
           } >>"$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -218,7 +218,7 @@ jobs:
           fi
           echo "provider=$provider" >>"$GITHUB_OUTPUT"
 
-      - name: Sign woodpile.exe (optional)
+      - name: Sign woodshed.exe (optional)
         if: steps.signing.outputs.provider != 'none'
         shell: pwsh
         env:
@@ -234,7 +234,7 @@ jobs:
           SIGNPATH_SIGNING_POLICY_SLUG: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
         run: >-
           ./packaging/windows/sign.ps1 -Provider ${{ steps.signing.outputs.provider }}
-          -Files bins/windows-amd64/woodpile.exe, bins/windows-arm64/woodpile.exe
+          -Files bins/windows-amd64/woodshed.exe, bins/windows-arm64/woodshed.exe
 
       - name: Build the MSIs
         shell: pwsh
@@ -242,7 +242,7 @@ jobs:
           $url = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY"
           foreach ($a in @(@{ Arch = "x64"; Go = "amd64" }, @{ Arch = "arm64"; Go = "arm64" })) {
             ./packaging/windows/build-msi.ps1 -Version $env:GITHUB_REF_NAME -Arch $a.Arch `
-              -Binary "bins/windows-$($a.Go)/woodpile.exe" -AclFix "bins/windows-$($a.Go)/woodpile-aclfix.exe" `
+              -Binary "bins/windows-$($a.Go)/woodshed.exe" -AclFix "bins/windows-$($a.Go)/woodshed-aclfix.exe" `
               -OutDir dist/msi -ProjectUrl $url -WixVersion $env:WIX_VERSION
           }
 
@@ -310,7 +310,7 @@ jobs:
           MACOS_CERTS_P12: ${{ secrets.MACOS_CERTS_P12 }}
           MACOS_CERTS_PASSWORD: ${{ secrets.MACOS_CERTS_PASSWORD }}
         run: |
-          keychain="$RUNNER_TEMP/woodpile-signing.keychain-db"
+          keychain="$RUNNER_TEMP/woodshed-signing.keychain-db"
           kc_pass=$(uuidgen)
           security create-keychain -p "$kc_pass" "$keychain"
           security set-keychain-settings -lut 21600 "$keychain"
@@ -330,7 +330,7 @@ jobs:
           MACOS_INSTALLER_SIGN_IDENTITY: ${{ steps.signing.outputs.sign == 'true' && vars.MACOS_INSTALLER_SIGN_IDENTITY || '' }}
         run: >-
           packaging/macos/build-pkg.sh --version "$GITHUB_REF_NAME"
-          --universal bins/darwin-universal/woodpile --out dist/macos
+          --universal bins/darwin-universal/woodshed --out dist/macos
 
       - name: Notarize and staple (optional)
         if: steps.signing.outputs.notarize == 'true'
@@ -347,7 +347,7 @@ jobs:
 
       - name: Remove the signing keychain
         if: always() && steps.signing.outputs.sign == 'true'
-        run: security delete-keychain "$RUNNER_TEMP/woodpile-signing.keychain-db" || true
+        run: security delete-keychain "$RUNNER_TEMP/woodshed-signing.keychain-db" || true
 
       - name: Attach the .pkg to the draft release
         env:
@@ -374,31 +374,31 @@ jobs:
           SHA256: ${{ needs.goreleaser.outputs.sha256 }}
         run: |
           cd bins && printf '%s\n' "$SHA256" | grep 'linux-amd64' | sha256sum -c -
-          chmod +x linux-amd64/woodpile
+          chmod +x linux-amd64/woodshed
 
-      # The same UDP buffer limit the deb/rpm sets (packaging/linux/60-woodpile.conf).
+      # The same UDP buffer limit the deb/rpm sets (packaging/linux/60-woodshed.conf).
       - name: Raise net.core.rmem_max as the packages do
         run: sudo sysctl -w net.core.rmem_max=33554432
 
-      - name: woodpile bench (10 min, 10,000 msg/s, UDP)
+      - name: woodshed bench (10 min, 10,000 msg/s, UDP)
         id: bench
         run: |
           set +e
-          bins/linux-amd64/woodpile bench --duration 10m --rate 10000 --proto udp --json >"$RUNNER_TEMP/bench.json"
+          bins/linux-amd64/woodshed bench --duration 10m --rate 10000 --proto udp --json >"$RUNNER_TEMP/bench.json"
           status=$?
           set -e
           cat "$RUNNER_TEMP/bench.json"
           if [ "$status" -eq 0 ]; then verdict="every message stored exactly once"; else verdict="**FAILED** (exit $status)"; fi
           {
-            echo "summary<<WOODPILE_BENCH_EOF"
+            echo "summary<<WOODSHED_BENCH_EOF"
             echo "### Benchmark"
             echo
-            echo "\`woodpile bench --duration 10m --rate 10000 --proto udp\` on a GitHub-hosted \`ubuntu-latest\` runner ($(nproc) vCPU, $(free -g | awk '/^Mem:/ {print $2}') GiB RAM): $verdict."
+            echo "\`woodshed bench --duration 10m --rate 10000 --proto udp\` on a GitHub-hosted \`ubuntu-latest\` runner ($(nproc) vCPU, $(free -g | awk '/^Mem:/ {print $2}') GiB RAM): $verdict."
             echo
             echo "| Protocol | Sent | Stored | Missing | Duplicates | Dropped (store) | Kernel drops | Achieved rate |"
             echo "|---|---:|---:|---:|---:|---:|---:|---:|"
             jq -r '.[] | "| \(.Proto) | \(.Sent) | \(.Stored) | \(.Missing) | \(.Duplicates) | \(.StoreDropped) | \(if .KernelDropsVisible then .KernelDrops else "n/a" end) | \(.AchievedRate | floor) msg/s |"' "$RUNNER_TEMP/bench.json"
-            echo "WOODPILE_BENCH_EOF"
+            echo "WOODSHED_BENCH_EOF"
           } >>"$GITHUB_OUTPUT"
           exit "$status"
 

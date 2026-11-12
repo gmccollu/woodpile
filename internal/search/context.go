@@ -5,7 +5,7 @@ import (
 	"errors"
 	"sort"
 
-	"github.com/gmccollu/woodpile/internal/index"
+	"github.com/gmccollu/woodshed/internal/index"
 )
 
 // ContextPage is the /api/context response: lines around a hit, in file order.

@@ -1,9 +1,9 @@
-// Command verifyseq checks that the numbered messages of a `woodpile send` run
-// (see `woodpile send --run`) are in a Woodpile data dir exactly once. It reads the
+// Command verifyseq checks that the numbered messages of a `woodshed send` run
+// (see `woodshed send --run`) are in a Woodshed data dir exactly once. It reads the
 // log files directly (compressed or not) and never changes them. Used by the CI
 // install smoke tests and scripts/soak.sh.
 //
-//	verifyseq -data /var/lib/woodpile -run abcd1234 -n 10000 [-wait 30s] [-missing-ok 0] [-json]
+//	verifyseq -data /var/lib/woodshed -run abcd1234 -n 10000 [-wait 30s] [-missing-ok 0] [-json]
 //
 // Exit status: 0 when no sequence number is duplicated and exactly -missing-ok of
 // them are missing (default 0), 1 otherwise, 2 on a usage or read error. With
@@ -18,12 +18,12 @@ import (
 	"os"
 	"time"
 
-	"github.com/gmccollu/woodpile/internal/loadgen"
+	"github.com/gmccollu/woodshed/internal/loadgen"
 )
 
 func main() {
-	data := flag.String("data", "", "Woodpile data `dir` (holds logs/)")
-	run := flag.String("run", "", "run `id` given to woodpile send --run")
+	data := flag.String("data", "", "Woodshed data `dir` (holds logs/)")
+	run := flag.String("run", "", "run `id` given to woodshed send --run")
 	n := flag.Int("n", 0, "messages sent: sequence numbers 0..n-1")
 	wait := flag.Duration("wait", 0, "keep re-reading for up to this `long` until the counts match")
 	missingOK := flag.Int64("missing-ok", 0, "exact `number` of missing messages expected (dropped ones)")

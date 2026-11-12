@@ -13,7 +13,7 @@ sh_scripts=(
 	packaging/macos/scripts/preinstall
 	packaging/macos/scripts/postinstall
 	packaging/macos/uninstall.sh
-	packaging/macos/app/Woodpile
+	packaging/macos/app/Woodshed
 )
 bash_scripts=(
 	packaging/macos/build-pkg.sh
@@ -42,13 +42,13 @@ fi
 
 if command -v plutil >/dev/null 2>&1; then
 	echo "==> plutil -lint"
-	plutil -lint packaging/macos/com.woodpile.daemon.plist || status=1
+	plutil -lint packaging/macos/com.woodshed.daemon.plist || status=1
 fi
 
 if command -v xmllint >/dev/null 2>&1; then
 	echo "==> xmllint (well-formed)"
-	xmllint --noout packaging/windows/woodpile.wxs packaging/macos/distribution.xml \
-		packaging/macos/com.woodpile.daemon.plist || status=1
+	xmllint --noout packaging/windows/woodshed.wxs packaging/macos/distribution.xml \
+		packaging/macos/com.woodshed.daemon.plist || status=1
 fi
 
 exit "$status"

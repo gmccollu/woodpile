@@ -8,7 +8,7 @@ u=${1:?the sender login that may run wl-netns/wl-send without a password}
 here=$(cd "$(dirname "$0")" && pwd)
 L=/opt/woodpile-lab
 install -d -m 0755 -o root -g root $L $L/bin /var/tmp/woodpile-lab
-install -m 0755 -o root -g root "$here/woodpile" "$here/wl-netns" "$here/wl-send" $L/bin/
+install -m 0755 -o root -g root "$here/woodshed" "$here/wl-netns" "$here/wl-send" $L/bin/
 install -m 0644 -o root -g root "$here/senders.conf" $L/senders.conf
 # optional: the only target addresses wl-send / wl-netns may aim at
 [ -f "$here/targets.allow" ] && install -m 0644 -o root -g root "$here/targets.allow" $L/targets.allow
@@ -22,5 +22,5 @@ systemctl daemon-reload
 systemctl enable woodpile-lab-senders.service >/dev/null 2>&1
 systemctl restart woodpile-lab-senders.service
 $L/bin/wl-netns status
-$L/bin/woodpile version
+$L/bin/woodshed version
 echo "install-sender: ok"

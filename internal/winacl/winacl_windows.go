@@ -18,7 +18,7 @@ import (
 // ProtectForCurrentUser gives dir a protected ACL (nothing inherited from the
 // parent, which in ProgramData or a shared folder may let every user in): full
 // control for SYSTEM, Administrators and the current user. For a data folder
-// that Woodpile just created outside the installer (portable mode, `woodpile run`).
+// that Woodshed just created outside the installer (portable mode, `woodshed run`).
 func ProtectForCurrentUser(dir string) error {
 	tu, err := windows.GetCurrentProcessToken().GetTokenUser()
 	if err != nil {
@@ -274,7 +274,7 @@ func EnsureDataDir(dir string, logf func(format string, args ...any)) error {
 			testHookAfterSetAside()
 		}
 	}
-	return fmt.Errorf("%s was re-created by someone else %d times while Woodpile replaced it; "+
+	return fmt.Errorf("%s was re-created by someone else %d times while Woodshed replaced it; "+
 		"find what keeps creating it (another user's program), stop it and install again", dir, ensureAttempts)
 }
 

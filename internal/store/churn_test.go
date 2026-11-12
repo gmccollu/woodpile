@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gmccollu/woodpile/internal/index"
-	"github.com/gmccollu/woodpile/internal/model"
+	"github.com/gmccollu/woodshed/internal/index"
+	"github.com/gmccollu/woodshed/internal/model"
 )
 
 // TestChurnAtTheCap is K1: with the cap full, known senders that aren't resident are

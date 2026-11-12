@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gmccollu/woodpile/internal/model"
+	"github.com/gmccollu/woodshed/internal/model"
 )
 
 const unk = model.Unknown

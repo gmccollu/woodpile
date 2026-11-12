@@ -1,4 +1,4 @@
-# Contributing to Woodpile
+# Contributing to Woodshed
 
 Thanks for helping. Bug reports, fixes and docs are all welcome. For a security problem, don't open an issue: see
 [SECURITY.md](SECURITY.md).
@@ -8,12 +8,12 @@ Thanks for helping. Bug reports, fixes and docs are all welcome. For a security 
 You need Go (the version in `go.mod`) and Node.js 24 with npm. No C compiler: everything is pure Go.
 
 ```sh
-make build          # the UI (web/) and the binary, into dist/woodpile
-./dist/woodpile     # portable mode: runs here, data in dist/woodpile-data
+make build          # the UI (web/) and the binary, into dist/woodshed
+./dist/woodshed     # portable mode: runs here, data in dist/woodshed-data
 ```
 
 `make web` builds only the UI into `web/dist`, which the Go binary embeds. For UI work, `cd web && npm run dev:mock`
-serves it against mock data, and `npm run dev` against a Woodpile running on `127.0.0.1:8514`.
+serves it against mock data, and `npm run dev` against a Woodshed running on `127.0.0.1:8514`.
 
 ## Test
 
@@ -34,7 +34,7 @@ Packaging: `make snapshot` builds the archives, deb and rpm into `dist/` without
 
 ## Rules
 
-- **No outbound connections.** Woodpile never dials out: no telemetry, update checks, fonts or CDNs. A test enforces
+- **No outbound connections.** Woodshed never dials out: no telemetry, update checks, fonts or CDNs. A test enforces
   it; don't work around it.
 - **Never lose or change a message.** The raw message is stored exactly as received; parsing only adds metadata.
   Anything dropped or truncated is counted and shown, never silent.

@@ -8,10 +8,10 @@ import (
 	"runtime"
 	"syscall"
 
-	"github.com/gmccollu/woodpile/internal/service"
+	"github.com/gmccollu/woodshed/internal/service"
 )
 
-// serviceQuery asks launchd or systemd whether the Woodpile service runs.
+// serviceQuery asks launchd or systemd whether the Woodshed service runs.
 func serviceQuery(ctx context.Context, o *Options) (bool, int) {
 	switch runtime.GOOS {
 	case "darwin":

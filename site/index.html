@@ -9,25 +9,25 @@
     />
     <meta name="referrer" content="no-referrer" />
     <meta name="color-scheme" content="light dark" />
-    <title>Woodpile: a syslog server you can install anywhere in a minute</title>
+    <title>Woodshed: a syslog server you can install anywhere in a minute</title>
     <meta
       name="description"
-      content="Woodpile is a free, open-source syslog server for Windows, macOS and Linux. It keeps every message as plain files within a disk budget, with a web UI to watch, search and export logs."
+      content="Woodshed is a free, open-source syslog server for Windows, macOS and Linux. It keeps every message as plain files within a disk budget, with a web UI to watch, search and export logs."
     />
     <link rel="icon" type="image/svg+xml" href="favicon.svg" />
     <link rel="stylesheet" href="style.css" />
     <!-- Open Graph needs absolute URLs: update them if the site moves to its own domain. -->
     <meta property="og:type" content="website" />
-    <meta property="og:title" content="Woodpile: a syslog server you can install anywhere in a minute" />
+    <meta property="og:title" content="Woodshed: a syslog server you can install anywhere in a minute" />
     <meta
       property="og:description"
       content="Keeps every message as plain files within a disk budget. Watch, search and export logs for support. Windows, macOS and Linux; MIT licensed."
     />
-    <meta property="og:url" content="https://gmccollu.github.io/woodpile/" />
-    <meta property="og:image" content="https://gmccollu.github.io/woodpile/img/og.jpg" />
+    <meta property="og:url" content="https://gmccollu.github.io/woodshed/" />
+    <meta property="og:image" content="https://gmccollu.github.io/woodshed/img/og.jpg" />
     <meta property="og:image:width" content="1200" />
     <meta property="og:image:height" content="630" />
-    <meta property="og:image:alt" content="The Woodpile dashboard: message rate, devices and a live tail of log lines" />
+    <meta property="og:image:alt" content="The Woodshed dashboard: message rate, devices and a live tail of log lines" />
     <meta name="twitter:card" content="summary_large_image" />
     <script type="module" src="app.js"></script>
   </head>
@@ -35,21 +35,21 @@
     <a class="skip" href="#main">Skip to content</a>
     <div class="wrap">
       <header class="top">
-        <a class="brand" href="./" aria-label="Woodpile home">
+        <a class="brand" href="./" aria-label="Woodshed home">
           <span class="logo"><img src="favicon.svg" width="28" height="28" alt="" /></span>
-          <b>Woodpile</b>
+          <b>Woodshed</b>
         </a>
         <nav aria-label="Site">
           <a href="#download">Download</a>
           <a href="install.html">Install guide</a>
-          <a href="https://github.com/gmccollu/woodpile/blob/main/FAQ.md" data-gh="/blob/main/FAQ.md">FAQ</a>
-          <a href="https://github.com/gmccollu/woodpile" data-gh="">GitHub</a>
+          <a href="https://github.com/gmccollu/woodshed/blob/main/FAQ.md" data-gh="/blob/main/FAQ.md">FAQ</a>
+          <a href="https://github.com/gmccollu/woodshed" data-gh="">GitHub</a>
         </nav>
       </header>
 
       <main id="main">
         <section class="hero" aria-labelledby="title">
-          <h1 id="title">Woodpile: a syslog server you can install anywhere in a minute.</h1>
+          <h1 id="title">Woodshed: a syslog server you can install anywhere in a minute.</h1>
           <p class="lede">
             It keeps every message your devices send as plain text files, within a disk budget, and gives you a clean web page
             to watch them live, search them, and export a zip for support.
@@ -66,7 +66,7 @@
                 src="img/dashboard-light.png"
                 width="1200"
                 height="771"
-                alt="The Woodpile dashboard: messages per second, devices online, disk used, a strip of devices and a live tail of log lines"
+                alt="The Woodshed dashboard: messages per second, devices online, disk used, a strip of devices and a live tail of log lines"
               />
             </picture>
           </div>
@@ -78,7 +78,7 @@
             Finding the latest release…
           </p>
           <noscript>
-            <p>All downloads are on the <a href="https://github.com/gmccollu/woodpile/releases/latest">releases page</a>.</p>
+            <p>All downloads are on the <a href="https://github.com/gmccollu/woodshed/releases/latest">releases page</a>.</p>
           </noscript>
           <div id="dl-primary" class="dl-primary"></div>
           <details id="dl-others" class="others" hidden>
@@ -86,7 +86,7 @@
             <ul id="dl-others-body" class="assetlist"></ul>
           </details>
           <p id="dl-sums" class="small muted">
-            Every file is on the <a href="https://github.com/gmccollu/woodpile/releases/latest" data-releases>releases page</a>, with
+            Every file is on the <a href="https://github.com/gmccollu/woodshed/releases/latest" data-releases>releases page</a>, with
             <code>checksums.txt</code>.
           </p>
         </section>
@@ -97,15 +97,15 @@
             <div class="card">
               <h3>Just need it for a case?</h3>
               <p>
-                Download the <b>portable</b> archive, unpack it and double-click <code>woodpile</code>. Nothing is installed. It runs while its
-                window is open, keeps the logs in a <code>woodpile-data</code> folder next to it, and opens the web page for you.
+                Download the <b>portable</b> archive, unpack it and double-click <code>woodshed</code>. Nothing is installed. It runs while its
+                window is open, keeps the logs in a <code>woodshed-data</code> folder next to it, and opens the web page for you.
               </p>
               <p class="small muted">Good for a laptop on site, or a quick look at what a device sends.</p>
             </div>
             <div class="card">
               <h3>Always-on server?</h3>
               <p>
-                Use the <b>installer</b>: MSI on Windows, <code>.pkg</code> on macOS, <code>.deb</code> or <code>.rpm</code> on Linux. Woodpile
+                Use the <b>installer</b>: MSI on Windows, <code>.pkg</code> on macOS, <code>.deb</code> or <code>.rpm</code> on Linux. Woodshed
                 runs in the background as a service, starts with the computer, and keeps its logs across upgrades.
               </p>
               <p class="small muted">The service runs as its own restricted account, and uninstalling keeps your logs unless you ask.</p>
@@ -150,7 +150,7 @@
           </ul>
           <p class="small muted">
             The full list is in the
-            <a href="https://github.com/gmccollu/woodpile/blob/main/CHANGELOG.md" data-gh="/blob/main/CHANGELOG.md">changelog</a>.
+            <a href="https://github.com/gmccollu/woodshed/blob/main/CHANGELOG.md" data-gh="/blob/main/CHANGELOG.md">changelog</a>.
           </p>
         </section>
 
@@ -158,7 +158,7 @@
         <section id="unsigned" class="card" aria-labelledby="unsigned-title">
           <h2 id="unsigned-title">The first time you open it</h2>
           <p>
-            Woodpile's downloads aren't code-signed yet, so your computer asks once before running them. That's expected; you can check
+            Woodshed's downloads aren't code-signed yet, so your computer asks once before running them. That's expected; you can check
             any download against <code>checksums.txt</code> on the release page.
           </p>
           <div class="grid2">
@@ -173,7 +173,7 @@
               <h3>macOS</h3>
               <p>
                 If it says the file "can't be opened", click <b>Done</b>, open <b>System Settings → Privacy &amp; Security</b>, scroll down
-                to the message about Woodpile and click <b>Open Anyway</b>.
+                to the message about Woodshed and click <b>Open Anyway</b>.
               </p>
             </div>
           </div>
@@ -183,7 +183,7 @@
         <section class="card" aria-labelledby="privacy-title">
           <h2 id="privacy-title">Privacy</h2>
           <p>
-            <b>Woodpile never connects out.</b> No telemetry, no update checks: your logs stay on your machine. The About page shows the
+            <b>Woodshed never connects out.</b> No telemetry, no update checks: your logs stay on your machine. The About page shows the
             version, with a link to the releases page if you want to look for a newer one yourself.
           </p>
         </section>
@@ -191,16 +191,16 @@
 
       <footer>
         <div class="links">
-          <a href="https://github.com/gmccollu/woodpile" data-gh="">GitHub</a>
-          <a href="https://github.com/gmccollu/woodpile/blob/main/docs/user-guide.md" data-gh="/blob/main/docs/user-guide.md">User guide</a>
-          <a href="https://github.com/gmccollu/woodpile/blob/main/docs/install.md" data-gh="/blob/main/docs/install.md">Install docs</a>
-          <a href="https://github.com/gmccollu/woodpile/blob/main/FAQ.md" data-gh="/blob/main/FAQ.md">FAQ</a>
-          <a href="https://github.com/gmccollu/woodpile/blob/main/SECURITY.md" data-gh="/blob/main/SECURITY.md">Security</a>
-          <a href="https://github.com/gmccollu/woodpile/blob/main/CHANGELOG.md" data-gh="/blob/main/CHANGELOG.md">Changelog</a>
+          <a href="https://github.com/gmccollu/woodshed" data-gh="">GitHub</a>
+          <a href="https://github.com/gmccollu/woodshed/blob/main/docs/user-guide.md" data-gh="/blob/main/docs/user-guide.md">User guide</a>
+          <a href="https://github.com/gmccollu/woodshed/blob/main/docs/install.md" data-gh="/blob/main/docs/install.md">Install docs</a>
+          <a href="https://github.com/gmccollu/woodshed/blob/main/FAQ.md" data-gh="/blob/main/FAQ.md">FAQ</a>
+          <a href="https://github.com/gmccollu/woodshed/blob/main/SECURITY.md" data-gh="/blob/main/SECURITY.md">Security</a>
+          <a href="https://github.com/gmccollu/woodshed/blob/main/CHANGELOG.md" data-gh="/blob/main/CHANGELOG.md">Changelog</a>
         </div>
         <p class="muted">
-          Woodpile is free software under the
-          <a href="https://github.com/gmccollu/woodpile/blob/main/LICENSE" data-gh="/blob/main/LICENSE">MIT license</a>.
+          Woodshed is free software under the
+          <a href="https://github.com/gmccollu/woodshed/blob/main/LICENSE" data-gh="/blob/main/LICENSE">MIT license</a>.
         </p>
         <p class="muted small">
           This site has no analytics, no cookies, no external fonts and no third-party scripts. It makes no requests to other sites.

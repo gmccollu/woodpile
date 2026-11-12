@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gmccollu/woodpile/internal/index"
-	"github.com/gmccollu/woodpile/internal/model"
+	"github.com/gmccollu/woodshed/internal/index"
+	"github.com/gmccollu/woodshed/internal/model"
 )
 
 func devAddr(i int) netip.Addr { return netip.AddrFrom4([4]byte{203, 0, 113, byte(i)}) }

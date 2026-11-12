@@ -27,10 +27,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gmccollu/woodpile/internal/hub"
-	"github.com/gmccollu/woodpile/internal/index"
-	"github.com/gmccollu/woodpile/internal/search"
-	"github.com/gmccollu/woodpile/internal/store/logfile"
+	"github.com/gmccollu/woodshed/internal/hub"
+	"github.com/gmccollu/woodshed/internal/index"
+	"github.com/gmccollu/woodshed/internal/search"
+	"github.com/gmccollu/woodshed/internal/store/logfile"
 )
 
 // Dir is the exports folder inside the data dir.
@@ -200,7 +200,7 @@ func Open(opts Options) (*Manager, error) {
 			e := &entry{info: info}
 			switch info.State {
 			case Queued, Building:
-				e.info.State, e.info.Error = Failed, "Woodpile stopped before this export finished. Start it again."
+				e.info.State, e.info.Error = Failed, "Woodshed stopped before this export finished. Start it again."
 				e.info.Progress = 0
 				m.save(e)
 			case Ready:
@@ -239,7 +239,7 @@ func (m *Manager) Close() {
 	m.closed = true
 	for _, e := range m.entries {
 		if e.cancel != nil {
-			e.reason = "Woodpile stopped before this export finished. Start it again."
+			e.reason = "Woodshed stopped before this export finished. Start it again."
 			e.cancel()
 		}
 	}

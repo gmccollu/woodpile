@@ -9,9 +9,9 @@ import (
 )
 
 // StateFileName is the run-state file a running server keeps in its data dir
-// for `woodpile status`. It matters when the API can't answer, for example when
+// for `woodshed status`. It matters when the API can't answer, for example when
 // the UI port is taken by another program: status then reads the UI error here.
-const StateFileName = "woodpile.state.json"
+const StateFileName = "woodshed.state.json"
 
 // RunState is the content of the run-state file.
 type RunState struct {

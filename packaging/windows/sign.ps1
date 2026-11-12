@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  Optional Authenticode signing for woodpile.exe and the MSI.
+  Optional Authenticode signing for woodshed.exe and the MSI.
 
 .DESCRIPTION
   Signs the given files with one provider, then checks each signature. With
@@ -21,7 +21,7 @@
   UNTESTED: neither provider has been run against a real account yet.
 
 .EXAMPLE
-  ./packaging/windows/sign.ps1 -Provider azure -Files dist/windows/amd64/woodpile.exe
+  ./packaging/windows/sign.ps1 -Provider azure -Files dist/windows/amd64/woodshed.exe
 #>
 [CmdletBinding()]
 param(

@@ -571,7 +571,7 @@ func (s *Server) downloadExport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer dl.File.Close()
-	name := fmt.Sprintf("woodpile-%s-%s.zip", info.From.UTC().Format("20060102T150405Z"), info.To.UTC().Format("20060102T150405Z"))
+	name := fmt.Sprintf("woodshed-%s-%s.zip", info.From.UTC().Format("20060102T150405Z"), info.To.UTC().Format("20060102T150405Z"))
 	h := w.Header()
 	h.Set("Content-Type", "application/zip")
 	h.Set("Content-Disposition", `attachment; filename="`+name+`"`)

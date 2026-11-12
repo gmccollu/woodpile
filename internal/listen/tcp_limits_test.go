@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gmccollu/woodpile/internal/config"
+	"github.com/gmccollu/woodshed/internal/config"
 )
 
 func waitFor(t *testing.T, what string, cond func() bool) {
@@ -77,9 +77,9 @@ func TestOneSourceCantTakeAllSlots(t *testing.T) {
 		}
 	}()
 	// Dial in batches smaller than the OS listen backlog (Windows caps it near
-	// 200 and resets the overflow) and let Woodpile account for each batch, so
-	// every refusal below is Woodpile's, not the kernel's. A kernel refusal is
-	// retried; it never reached Woodpile, so it doesn't change the counts.
+	// 200 and resets the overflow) and let Woodshed account for each batch, so
+	// every refusal below is Woodshed's, not the kernel's. A kernel refusal is
+	// retried; it never reached Woodshed, so it doesn't change the counts.
 	handled := func() int64 { st := s.Status(); return int64(st.TCPConns) + st.TCPConnsPerSourceRefused }
 	const batch = 50
 	for i := 0; i < DefaultMaxConns; i++ {
@@ -91,7 +91,7 @@ func TestOneSourceCantTakeAllSlots(t *testing.T) {
 		cn.Write([]byte("<"))
 		if (i+1)%batch == 0 || i+1 == DefaultMaxConns {
 			want := int64(i + 1)
-			waitFor(t, fmt.Sprintf("Woodpile to handle %d connections", want), func() bool { return handled() == want })
+			waitFor(t, fmt.Sprintf("Woodshed to handle %d connections", want), func() bool { return handled() == want })
 		}
 	}
 	refused := int64(DefaultMaxConns - config.DefaultTCPMaxConnsPerSource)

@@ -13,19 +13,19 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gmccollu/woodpile/internal/loadgen"
+	"github.com/gmccollu/woodshed/internal/loadgen"
 )
 
 func cmdSend(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("send", "", `
-Send test syslog messages to a syslog server (Woodpile or any other). Each
+Send test syslog messages to a syslog server (Woodshed or any other). Each
 message is RFC 5424 and carries a run tag and a sequence number
 ("seq=<run>:<n>"), so you can find it in the logs.
 
 Examples:
-  woodpile send --message "hello from woodpile"          one message to 127.0.0.1:514 over UDP
-  woodpile send --host 192.0.2.10 --proto tcp --count 100
-  woodpile send --port 15514 --rate 200 --duration 60s    a steady stream for a minute`, stderr)
+  woodshed send --message "hello from woodshed"          one message to 127.0.0.1:514 over UDP
+  woodshed send --host 192.0.2.10 --proto tcp --count 100
+  woodshed send --port 15514 --rate 200 --duration 60s    a steady stream for a minute`, stderr)
 	host := fs.String("host", "127.0.0.1", "syslog server `host` name or IP")
 	port := fs.Int("port", 514, "syslog server `port`")
 	proto := fs.String("proto", "udp", "`protocol`: udp or tcp")
@@ -43,7 +43,7 @@ Examples:
 		return code
 	}
 	usageErr := func(err error) int {
-		fmt.Fprintf(stderr, "woodpile send: %v\n\n%s", err, fs.help())
+		fmt.Fprintf(stderr, "woodshed send: %v\n\n%s", err, fs.help())
 		return 2
 	}
 	if *port < 1 || *port > 65535 {
@@ -101,7 +101,7 @@ Examples:
 	}
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
-			fmt.Fprintln(stderr, "woodpile send: interrupted")
+			fmt.Fprintln(stderr, "woodshed send: interrupted")
 			return 1
 		}
 		return fail(stderr, "send", err)
@@ -114,10 +114,10 @@ Examples:
 
 func cmdBench(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("bench", "", `
-Measure sustained throughput: run an in-process Woodpile (listener on
+Measure sustained throughput: run an in-process Woodshed (listener on
 127.0.0.1, store and live hub) in a temporary data folder, send to it at --rate
 for --duration, then read the files back and check that every message arrived
-exactly once. It doesn't touch a running Woodpile or its data.
+exactly once. It doesn't touch a running Woodshed or its data.
 
 Exit status: 0 when every message arrived exactly once, 1 otherwise.`, stderr)
 	proto := fs.String("proto", "udp", "`protocol`: udp, tcp or all (udp, tcp lf, tcp octet in turn)")
@@ -138,22 +138,22 @@ Exit status: 0 when every message arrived exactly once, 1 otherwise.`, stderr)
 		runs = []run{{"udp", ""}}
 	case "tcp":
 		if *framing != "lf" && *framing != "octet" {
-			fmt.Fprintf(stderr, "woodpile bench: --framing must be lf or octet, not %q\n", *framing)
+			fmt.Fprintf(stderr, "woodshed bench: --framing must be lf or octet, not %q\n", *framing)
 			return 2
 		}
 		runs = []run{{"tcp", *framing}}
 	case "all":
 		runs = []run{{"udp", ""}, {"tcp", "lf"}, {"tcp", "octet"}}
 	default:
-		fmt.Fprintf(stderr, "woodpile bench: --proto must be udp, tcp or all, not %q\n\n%s", *proto, fs.help())
+		fmt.Fprintf(stderr, "woodshed bench: --proto must be udp, tcp or all, not %q\n\n%s", *proto, fs.help())
 		return 2
 	}
 	if *rate <= 0 || *duration <= 0 {
-		fmt.Fprintln(stderr, "woodpile bench: --rate and --duration must be positive")
+		fmt.Fprintln(stderr, "woodshed bench: --rate and --duration must be positive")
 		return 2
 	}
 	if *dataDir != "" && len(runs) > 1 {
-		fmt.Fprintln(stderr, "woodpile bench: --data-dir works with one protocol at a time")
+		fmt.Fprintln(stderr, "woodshed bench: --data-dir works with one protocol at a time")
 		return 2
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
@@ -171,7 +171,7 @@ Exit status: 0 when every message arrived exactly once, 1 otherwise.`, stderr)
 		results = append(results, res)
 		if err != nil {
 			ok = false
-			fmt.Fprintf(stderr, "woodpile bench: %s: %v\n", r.proto, strings.TrimPrefix(err.Error(), "loadgen: "))
+			fmt.Fprintf(stderr, "woodshed bench: %s: %v\n", r.proto, strings.TrimPrefix(err.Error(), "loadgen: "))
 			if ctx.Err() != nil {
 				break
 			}

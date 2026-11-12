@@ -1,7 +1,7 @@
 #!/bin/bash
 # Fails if any release file would be renamed by GitHub on upload. GitHub keeps only
 # letters, digits, ".", "-" and "_" in asset names (it turned the "~" in
-# woodpile_0.9.0~rc1_amd64.deb into "."), and then checksums.txt names files that
+# woodshed_0.9.0~rc1_amd64.deb into "."), and then checksums.txt names files that
 # aren't on the release.
 #
 #   scripts/check-asset-names.sh dist [more folders...]

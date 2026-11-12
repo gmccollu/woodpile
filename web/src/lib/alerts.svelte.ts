@@ -4,7 +4,7 @@
 // is reloaded, so a real problem can't stay hidden by accident.
 import type { Banner } from './api';
 
-const KEY = 'woodpile.dismissed';
+const KEY = 'woodshed.dismissed';
 
 export const bannerKey = (b: Banner) => `${b.kind}\u0000${b.text}`;
 

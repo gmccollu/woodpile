@@ -134,7 +134,7 @@ export function testLine(at: Date): GenLine {
     received: at.toISOString(),
     device_id: '127.0.0.1',
     severity: 6,
-    raw: `<14>${bsdTime(at)} this-host woodpile-test: Hello from Woodpile`,
+    raw: `<14>${bsdTime(at)} this-host woodshed-test: Hello from Woodshed`,
   };
 }
 

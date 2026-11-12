@@ -2,14 +2,14 @@
 // wants. Pure functions (no DOM), so site/test/download.test.mjs can test them in Node.
 //
 // File names come from the release workflow:
-//   .goreleaser.yaml      woodpile_<v>_{linux_amd64,linux_arm64,darwin_universal}.tar.gz,
-//                         woodpile_<v>_windows_{amd64,arm64}.zip, woodpile_<v>_{amd64,arm64}.deb,
-//                         woodpile-<v>-1.{x86_64,aarch64}.rpm, checksums.txt
-//   build-msi.ps1         woodpile_<v>_windows_{amd64,arm64}.msi
-//   build-pkg.sh          woodpile_<v>_macos_universal.pkg
+//   .goreleaser.yaml      woodshed_<v>_{linux_amd64,linux_arm64,darwin_universal}.tar.gz,
+//                         woodshed_<v>_windows_{amd64,arm64}.zip, woodshed_<v>_{amd64,arm64}.deb,
+//                         woodshed-<v>-1.{x86_64,aarch64}.rpm, checksums.txt
+//   build-msi.ps1         woodshed_<v>_windows_{amd64,arm64}.msi
+//   build-pkg.sh          woodshed_<v>_macos_universal.pkg
 
 /** The one place the project's home is named. */
-export const REPO = { owner: 'gmccollu', name: 'woodpile' };
+export const REPO = { owner: 'gmccollu', name: 'woodshed' };
 
 export const repoUrl = (path = '') => `https://github.com/${REPO.owner}/${REPO.name}${path}`;
 export const releasesUrl = () => repoUrl('/releases/latest');

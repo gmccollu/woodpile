@@ -1,5 +1,5 @@
 #!/bin/sh
-# Woodpile pkg preinstall: runs as root before the payload is laid down.
+# Woodshed pkg preinstall: runs as root before the payload is laid down.
 # Creates the service account and, on upgrade, stops the running daemon so the
 # binary can be replaced. postinstall starts it again.
 set -e

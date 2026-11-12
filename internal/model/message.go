@@ -1,4 +1,4 @@
-// Package model holds the types shared between Woodpile's packages.
+// Package model holds the types shared between Woodshed's packages.
 package model
 
 import (
@@ -12,7 +12,7 @@ const Unknown = -1
 // Message is one received syslog message. Raw is always the bytes exactly as received
 // (after framing, before any parsing); everything else is best-effort metadata.
 type Message struct {
-	Received  time.Time  // when Woodpile received it, UTC
+	Received  time.Time  // when Woodshed received it, UTC
 	Sender    netip.Addr // source IP of the packet or connection
 	Raw       []byte     // exact bytes as received (no trailing newline)
 	Truncated bool       // Raw was cut at the max message size

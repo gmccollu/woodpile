@@ -18,21 +18,21 @@ import (
 // TestE2EBuiltUIUnderCSP serves the real embedded UI (build it first: `cd web &&
 // npm run build`) with a fake backend, loads it in a headless Chromium-based browser, and checks
 // that the dashboard renders and the console shows no CSP violation. It writes
-// a screenshot and the DOM to $WOODPILE_E2E_OUT (default <repo>/tmp/api-e2e).
+// a screenshot and the DOM to $WOODSHED_E2E_OUT (default <repo>/tmp/api-e2e).
 //
-// Opt-in: WOODPILE_E2E=1 WOODPILE_BROWSER=/path/to/chromium go test -run E2E ./internal/api/
+// Opt-in: WOODSHED_E2E=1 WOODSHED_BROWSER=/path/to/chromium go test -run E2E ./internal/api/
 func TestE2EBuiltUIUnderCSP(t *testing.T) {
-	if os.Getenv("WOODPILE_E2E") == "" {
-		t.Skip("set WOODPILE_E2E=1 to run the browser check")
+	if os.Getenv("WOODSHED_E2E") == "" {
+		t.Skip("set WOODSHED_E2E=1 to run the browser check")
 	}
-	chrome := os.Getenv("WOODPILE_BROWSER")
+	chrome := os.Getenv("WOODSHED_BROWSER")
 	if chrome == "" {
-		t.Skip("set WOODPILE_BROWSER to a Chromium-based browser binary")
+		t.Skip("set WOODSHED_BROWSER to a Chromium-based browser binary")
 	}
 	if _, err := os.Stat(chrome); err != nil {
 		t.Skipf("no browser at %s", chrome)
 	}
-	out := os.Getenv("WOODPILE_E2E_OUT")
+	out := os.Getenv("WOODSHED_E2E_OUT")
 	if out == "" {
 		out, _ = filepath.Abs("../../tmp/api-e2e")
 	}
@@ -46,7 +46,7 @@ func TestE2EBuiltUIUnderCSP(t *testing.T) {
 		t.Fatal("web/dist has no index.html: run `npm run build` in web/ first")
 	}
 	base := fmt.Sprintf("http://localhost:%d/", srv.boundPort())
-	if hold, _ := time.ParseDuration(os.Getenv("WOODPILE_E2E_HOLD")); hold > 0 {
+	if hold, _ := time.ParseDuration(os.Getenv("WOODSHED_E2E_HOLD")); hold > 0 {
 		// Keep serving for manual checks (curl, a real browser) after the run.
 		defer func() {
 			t.Logf("holding %s at %s", hold, base)

@@ -1,11 +1,11 @@
-// Package peer finds another Woodpile on this machine: the installed service,
+// Package peer finds another Woodshed on this machine: the installed service,
 // or another running copy. It needs no privileges, so an ordinary user's copy
 // can tell that the ports it can't bind are probably held by the service (whose
 // sockets lsof and /proc don't show to other users).
 //
 // The service is found through the service manager (launchd, systemd, the
 // Windows SCM), which any user may query; other copies through run-state files
-// (woodpile.state.json) the caller names, when they're readable.
+// (woodshed.state.json) the caller names, when they're readable.
 package peer
 
 import (
@@ -19,13 +19,13 @@ import (
 	"time"
 )
 
-// Kind is what kind of Woodpile a peer is (docs/api.md, holder_kind).
+// Kind is what kind of Woodshed a peer is (docs/api.md, holder_kind).
 type Kind string
 
 // Peer kinds.
 const (
-	KindService Kind = "woodpile_service" // the installed service
-	KindCopy    Kind = "woodpile"         // another running copy (woodpile run, portable)
+	KindService Kind = "woodshed_service" // the installed service
+	KindCopy    Kind = "woodshed"         // another running copy (woodshed run, portable)
 )
 
 // Info describes a running peer.
@@ -53,7 +53,7 @@ type Options struct {
 	alive func(pid int) bool
 }
 
-// Find returns the peer Woodpile, if one is running: the service first, else a
+// Find returns the peer Woodshed, if one is running: the service first, else a
 // copy named by a run-state file whose process is alive.
 func Find(ctx context.Context, o Options) (Info, bool) {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)

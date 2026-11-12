@@ -15,15 +15,15 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/gmccollu/woodpile/internal/api"
-	"github.com/gmccollu/woodpile/internal/config"
-	"github.com/gmccollu/woodpile/internal/export"
-	"github.com/gmccollu/woodpile/internal/hub"
-	"github.com/gmccollu/woodpile/internal/index"
-	"github.com/gmccollu/woodpile/internal/listen"
-	"github.com/gmccollu/woodpile/internal/model"
-	"github.com/gmccollu/woodpile/internal/search"
-	"github.com/gmccollu/woodpile/internal/store"
+	"github.com/gmccollu/woodshed/internal/api"
+	"github.com/gmccollu/woodshed/internal/config"
+	"github.com/gmccollu/woodshed/internal/export"
+	"github.com/gmccollu/woodshed/internal/hub"
+	"github.com/gmccollu/woodshed/internal/index"
+	"github.com/gmccollu/woodshed/internal/listen"
+	"github.com/gmccollu/woodshed/internal/model"
+	"github.com/gmccollu/woodshed/internal/search"
+	"github.com/gmccollu/woodshed/internal/store"
 )
 
 // backend implements api.Backend on top of the real packages.
@@ -32,7 +32,7 @@ type backend struct {
 	startupBanners []api.Banner
 
 	// isService is set when this process is the installed service (it never
-	// reports itself as a peer); peers caches the lookup of another Woodpile;
+	// reports itself as a peer); peers caches the lookup of another Woodshed;
 	// uiListening reports whether this process's UI is up.
 	isService   bool
 	peers       peerCache
@@ -257,7 +257,7 @@ func (b *backend) Status(ctx context.Context) (api.Status, error) {
 	} else if ban != nil {
 		st.Banners = append(st.Banners, *ban)
 	}
-	// Another Woodpile on this machine (usually the installed service): name it
+	// Another Woodshed on this machine (usually the installed service): name it
 	// as the holder and say what to do.
 	if !b.isService {
 		p, ok := b.peer(ctx)
@@ -335,7 +335,7 @@ func buildBanners(ls []listen.ListenerStatus, u store.Usage, dataDir string) []a
 			"New messages are being dropped (%d so far). Free up space on that disk.", dataDir, formatBytes(int64(u.FreeBytes)), u.Dropped)
 		out = append(out, api.Banner{Kind: "writes_paused", Level: api.LevelError, Text: text})
 	} else if u.VolumeBytes > 0 && u.FreeBytes < u.ReserveBytes {
-		text := fmt.Sprintf("Disk space is low: %s free on the disk holding %s. Woodpile is deleting the oldest logs to keep %s free.",
+		text := fmt.Sprintf("Disk space is low: %s free on the disk holding %s. Woodshed is deleting the oldest logs to keep %s free.",
 			formatBytes(int64(u.FreeBytes)), dataDir, formatBytes(int64(u.ReserveBytes)))
 		out = append(out, api.Banner{Kind: "low_disk", Level: api.LevelWarn, Text: text})
 	}

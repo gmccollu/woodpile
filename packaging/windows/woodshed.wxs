@@ -1,22 +1,22 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Woodpile MSI (WiX v5). Built by build-msi.ps1:
+  Woodshed MSI (WiX v5). Built by build-msi.ps1:
 
     wix build -arch x64|arm64 -ext WixToolset.Util.wixext -ext WixToolset.Firewall.wixext
-              -d Version=1.2.3 -d BinDir=<dir holding woodpile.exe> -o woodpile.msi woodpile.wxs
+              -d Version=1.2.3 -d BinDir=<dir holding woodshed.exe> -o woodshed.msi woodshed.wxs
 
   What it does:
-  - Installs woodpile.exe (with LICENSE.txt and THIRD_PARTY_NOTICES.txt) per machine to
-    Program Files\Woodpile and adds that folder to PATH.
-  - Installs the "Woodpile" service, auto start, running as the virtual account NT SERVICE\Woodpile,
+  - Installs woodshed.exe (with LICENSE.txt and THIRD_PARTY_NOTICES.txt) per machine to
+    Program Files\Woodshed and adds that folder to PATH.
+  - Installs the "Woodshed" service, auto start, running as the virtual account NT SERVICE\Woodshed,
     restarted on failure.
-  - Creates C:\ProgramData\Woodpile, writable only by that account (Administrators and SYSTEM keep
+  - Creates C:\ProgramData\Woodshed, writable only by that account (Administrators and SYSTEM keep
     full control; ordinary users get no access).
-  - Opens the firewall for woodpile.exe on UDP 514 and TCP 514 only. The UI port (8514) is
+  - Opens the firewall for woodshed.exe on UDP 514 and TCP 514 only. The UI port (8514) is
     localhost-only by default and is not opened.
-  - Registers the "Woodpile" event source in the Application log, and a Start menu shortcut to the UI.
-  - Upgrades in place (MajorUpgrade). Uninstall keeps C:\ProgramData\Woodpile unless DELETE_LOGS=1:
-      msiexec /x woodpile.msi DELETE_LOGS=1
+  - Registers the "Woodshed" event source in the Application log, and a Start menu shortcut to the UI.
+  - Upgrades in place (MajorUpgrade). Uninstall keeps C:\ProgramData\Woodshed unless DELETE_LOGS=1:
+      msiexec /x woodshed.msi DELETE_LOGS=1
 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
      xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util"
@@ -29,12 +29,12 @@
     <?define BinDir = ..\..\dist\windows\amd64?>
   <?endif?>
   <?ifndef ProjectUrl?>
-    <?define ProjectUrl = https://github.com/gmccollu/woodpile?>
+    <?define ProjectUrl = https://github.com/gmccollu/woodshed?>
   <?endif?>
 
-  <!-- UpgradeCode never changes: it is how Windows Installer recognises every Woodpile version. -->
-  <Package Name="Woodpile"
-           Manufacturer="Woodpile"
+  <!-- UpgradeCode never changes: it is how Windows Installer recognises every Woodshed version. -->
+  <Package Name="Woodshed"
+           Manufacturer="Woodshed"
            Version="$(var.Version)"
            UpgradeCode="ABEA0DF1-F74D-4647-AF6D-FA7E15595FB4"
            Scope="perMachine"
@@ -45,41 +45,41 @@
 
     <Property Id="ARPURLINFOABOUT" Value="$(var.ProjectUrl)" />
     <Property Id="ARPHELPLINK" Value="$(var.ProjectUrl)" />
-    <!-- Settings > Apps shows the woodpile icon. -->
-    <Icon Id="woodpile.ico" SourceFile="$(var.BinDir)\woodpile.ico" />
-    <Property Id="ARPPRODUCTICON" Value="woodpile.ico" />
+    <!-- Settings > Apps shows the woodshed icon. -->
+    <Icon Id="woodshed.ico" SourceFile="$(var.BinDir)\woodshed.ico" />
+    <Property Id="ARPPRODUCTICON" Value="woodshed.ico" />
     <Property Id="ARPNOMODIFY" Value="1" />
 
-    <!-- msiexec /x ... DELETE_LOGS=1 also deletes C:\ProgramData\Woodpile (logs, index, config). -->
+    <!-- msiexec /x ... DELETE_LOGS=1 also deletes C:\ProgramData\Woodshed (logs, index, config). -->
     <Property Id="DELETE_LOGS" Secure="yes" />
 
     <!-- RemoveFolderEx runs before CostInitialize, when directory properties aren't resolved yet,
          so give it the path from a system folder property (set at startup) instead. -->
-    <SetProperty Id="WOODPILE_DATA_PATH" Value="[CommonAppDataFolder]Woodpile\" After="AppSearch" Sequence="execute" />
+    <SetProperty Id="WOODSHED_DATA_PATH" Value="[CommonAppDataFolder]Woodshed\" After="AppSearch" Sequence="execute" />
 
     <StandardDirectory Id="ProgramFiles6432Folder">
-      <Directory Id="INSTALLFOLDER" Name="Woodpile">
-        <Component Id="WoodpileExe">
-          <File Id="WoodpileExe" Source="$(var.BinDir)\woodpile.exe" KeyPath="yes">
+      <Directory Id="INSTALLFOLDER" Name="Woodshed">
+        <Component Id="WoodshedExe">
+          <File Id="WoodshedExe" Source="$(var.BinDir)\woodshed.exe" KeyPath="yes">
             <fw:FirewallException Id="FwSyslogUdp"
-                                  Name="Woodpile syslog (UDP 514)"
-                                  Description="Lets devices send syslog to Woodpile over UDP."
+                                  Name="Woodshed syslog (UDP 514)"
+                                  Description="Lets devices send syslog to Woodshed over UDP."
                                   Protocol="udp" Port="514" Scope="any" Profile="all" />
             <fw:FirewallException Id="FwSyslogTcp"
-                                  Name="Woodpile syslog (TCP 514)"
-                                  Description="Lets devices send syslog to Woodpile over TCP."
+                                  Name="Woodshed syslog (TCP 514)"
+                                  Description="Lets devices send syslog to Woodshed over TCP."
                                   Protocol="tcp" Port="514" Scope="any" Profile="all" />
           </File>
 
-          <ServiceInstall Id="WoodpileService"
-                          Name="Woodpile"
-                          DisplayName="Woodpile syslog server"
+          <ServiceInstall Id="WoodshedService"
+                          Name="Woodshed"
+                          DisplayName="Woodshed syslog server"
                           Description="Receives syslog on port 514 and stores it as plain files. UI: http://127.0.0.1:8514/"
                           Type="ownProcess"
                           Start="auto"
                           ErrorControl="normal"
-                          Account="NT SERVICE\Woodpile"
-                          Arguments="run --service --config &quot;[CommonAppDataFolder]Woodpile\woodpile.toml&quot;"
+                          Account="NT SERVICE\Woodshed"
+                          Arguments="run --service --config &quot;[CommonAppDataFolder]Woodshed\woodshed.toml&quot;"
                           Vital="yes">
             <!-- Count a non-zero exit as a failure too, not only a crash. The service keeps only the
                  privileges it needs (bypass traverse checking); everything else a virtual account
@@ -93,25 +93,25 @@
                                 RestartServiceDelayInSeconds="5"
                                 ResetPeriodInDays="1" />
           </ServiceInstall>
-          <ServiceControl Id="WoodpileServiceControl" Name="Woodpile" Start="install" Stop="both" Remove="uninstall" Wait="yes" />
+          <ServiceControl Id="WoodshedServiceControl" Name="Woodshed" Start="install" Stop="both" Remove="uninstall" Wait="yes" />
 
-          <Environment Id="WoodpilePath" Name="PATH" Value="[INSTALLFOLDER]" Part="last" Action="set" System="yes" Permanent="no" />
+          <Environment Id="WoodshedPath" Name="PATH" Value="[INSTALLFOLDER]" Part="last" Action="set" System="yes" Permanent="no" />
 
-          <!-- Event source "Woodpile" in the Application log. Registering it needs admin rights, which the
+          <!-- Event source "Woodshed" in the Application log. Registering it needs admin rights, which the
                service account doesn't have. Same registration as golang.org/x/sys/windows/svc/eventlog
-               InstallAsEventCreate, so the Go side can open it with eventlog.Open("Woodpile"). -->
-          <util:EventSource Name="Woodpile" Log="Application"
+               InstallAsEventCreate, so the Go side can open it with eventlog.Open("Woodshed"). -->
+          <util:EventSource Name="Woodshed" Log="Application"
                             EventMessageFile="%SystemRoot%\System32\EventCreate.exe"
                             SupportsErrors="yes" SupportsWarnings="yes" SupportsInformationals="yes" />
         </Component>
 
-        <!-- Woodpile's license and the third-party notices (generated by scripts/third_party_notices.py). -->
+        <!-- Woodshed's license and the third-party notices (generated by scripts/third_party_notices.py). -->
         <Component Id="LicenseTxt">
           <File Id="LicenseTxt" Source="$(var.BinDir)\LICENSE.txt" KeyPath="yes" />
         </Component>
-        <!-- The woodpile icon, for the Start-menu shortcut (woodpile.exe has no icon resource). -->
-        <Component Id="WoodpileIco">
-          <File Id="WoodpileIco" Source="$(var.BinDir)\woodpile.ico" KeyPath="yes" />
+        <!-- The woodshed icon, for the Start-menu shortcut (woodshed.exe has no icon resource). -->
+        <Component Id="WoodshedIco">
+          <File Id="WoodshedIco" Source="$(var.BinDir)\woodshed.ico" KeyPath="yes" />
         </Component>
         <Component Id="ThirdPartyNotices">
           <File Id="ThirdPartyNotices" Source="$(var.BinDir)\THIRD_PARTY_NOTICES.txt" KeyPath="yes" />
@@ -120,55 +120,55 @@
     </StandardDirectory>
 
     <StandardDirectory Id="CommonAppDataFolder">
-      <Directory Id="DATAFOLDER" Name="Woodpile">
+      <Directory Id="DATAFOLDER" Name="Woodshed">
         <!-- Not Permanent: Windows Installer removes the folder on uninstall only if it is empty,
              so the logs keep it. RemoveFolderEx deletes it with its contents when DELETE_LOGS=1. -->
-        <Component Id="DataFolder" Guid="FD729DDF-D767-46AD-A57F-F7DE14E2CA7C">
+        <Component Id="DataFolder" Guid="2B9EA838-C213-4D76-8AC8-EF7E9FA0DE00">
           <CreateFolder>
             <!-- Protected DACL (nothing inherited from ProgramData, so no BUILTIN\Users access):
-                 SYSTEM and Administrators full control; NT SERVICE\Woodpile modify (read, write,
-                 delete, no permission changes). The service SID is S-1-5-80-<SHA-1 of "WOODPILE">,
+                 SYSTEM and Administrators full control; NT SERVICE\Woodshed modify (read, write,
+                 delete, no permission changes). The service SID is S-1-5-80-<SHA-1 of "WOODSHED">,
                  fixed for the service name, so the ACL doesn't depend on the service existing yet. -->
-            <PermissionEx Sddl="O:BAG:SYD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1301bf;;;S-1-5-80-276366627-2944175572-1807786847-528126453-1705305312)" />
+            <PermissionEx Sddl="O:BAG:SYD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1301bf;;;S-1-5-80-246480601-2135328064-241538422-929878615-662582935)" />
           </CreateFolder>
-          <util:RemoveFolderEx Id="RemoveDataFolder" On="uninstall" Property="WOODPILE_DATA_PATH"
+          <util:RemoveFolderEx Id="RemoveDataFolder" On="uninstall" Property="WOODSHED_DATA_PATH"
                                Condition="DELETE_LOGS = 1 AND NOT UPGRADINGPRODUCTCODE" />
         </Component>
       </Directory>
     </StandardDirectory>
 
-    <!-- Reset the ACL of C:\ProgramData\Woodpile and everything already in it (an upgrade's logs, or
+    <!-- Reset the ACL of C:\ProgramData\Woodshed and everything already in it (an upgrade's logs, or
          a folder someone created before the install): owner Administrators, the protected DACL above
          on the folder, and only inherited ACEs below it. Links and extra hard-link names inside are
          deleted, never followed, and a data folder that is itself a link fails the install.
          A folder that exists but isn't owned by SYSTEM, Administrators or TrustedInstaller (an ordinary
-         user created it first) is renamed aside to Woodpile.untrusted-<UTC time>, contents kept, and a
+         user created it first) is renamed aside to Woodshed.untrusted-<UTC time>, contents kept, and a
          fresh one is made; if it can't be moved (in use), the install fails saying so.
-         woodpile-aclfix.exe is winacl.PrepareDataDir (internal/winacl), the same code and SDDL as
-         `woodpile install`. It runs from the Binary table as SYSTEM before CreateFolders (whose
+         woodshed-aclfix.exe is winacl.PrepareDataDir (internal/winacl), the same code and SDDL as
+         `woodshed install`. It runs from the Binary table as SYSTEM before CreateFolders (whose
          PermissionEx would already make Administrators the owner) and so before the service starts,
          on install, upgrade and repair, but not on uninstall. -->
-    <Binary Id="WoodpileAclFix" SourceFile="$(var.BinDir)\woodpile-aclfix.exe" />
-    <CustomAction Id="WoodpileResetDataAcl" BinaryRef="WoodpileAclFix"
-                  ExeCommand="&quot;[CommonAppDataFolder]Woodpile&quot;"
+    <Binary Id="WoodshedAclFix" SourceFile="$(var.BinDir)\woodshed-aclfix.exe" />
+    <CustomAction Id="WoodshedResetDataAcl" BinaryRef="WoodshedAclFix"
+                  ExeCommand="&quot;[CommonAppDataFolder]Woodshed&quot;"
                   Execute="deferred" Impersonate="no" Return="check" />
     <InstallExecuteSequence>
-      <Custom Action="WoodpileResetDataAcl" Before="CreateFolders" Condition="NOT (REMOVE~=&quot;ALL&quot;)" />
+      <Custom Action="WoodshedResetDataAcl" Before="CreateFolders" Condition="NOT (REMOVE~=&quot;ALL&quot;)" />
     </InstallExecuteSequence>
 
     <StandardDirectory Id="ProgramMenuFolder">
-      <Component Id="StartMenuShortcut" Guid="F57B1F2E-A19F-421B-AD0D-5942E741BEA4">
-        <util:InternetShortcut Id="WoodpileUiShortcut" Directory="ProgramMenuFolder" Name="Woodpile"
-                               Target="http://127.0.0.1:8514/" Type="url" IconFile="[#WoodpileIco]" IconIndex="0" />
-        <RegistryValue Root="HKLM" Key="Software\Woodpile" Name="StartMenuShortcut" Type="integer" Value="1" KeyPath="yes" />
+      <Component Id="StartMenuShortcut" Guid="6BB62F0D-FF73-4D85-B2A8-73574572546F">
+        <util:InternetShortcut Id="WoodshedUiShortcut" Directory="ProgramMenuFolder" Name="Woodshed"
+                               Target="http://127.0.0.1:8514/" Type="url" IconFile="[#WoodshedIco]" IconIndex="0" />
+        <RegistryValue Root="HKLM" Key="Software\Woodshed" Name="StartMenuShortcut" Type="integer" Value="1" KeyPath="yes" />
       </Component>
     </StandardDirectory>
 
-    <Feature Id="Main" Title="Woodpile" Level="1">
-      <ComponentRef Id="WoodpileExe" />
+    <Feature Id="Main" Title="Woodshed" Level="1">
+      <ComponentRef Id="WoodshedExe" />
       <ComponentRef Id="LicenseTxt" />
       <ComponentRef Id="ThirdPartyNotices" />
-      <ComponentRef Id="WoodpileIco" />
+      <ComponentRef Id="WoodshedIco" />
       <ComponentRef Id="DataFolder" />
       <ComponentRef Id="StartMenuShortcut" />
     </Feature>

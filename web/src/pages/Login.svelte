@@ -55,7 +55,7 @@
     <div class="flex items-center gap-3">
       <span class="grid size-11 place-items-center rounded-full bg-chip shadow-[var(--shadow-chip)]"><Logo /></span>
       <div>
-        <h1 id="login-title" class="m-0 text-xl font-bold tracking-tight">Log in to Woodpile</h1>
+        <h1 id="login-title" class="m-0 text-xl font-bold tracking-tight">Log in to Woodshed</h1>
         <p class="m-0 text-[13px] text-muted">LAN mode is on, so this UI needs its password.</p>
       </div>
     </div>
@@ -78,7 +78,7 @@
       {:else if error === 'slow'}
         {#if wait > 0}Too many attempts in a row. Try again in {waitText}.{/if}
       {:else if error}{error}{/if}
-      {#if auth.error && !error}Can't reach the Woodpile service ({auth.error}).{/if}
+      {#if auth.error && !error}Can't reach the Woodshed service ({auth.error}).{/if}
     </div>
     <button type="submit" class="pill-btn w-full justify-center py-2.5" disabled={busy || !password || wait > 0}>
       {busy ? 'Checking…' : 'Log in'}
@@ -86,7 +86,7 @@
     <details class="text-[13px]">
       <summary class="cursor-pointer text-muted">Forgot the password?</summary>
       <p class="mt-2 mb-0 leading-relaxed">
-        On the Woodpile machine, run <code class="font-mono">woodpile reset-password</code> as an administrator. It turns LAN mode off
+        On the Woodshed machine, run <code class="font-mono">woodshed reset-password</code> as an administrator. It turns LAN mode off
         so the UI is back on <code class="font-mono whitespace-nowrap">http://localhost:{port}/</code>.
       </p>
     </details>

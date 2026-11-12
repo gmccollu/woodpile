@@ -5,10 +5,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gmccollu/woodpile/internal/index"
+	"github.com/gmccollu/woodshed/internal/index"
 )
 
-// Gap is a period inside an export's range when Woodpile couldn't have
+// Gap is a period inside an export's range when Woodshed couldn't have
 // received messages (or one protocol of them).
 type Gap struct {
 	From   time.Time `json:"from"`
@@ -30,7 +30,7 @@ const (
 const minGap = time.Second
 
 // GapsNote is how gaps are derived; it goes into manifest.json.
-const GapsNote = "Gaps come from Woodpile's own event log. not_running: from the service's stop event (or, after " +
+const GapsNote = "Gaps come from Woodshed's own event log. not_running: from the service's stop event (or, after " +
 	"a crash, the last message or event recorded before the next start; the start of such a gap is approximate) to the " +
 	"next start event, and before the first start on record. listener_down: from a bind error to that listener's " +
 	"next start. listener_stopped: from a listener stop while the service kept running (a settings change) to its next " +
@@ -135,9 +135,9 @@ func ComputeGaps(events []index.Event, from, to, now time.Time, lastMessage func
 				}
 				closeListeners(since)
 				add(Gap{From: since, To: e.Time, Kind: GapNotRunning,
-					Detail: "Woodpile stopped without a clean shutdown (crash or power loss); the start of this gap is approximate"})
+					Detail: "Woodshed stopped without a clean shutdown (crash or power loss); the start of this gap is approximate"})
 			default:
-				add(Gap{From: stoppedAt, To: e.Time, Kind: GapNotRunning, Detail: "Woodpile wasn't running"})
+				add(Gap{From: stoppedAt, To: e.Time, Kind: GapNotRunning, Detail: "Woodshed wasn't running"})
 			}
 			running, everStarted = true, true
 		case EventServiceStop:
@@ -166,7 +166,7 @@ func ComputeGaps(events []index.Event, from, to, now time.Time, lastMessage func
 	case !everStarted:
 		add(Gap{From: from, To: to, Kind: GapNotRunning, Detail: "no start on record"})
 	case !running:
-		add(Gap{From: stoppedAt, To: to, Kind: GapNotRunning, Detail: "Woodpile wasn't running"})
+		add(Gap{From: stoppedAt, To: to, Kind: GapNotRunning, Detail: "Woodshed wasn't running"})
 	}
 	closeListeners(to)
 	sort.SliceStable(gaps, func(i, j int) bool { return gaps[i].From.Before(gaps[j].From) })

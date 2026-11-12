@@ -13,10 +13,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gmccollu/woodpile/internal/config"
-	"github.com/gmccollu/woodpile/internal/listen"
-	"github.com/gmccollu/woodpile/internal/model"
-	"github.com/gmccollu/woodpile/internal/store/logfile"
+	"github.com/gmccollu/woodshed/internal/config"
+	"github.com/gmccollu/woodshed/internal/listen"
+	"github.com/gmccollu/woodshed/internal/model"
+	"github.com/gmccollu/woodshed/internal/store/logfile"
 )
 
 var quiet = slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -81,7 +81,7 @@ func TestSendFramings(t *testing.T) {
 				if !strings.Contains(string(m.Raw), want+" ") {
 					t.Fatalf("[%d] %q lacks %q", i, m.Raw, want)
 				}
-				if len(m.Raw) != 300 || m.Severity != 6 || m.Hostname != DefaultHostname || m.App != "woodpile" {
+				if len(m.Raw) != 300 || m.Severity != 6 || m.Hostname != DefaultHostname || m.App != "woodshed" {
 					t.Fatalf("[%d] len %d parsed %+v", i, len(m.Raw), m)
 				}
 				if strings.ContainsAny(string(m.Raw), "\n\r") {
@@ -137,9 +137,9 @@ func writeLog(t *testing.T, dir, dev string, lines ...string) {
 func TestVerify(t *testing.T) {
 	dir := t.TempDir()
 	// 0..4 sent; 2 missing, 3 twice, plus a foreign line and an out-of-range seq.
-	writeLog(t, dir, "192.0.2.1", "<134>1 - h woodpile - - - seq=run1:0 pad", "<134>1 - h woodpile - - - seq=run1:3", "other device text")
-	writeLog(t, dir, "192.0.2.2", "<134>1 - h woodpile - - - seq=run1:1 x", "<134>1 - h woodpile - - - seq=run1:3 y",
-		"<134>1 - h woodpile - - - seq=run1:4", "seq=run1:99", "seq=run2:2")
+	writeLog(t, dir, "192.0.2.1", "<134>1 - h woodshed - - - seq=run1:0 pad", "<134>1 - h woodshed - - - seq=run1:3", "other device text")
+	writeLog(t, dir, "192.0.2.2", "<134>1 - h woodshed - - - seq=run1:1 x", "<134>1 - h woodshed - - - seq=run1:3 y",
+		"<134>1 - h woodshed - - - seq=run1:4", "seq=run1:99", "seq=run2:2")
 	v, err := Verify(dir, "run1", 5)
 	if err != nil {
 		t.Fatal(err)

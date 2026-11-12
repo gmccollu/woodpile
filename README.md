@@ -1,9 +1,9 @@
-# Woodpile
+# Woodshed
 
 A simple, reliable syslog server for Windows, macOS and Linux, with a clean web UI.
 Install it, point your devices at it, and it keeps every message as plain files within a disk budget.
 
-**[Download Woodpile](https://github.com/gmccollu/woodpile/releases/latest)**: an installer for Windows (MSI), macOS
+**[Download Woodshed](https://github.com/gmccollu/woodshed/releases/latest)**: an installer for Windows (MSI), macOS
 (pkg) or Linux (deb, rpm), or a portable zip/tarball that runs with nothing installed.
 Then follow the **[user guide](docs/user-guide.md)**: install or run portable, point a device at it, find the logs,
 search, and export a zip for support. Questions: [FAQ](FAQ.md). What's new: [CHANGELOG.md](CHANGELOG.md).
@@ -33,9 +33,9 @@ More: [docs/install.md](docs/install.md) (every installer in detail), [SPEC.md](
 
 ## Quick start
 
-**Portable, nothing installed:** download the archive for your system, unpack it and double-click `woodpile` (or run
-`./woodpile`). It listens on UDP and TCP 514, keeps its logs in `woodpile-data/` next to it, and opens the UI. On Linux,
-port 514 needs `sudo ./woodpile` (or `sudo setcap cap_net_bind_service=+ep ./woodpile` once). See
+**Portable, nothing installed:** download the archive for your system, unpack it and double-click `woodshed` (or run
+`./woodshed`). It listens on UDP and TCP 514, keeps its logs in `woodshed-data/` next to it, and opens the UI. On Linux,
+port 514 needs `sudo ./woodshed` (or `sudo setcap cap_net_bind_service=+ep ./woodshed` once). See
 [Portable mode](docs/install.md#portable-mode-no-install).
 
 **As a service:** use the installer for your system ([docs/install.md](docs/install.md)).
@@ -45,7 +45,7 @@ port 514 needs `sudo ./woodpile` (or `sudo setcap cap_net_bind_service=+ep ./woo
 You need Go (see `go.mod`) and Node.js with npm for the UI.
 
 ```sh
-# Build the UI and the binary (into dist/woodpile)
+# Build the UI and the binary (into dist/woodshed)
 make build
 ```
 
@@ -54,7 +54,7 @@ the OS's own syslog daemon, so this example uses a high port; the default config
 
 ```sh
 mkdir -p ./mysyslog
-cat > ./mysyslog/woodpile.toml <<'EOF'
+cat > ./mysyslog/woodshed.toml <<'EOF'
 [listeners.udp]
 enabled = true
 addr = "127.0.0.1"
@@ -65,38 +65,38 @@ enabled = true
 addr = "127.0.0.1"
 port = 15514
 EOF
-./dist/woodpile run --config ./mysyslog/woodpile.toml
+./dist/woodshed run --config ./mysyslog/woodshed.toml
 ```
 
 In another terminal, send a test message and check the listeners:
 
 ```sh
-./dist/woodpile send --port 15514 --message "hello from woodpile"
-./dist/woodpile status --config ./mysyslog/woodpile.toml
+./dist/woodshed send --port 15514 --message "hello from woodshed"
+./dist/woodshed status --config ./mysyslog/woodshed.toml
 ```
 
 Then open <http://localhost:8514/>. The message is also on disk, in
-`./mysyslog/woodpile-data/logs/127.0.0.1/<date>.log` (files are named by the UTC date).
+`./mysyslog/woodshed-data/logs/127.0.0.1/<date>.log` (files are named by the UTC date).
 
 Settings missing from the file take their defaults, and a config file that doesn't exist yet is created with
-them; either way the data folder is `woodpile-data` next to the config. Stop the server with Ctrl-C: it writes
+them; either way the data folder is `woodshed-data` next to the config. Stop the server with Ctrl-C: it writes
 everything to disk first.
 
 ## Commands
 
 | Command | What it does |
 |---|---|
-| `woodpile` / `woodpile portable [--dir DIR]` | Portable mode: run here with nothing installed, data in `woodpile-data/` |
-| `woodpile run [--config FILE]` | Run the server in the foreground |
-| `woodpile install` / `uninstall` | Install or remove the system service where no installer package was used (needs administrator rights) |
-| `woodpile status` | The service's state, the listeners and the UI address |
-| `woodpile reindex` | Rebuild the index from the log files (with the server stopped) |
-| `woodpile reset-password` | Forgot the UI password: remove it and turn LAN mode off (run as administrator) |
-| `woodpile send` | Send numbered test messages to any syslog server |
-| `woodpile bench` | Measure sustained throughput on a temporary in-process server |
-| `woodpile version` | Print the version |
+| `woodshed` / `woodshed portable [--dir DIR]` | Portable mode: run here with nothing installed, data in `woodshed-data/` |
+| `woodshed run [--config FILE]` | Run the server in the foreground |
+| `woodshed install` / `uninstall` | Install or remove the system service where no installer package was used (needs administrator rights) |
+| `woodshed status` | The service's state, the listeners and the UI address |
+| `woodshed reindex` | Rebuild the index from the log files (with the server stopped) |
+| `woodshed reset-password` | Forgot the UI password: remove it and turn LAN mode off (run as administrator) |
+| `woodshed send` | Send numbered test messages to any syslog server |
+| `woodshed bench` | Measure sustained throughput on a temporary in-process server |
+| `woodshed version` | Print the version |
 
-`woodpile <command> --help` shows each command's flags.
+`woodshed <command> --help` shows each command's flags.
 
 ## Development
 

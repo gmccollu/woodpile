@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gmccollu/woodpile/internal/loadgen"
+	"github.com/gmccollu/woodshed/internal/loadgen"
 )
 
 // liveLines streams /api/live?query and sends each message event's data line.

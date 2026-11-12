@@ -7,15 +7,15 @@ import (
 	"testing"
 )
 
-const launchctlRunning = `system/com.woodpile.daemon = {
+const launchctlRunning = `system/com.woodshed.daemon = {
 	active count = 1
-	path = /Library/LaunchDaemons/com.woodpile.daemon.plist
+	path = /Library/LaunchDaemons/com.woodshed.daemon.plist
 	type = LaunchDaemon
 	state = running
 
-	program = /usr/local/bin/woodpile
+	program = /usr/local/bin/woodshed
 	arguments = {
-		/usr/local/bin/woodpile
+		/usr/local/bin/woodshed
 		run
 	}
 
@@ -31,7 +31,7 @@ func TestParseLaunchctl(t *testing.T) {
 	if r, pid := parseLaunchctl([]byte(launchctlRunning)); !r || pid != 4210 {
 		t.Errorf("running: %v %d", r, pid)
 	}
-	stopped := "system/com.woodpile.daemon = {\n\tstate = not running\n\tlast exit code = 0\n}\n"
+	stopped := "system/com.woodshed.daemon = {\n\tstate = not running\n\tlast exit code = 0\n}\n"
 	if r, pid := parseLaunchctl([]byte(stopped)); r || pid != 0 {
 		t.Errorf("stopped: %v %d", r, pid)
 	}
@@ -48,7 +48,7 @@ func TestParseSystemctl(t *testing.T) {
 
 func writeState(t *testing.T, dir string, body string) string {
 	t.Helper()
-	p := filepath.Join(dir, "woodpile.state.json")
+	p := filepath.Join(dir, "woodshed.state.json")
 	if err := os.WriteFile(p, []byte(body), 0o640); err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +78,7 @@ func TestFind(t *testing.T) {
 		t.Errorf("service: %+v %v", info, ok)
 	}
 	// The service, state file unreadable: kind and PID only.
-	info, ok = Find(ctx, Options{StateFiles: []string{"/nonexistent/woodpile.state.json"}, query: query(true, 4210)})
+	info, ok = Find(ctx, Options{StateFiles: []string{"/nonexistent/woodshed.state.json"}, query: query(true, 4210)})
 	if !ok || info.Kind != KindService || info.PID != 4210 || info.UIKnown {
 		t.Errorf("service without state: %+v", info)
 	}

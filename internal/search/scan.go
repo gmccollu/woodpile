@@ -5,7 +5,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/gmccollu/woodpile/internal/hub"
+	"github.com/gmccollu/woodshed/internal/hub"
 )
 
 // Hit is one matching line from a Scanner.

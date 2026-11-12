@@ -28,7 +28,7 @@ func TestResetDataDir(t *testing.T) {
 		t.Skip("needs an elevated administrator")
 	}
 	base := t.TempDir()
-	data := filepath.Join(base, "Woodpile")
+	data := filepath.Join(base, "Woodshed")
 	outside := filepath.Join(base, "outside")
 	for _, d := range []string{filepath.Join(data, "logs", "10.0.0.1"), outside} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
@@ -49,7 +49,7 @@ func TestResetDataDir(t *testing.T) {
 	if out, err := exec.Command("cmd", "/c", "mklink", "/J", junction, outside).CombinedOutput(); err != nil {
 		t.Fatalf("mklink: %v %s", err, out)
 	}
-	hard := filepath.Join(data, "woodpile.toml")
+	hard := filepath.Join(data, "woodshed.toml")
 	if err := os.Link(secret, hard); err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +115,7 @@ func TestPrepareDataDirSetsAsideUntrusted(t *testing.T) {
 		t.Skip("needs an elevated administrator")
 	}
 	base := t.TempDir()
-	data := filepath.Join(base, "Woodpile")
+	data := filepath.Join(base, "Woodshed")
 	if err := os.MkdirAll(filepath.Join(data, "logs"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -156,7 +156,7 @@ func TestEnsureDataDirCreatesProtected(t *testing.T) {
 	if !windows.GetCurrentProcessToken().IsElevated() {
 		t.Skip("needs an elevated administrator")
 	}
-	data := filepath.Join(t.TempDir(), "Woodpile")
+	data := filepath.Join(t.TempDir(), "Woodshed")
 	if err := EnsureDataDir(data, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -178,7 +178,7 @@ func TestEnsureDataDirGivesUpOnRecreation(t *testing.T) {
 	if !windows.GetCurrentProcessToken().IsElevated() {
 		t.Skip("needs an elevated administrator")
 	}
-	data := filepath.Join(t.TempDir(), "Woodpile")
+	data := filepath.Join(t.TempDir(), "Woodshed")
 	plant := func() {
 		os.Mkdir(data, 0o755)
 		exec.Command("icacls", data, "/setowner", "*S-1-5-32-545").Run()

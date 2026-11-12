@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gmccollu/woodpile/internal/index"
+	"github.com/gmccollu/woodshed/internal/index"
 )
 
 func TestGaps(t *testing.T) {
@@ -17,7 +17,7 @@ func TestGaps(t *testing.T) {
 	}
 	start := func(tm time.Time) []index.Event {
 		return []index.Event{
-			ev(tm, index.KindStart, index.LevelInfo, index.SourceService, "Woodpile 1.0 (abc) started on linux/amd64; data folder /var/lib/woodpile."),
+			ev(tm, index.KindStart, index.LevelInfo, index.SourceService, "Woodshed 1.0 (abc) started on linux/amd64; data folder /var/lib/woodshed."),
 			ev(tm.Add(time.Millisecond), index.KindStart, index.LevelInfo, index.SourceListenerUDP, "UDP listener started on 0.0.0.0:514; receive buffer 8 MiB granted of 32 MiB requested"),
 			ev(tm.Add(2*time.Millisecond), index.KindStart, index.LevelInfo, index.SourceListenerTCP, "TCP listener started on 0.0.0.0:514"),
 		}
@@ -26,7 +26,7 @@ func TestGaps(t *testing.T) {
 		return []index.Event{
 			ev(tm.Add(-2*time.Millisecond), index.KindStop, index.LevelInfo, index.SourceListenerUDP, "UDP listener on 0.0.0.0:514 stopped"),
 			ev(tm.Add(-time.Millisecond), index.KindStop, index.LevelInfo, index.SourceListenerTCP, "TCP listener on 0.0.0.0:514 stopped"),
-			ev(tm, index.KindStop, index.LevelInfo, index.SourceService, "Woodpile stopped."),
+			ev(tm, index.KindStop, index.LevelInfo, index.SourceService, "Woodshed stopped."),
 		}
 	}
 	cat := func(parts ...[]index.Event) []index.Event {

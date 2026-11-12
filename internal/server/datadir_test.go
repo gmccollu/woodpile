@@ -19,7 +19,7 @@ func TestCheckSharedDataDir(t *testing.T) {
 	reset := func(o bool) { shared, owned, protected = []string{"Users"}, o, 0 }
 
 	reset(false)
-	if b, err := checkSharedDataDir(`C:\ProgramData\Woodpile`, false, Options{Service: true}, quiet); err == nil || b != nil ||
+	if b, err := checkSharedDataDir(`C:\ProgramData\Woodshed`, false, Options{Service: true}, quiet); err == nil || b != nil ||
 		!strings.Contains(err.Error(), "--allow-shared-data-dir") {
 		t.Errorf("service: %v %v", b, err)
 	}
@@ -27,7 +27,7 @@ func TestCheckSharedDataDir(t *testing.T) {
 		t.Error("the service changed the ACL itself")
 	}
 	reset(false)
-	if b, err := checkSharedDataDir(`C:\ProgramData\Woodpile`, false, Options{Service: true, AllowSharedDataDir: true}, quiet); err != nil ||
+	if b, err := checkSharedDataDir(`C:\ProgramData\Woodshed`, false, Options{Service: true, AllowSharedDataDir: true}, quiet); err != nil ||
 		b == nil || b.Kind != "shared_data_dir" || !strings.Contains(b.Text, "Users") {
 		t.Errorf("service, allowed: %v %v", b, err)
 	}

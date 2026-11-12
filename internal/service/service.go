@@ -1,13 +1,13 @@
-// Package service runs Woodpile under the OS service manager (Windows SCM,
+// Package service runs Woodshed under the OS service manager (Windows SCM,
 // systemd, launchd) and installs or removes the service, with the names, paths,
 // accounts and log destinations in docs/service-contract.md.
 //
-// `woodpile install` is for machines without a package, and sets the service up
+// `woodshed install` is for machines without a package, and sets the service up
 // the way the package does: the same service definition (the packaged systemd unit
 // and launchd plist are embedded, see package packaging), the same least-privilege
-// account (`woodpile`, `_woodpile`, `NT SERVICE\Woodpile`), the same data-folder
+// account (`woodshed`, `_woodshed`, `NT SERVICE\Woodshed`), the same data-folder
 // permissions, the same log destination. The binary is copied to a system location
-// (/usr/local/bin/woodpile, or %ProgramFiles%\Woodpile\woodpile.exe) the account can
+// (/usr/local/bin/woodshed, or %ProgramFiles%\Woodshed\woodshed.exe) the account can
 // read.
 //
 // install and uninstall refuse when the package installed the service (the unit in
@@ -29,27 +29,27 @@ import (
 
 	ksvc "github.com/kardianos/service"
 
-	"github.com/gmccollu/woodpile/internal/config"
+	"github.com/gmccollu/woodshed/internal/config"
 )
 
 // Service names (docs/service-contract.md §2). Don't change them: the packages
 // and the Windows data-folder ACL (the service SID) depend on them.
 const (
-	WindowsName = "Woodpile"            // SCM service name
-	LinuxName   = "woodpile"            // woodpile.service
-	DarwinName  = "com.woodpile.daemon" // launchd label
+	WindowsName = "Woodshed"            // SCM service name
+	LinuxName   = "woodshed"            // woodshed.service
+	DarwinName  = "com.woodshed.daemon" // launchd label
 )
 
 // DisplayName and Description are shown by the service managers.
 const (
-	DisplayName = "Woodpile syslog server"
+	DisplayName = "Woodshed syslog server"
 	Description = "Receives syslog on port 514 and stores it as plain files. UI: http://127.0.0.1:8514/"
 )
 
 // Service accounts, as the packages create them.
 const (
-	LinuxUser  = "woodpile"
-	DarwinUser = "_woodpile"
+	LinuxUser  = "woodshed"
+	DarwinUser = "_woodshed"
 	// WindowsAccount is the service's virtual account.
 	WindowsAccount = `NT SERVICE\` + WindowsName
 )
@@ -82,7 +82,7 @@ func runConfig(cfgPath string) *ksvc.Config {
 type RunFunc func(ctx context.Context, log *slog.Logger) error
 
 // Run runs fn as the service. Logs go to the Windows Application event log
-// (source "Woodpile", registered by the MSI or `woodpile install`) on Windows and
+// (source "Woodshed", registered by the MSI or `woodshed install`) on Windows and
 // to stdout elsewhere (journald and the launchd log file pick them up). It
 // returns when the service manager stops the service; if fn fails on its own, the
 // process exits with status 1 so the manager can restart it.
@@ -96,7 +96,7 @@ func Run(cfgPath string, stopTimeout time.Duration, fn RunFunc) error {
 	if runtime.GOOS == "windows" {
 		l, err := s.Logger(nil)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "woodpile: the event log source %q isn't available (%v); logging to stderr\n", WindowsName, err)
+			fmt.Fprintf(os.Stderr, "woodshed: the event log source %q isn't available (%v); logging to stderr\n", WindowsName, err)
 			prg.log = slog.New(slog.NewTextHandler(os.Stderr, nil))
 		} else {
 			prg.log = slog.New(newLoggerHandler(l, slog.LevelInfo))
@@ -130,7 +130,7 @@ func (p *program) Start(s ksvc.Service) error {
 			if err == nil {
 				err = errors.New("the server stopped unexpectedly")
 			}
-			p.log.Error("woodpile stopped", "err", err)
+			p.log.Error("woodshed stopped", "err", err)
 			os.Exit(1)
 		}
 	}()
@@ -151,9 +151,9 @@ func (p *program) Stop(s ksvc.Service) error {
 
 // ---- detecting an installed service ----
 
-// Installed describes the Woodpile service found on this machine.
+// Installed describes the Woodshed service found on this machine.
 type Installed struct {
-	Exists  bool   // a Woodpile service is defined
+	Exists  bool   // a Woodshed service is defined
 	Package bool   // and the package installed it
 	Where   string // the unit, plist or SCM entry found
 	// Remove is how to remove a package-installed service.
@@ -164,16 +164,16 @@ type Installed struct {
 type prober interface {
 	exists(path string) bool
 	// windowsService reports whether the SCM has the service, and whether the
-	// MSI's registry key (HKLM\Software\Woodpile) exists.
+	// MSI's registry key (HKLM\Software\Woodshed) exists.
 	windowsService(name string) (exists, msi bool, err error)
 }
 
 // Package and install paths (docs/install.md, packaging/).
 var (
-	linuxPackageUnits = []string{"/usr/lib/systemd/system/woodpile.service", "/lib/systemd/system/woodpile.service"}
-	linuxManualUnit   = "/etc/systemd/system/woodpile.service"
+	linuxPackageUnits = []string{"/usr/lib/systemd/system/woodshed.service", "/lib/systemd/system/woodshed.service"}
+	linuxManualUnit   = "/etc/systemd/system/woodshed.service"
 	darwinPlist       = "/Library/LaunchDaemons/" + DarwinName + ".plist"
-	darwinPkgMarkers  = []string{"/var/db/receipts/com.woodpile.pkg.plist", "/var/db/receipts/com.woodpile.pkg.bom", "/usr/local/share/woodpile/uninstall.sh"}
+	darwinPkgMarkers  = []string{"/var/db/receipts/com.woodshed.pkg.plist", "/var/db/receipts/com.woodshed.pkg.bom", "/usr/local/share/woodshed/uninstall.sh"}
 )
 
 func detect(goos string, p prober) (Installed, error) {
@@ -191,9 +191,9 @@ func detect(goos string, p prober) (Installed, error) {
 			// The MSI's key without its service still means the package is installed.
 			in.Exists, in.Package = true, true
 			if in.Where == "" {
-				in.Where = `HKLM\Software\Woodpile`
+				in.Where = `HKLM\Software\Woodshed`
 			}
-			in.Remove = "Settings > Apps > Woodpile > Uninstall (or msiexec /x with the MSI)"
+			in.Remove = "Settings > Apps > Woodshed > Uninstall (or msiexec /x with the MSI)"
 		}
 		return in, nil
 	case "darwin":
@@ -204,7 +204,7 @@ func detect(goos string, p prober) (Installed, error) {
 		for _, m := range darwinPkgMarkers {
 			if p.exists(m) {
 				in.Package = true
-				in.Remove = "sudo /usr/local/share/woodpile/uninstall.sh"
+				in.Remove = "sudo /usr/local/share/woodshed/uninstall.sh"
 				if !in.Exists {
 					in.Exists, in.Where = true, m
 				}
@@ -216,7 +216,7 @@ func detect(goos string, p prober) (Installed, error) {
 		for _, u := range linuxPackageUnits {
 			if p.exists(u) {
 				return Installed{Exists: true, Package: true, Where: u,
-					Remove: "your package manager (apt remove woodpile, dnf remove woodpile)"}, nil
+					Remove: "your package manager (apt remove woodshed, dnf remove woodshed)"}, nil
 			}
 		}
 		if p.exists(linuxManualUnit) {
@@ -226,31 +226,31 @@ func detect(goos string, p prober) (Installed, error) {
 	}
 }
 
-// checkInstall refuses an install when any Woodpile service already exists.
+// checkInstall refuses an install when any Woodshed service already exists.
 func checkInstall(in Installed) error {
 	if !in.Exists {
 		return nil
 	}
 	if in.Package {
-		return fmt.Errorf("Woodpile's package already installed the service (%s); it's managed by the package, so there's nothing to install. "+
+		return fmt.Errorf("Woodshed's package already installed the service (%s); it's managed by the package, so there's nothing to install. "+
 			"To remove it use %s", in.Where, in.Remove)
 	}
-	return fmt.Errorf("a Woodpile service is already installed (%s); run `woodpile uninstall` first to replace it", in.Where)
+	return fmt.Errorf("a Woodshed service is already installed (%s); run `woodshed uninstall` first to replace it", in.Where)
 }
 
 // checkUninstall refuses to remove a package's service, or a missing one.
 func checkUninstall(in Installed) error {
 	if !in.Exists {
-		return errors.New("no Woodpile service is installed")
+		return errors.New("no Woodshed service is installed")
 	}
 	if in.Package {
-		return fmt.Errorf("the Woodpile service was installed by the package (%s); remove it with %s, so the package and the service stay in step",
+		return fmt.Errorf("the Woodshed service was installed by the package (%s); remove it with %s, so the package and the service stay in step",
 			in.Where, in.Remove)
 	}
 	return nil
 }
 
-// Detect looks for an installed Woodpile service on this machine.
+// Detect looks for an installed Woodshed service on this machine.
 func Detect() (Installed, error) { return detect(runtime.GOOS, osProber{}) }
 
 type osProber struct{}
@@ -279,7 +279,7 @@ type InstallOptions struct {
 // UninstallOptions configures Uninstall.
 type UninstallOptions struct {
 	// DeleteLogs also deletes the data folder (logs, index, config) and, on macOS,
-	// the _woodpile account, as the package uninstallers do when asked.
+	// the _woodshed account, as the package uninstallers do when asked.
 	DeleteLogs bool
 	Out        io.Writer
 }

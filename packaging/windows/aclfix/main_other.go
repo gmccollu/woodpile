@@ -1,6 +1,6 @@
 //go:build !windows
 
-// Command woodpile-aclfix is Windows-only (see main_windows.go).
+// Command woodshed-aclfix is Windows-only (see main_windows.go).
 package main
 
 import (
@@ -9,6 +9,6 @@ import (
 )
 
 func main() {
-	fmt.Fprintln(os.Stderr, "woodpile-aclfix runs on Windows only")
+	fmt.Fprintln(os.Stderr, "woodshed-aclfix runs on Windows only")
 	os.Exit(2)
 }

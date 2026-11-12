@@ -14,8 +14,8 @@ import (
 	"runtime"
 	"time"
 
-	"github.com/gmccollu/woodpile/internal/index"
-	"github.com/gmccollu/woodpile/internal/store/logfile"
+	"github.com/gmccollu/woodshed/internal/index"
+	"github.com/gmccollu/woodshed/internal/store/logfile"
 )
 
 func (s *Store) kickCompress() {

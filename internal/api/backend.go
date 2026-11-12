@@ -1,4 +1,4 @@
-// Package api is Woodpile's HTTP layer: the REST API in docs/api.md, the embedded
+// Package api is Woodshed's HTTP layer: the REST API in docs/api.md, the embedded
 // web UI, and the UI's security (localhost mode, LAN mode with a password and
 // HTTPS).
 //
@@ -109,7 +109,7 @@ type Backend interface {
 	DeleteExport(ctx context.Context, id string) error
 
 	// RecordEvent adds one of the HTTP layer's own events to the service event
-	// log (the one exported as woodpile-events.log): UI start and bind errors,
+	// log (the one exported as woodshed-events.log): UI start and bind errors,
 	// mode changes, password changes, certificate generation and login
 	// lockouts. Errors are logged and otherwise ignored.
 	RecordEvent(ctx context.Context, e Event) error
@@ -175,8 +175,8 @@ type Listener struct {
 	OK     bool   `json:"ok"`
 	Error  string `json:"error"`
 	Holder string `json:"holder,omitempty"` // the process holding the port, when the OS tells us
-	// Another Woodpile holding (probably) the port: "woodpile_service" or
-	// "woodpile", its PID and UI address, when known (docs/api.md).
+	// Another Woodshed holding (probably) the port: "woodshed_service" or
+	// "woodshed", its PID and UI address, when known (docs/api.md).
 	HolderKind  string `json:"holder_kind,omitempty"`
 	HolderPID   int    `json:"holder_pid,omitempty"`
 	HolderUIURL string `json:"holder_ui_url,omitempty"`

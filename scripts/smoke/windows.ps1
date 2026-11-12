@@ -1,18 +1,18 @@
 <#
 .SYNOPSIS
   Install smoke test for Windows (SPEC §7), run by .github/workflows/install-smoke.yml on a
-  disposable CI machine. It installs Woodpile for real as an administrator: never run it on a
+  disposable CI machine. It installs Woodshed for real as an administrator: never run it on a
   machine you care about.
 
 .DESCRIPTION
   -Mode msi     installs -Msi (v1), checks it, upgrades to -UpgradeMsi (v2), uninstalls keeping
                 the data, reinstalls and uninstalls with DELETE_LOGS=1.
-  -Mode manual  `woodpile install` / `uninstall` with -Binary (no package), the same checks.
+  -Mode manual  `woodshed install` / `uninstall` with -Binary (no package), the same checks.
 
-  Checks: the service runs as NT SERVICE\Woodpile, C:\ProgramData\Woodpile has the MSI's
+  Checks: the service runs as NT SERVICE\Woodshed, C:\ProgramData\Woodshed has the MSI's
   protected ACL, the firewall rules exist, UDP and TCP 514 are held by the service, the UI
   answers on 8514, 10,000 messages are all on disk exactly once (scripts/verifyseq), the
-  Application event log has Woodpile entries, and the data survives restarts, upgrades and
+  Application event log has Woodshed entries, and the data survives restarts, upgrades and
   uninstalls until it's asked to be deleted.
 #>
 [CmdletBinding()]
@@ -28,20 +28,20 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 New-Item -ItemType Directory -Force -Path $Logs | Out-Null
 
-$Data = Join-Path $env:ProgramData "Woodpile"
-$Exe = Join-Path $env:ProgramFiles "Woodpile\woodpile.exe"
+$Data = Join-Path $env:ProgramData "Woodshed"
+$Exe = Join-Path $env:ProgramFiles "Woodshed\woodshed.exe"
 $Ui = "http://127.0.0.1:8514"
-$ServiceSid = "S-1-5-80-276366627-2944175572-1807786847-528126453-1705305312"
+$ServiceSid = "S-1-5-80-246480601-2135328064-241538422-929878615-662582935"
 $script:passes = 0
 
 function Say($m) { Write-Host "`n==> $m" }
 function Ok($m) { $script:passes++; Write-Host "PASS $m" }
 function Collect-Logs {
     try {
-        Get-WinEvent -FilterHashtable @{ LogName = "Application"; ProviderName = "Woodpile" } -MaxEvents 200 -ErrorAction SilentlyContinue |
+        Get-WinEvent -FilterHashtable @{ LogName = "Application"; ProviderName = "Woodshed" } -MaxEvents 200 -ErrorAction SilentlyContinue |
             Format-List TimeCreated, LevelDisplayName, Message | Out-File (Join-Path $Logs "eventlog-$Mode.txt")
         Get-ChildItem -Recurse $Data -ErrorAction SilentlyContinue | Out-File (Join-Path $Logs "data-$Mode.txt")
-        sc.exe qc Woodpile | Out-File (Join-Path $Logs "sc-qc-$Mode.txt")
+        sc.exe qc Woodshed | Out-File (Join-Path $Logs "sc-qc-$Mode.txt")
     } catch { }
 }
 function Die($m) { Write-Host "FAIL $m"; Collect-Logs; exit 1 }
@@ -71,14 +71,14 @@ function Wait-Up {
 }
 
 function Check-Running {
-    Say "service runs as NT SERVICE\Woodpile, data ACL, firewall, UDP/TCP 514, UI"
+    Say "service runs as NT SERVICE\Woodshed, data ACL, firewall, UDP/TCP 514, UI"
     $st = Wait-Up
-    $svc = Get-CimInstance Win32_Service -Filter "Name='Woodpile'"
-    if (-not $svc) { Die "no Woodpile service" }
-    if ($svc.StartName -ne "NT SERVICE\Woodpile") { Die "the service runs as '$($svc.StartName)'" }
+    $svc = Get-CimInstance Win32_Service -Filter "Name='Woodshed'"
+    if (-not $svc) { Die "no Woodshed service" }
+    if ($svc.StartName -ne "NT SERVICE\Woodshed") { Die "the service runs as '$($svc.StartName)'" }
     if ($svc.State -ne "Running" -or $svc.StartMode -ne "Auto") { Die "service state $($svc.State), start mode $($svc.StartMode)" }
-    Ok "service Woodpile runs as $($svc.StartName) (pid $($svc.ProcessId), auto start)"
-    $sidType = (sc.exe qsidtype Woodpile) -join " "
+    Ok "service Woodshed runs as $($svc.StartName) (pid $($svc.ProcessId), auto start)"
+    $sidType = (sc.exe qsidtype Woodshed) -join " "
     Write-Host $sidType
 
     $sddl = (Get-Acl $Data).Sddl
@@ -86,17 +86,17 @@ function Check-Running {
     if ($sddl -notmatch "D:P(AI)?\(") { Die "the data ACL isn't protected (inherits from ProgramData)" }
     if ($sddl -notmatch "\(A;OICI;0x1301bf;;;$ServiceSid\)") { Die "the data ACL doesn't give the service account modify" }
     if ($sddl -match ";;;BU\)" -or $sddl -match ";;;AU\)" -or $sddl -match ";;;WD\)") { Die "the data ACL lets ordinary users in" }
-    Ok "C:\ProgramData\Woodpile: protected ACL, modify for the service SID, nothing for Users"
+    Ok "C:\ProgramData\Woodshed: protected ACL, modify for the service SID, nothing for Users"
 
     foreach ($p in "UDP", "TCP") {
-        $r = Get-NetFirewallRule -DisplayName "Woodpile syslog ($p 514)" -ErrorAction SilentlyContinue
+        $r = Get-NetFirewallRule -DisplayName "Woodshed syslog ($p 514)" -ErrorAction SilentlyContinue
         if (-not $r -or $r.Enabled -ne "True" -or $r.Direction -ne "Inbound" -or $r.Action -ne "Allow") { Die "firewall rule for $p 514 missing or wrong" }
         $port = $r | Get-NetFirewallPortFilter
         if ($port.LocalPort -ne "514") { Die "firewall rule for $p opens $($port.LocalPort)" }
     }
     Ok "firewall rules allow UDP and TCP 514 inbound"
     # (PowerShell names are case-insensitive: don't reuse $Ui here.)
-    $uiRule = Get-NetFirewallRule | Where-Object { $_.DisplayName -like "*Woodpile*8514*" }
+    $uiRule = Get-NetFirewallRule | Where-Object { $_.DisplayName -like "*Woodshed*8514*" }
     if ($uiRule) { Die "a firewall rule opens the UI port" }
 
     $udp = Get-NetUDPEndpoint -LocalPort 514 -ErrorAction SilentlyContinue | Where-Object OwningProcess -eq $svc.ProcessId
@@ -128,36 +128,36 @@ function Still-There([string]$run, [string]$after) {
 }
 
 function Check-EventLog {
-    $ev = @(Get-WinEvent -FilterHashtable @{ LogName = "Application"; ProviderName = "Woodpile" } -MaxEvents 50 -ErrorAction SilentlyContinue)
-    if ($ev.Count -eq 0) { Die "no Woodpile entries in the Application event log" }
+    $ev = @(Get-WinEvent -FilterHashtable @{ LogName = "Application"; ProviderName = "Woodshed" } -MaxEvents 50 -ErrorAction SilentlyContinue)
+    if ($ev.Count -eq 0) { Die "no Woodshed entries in the Application event log" }
     Write-Host ($ev | Select-Object -First 3 | ForEach-Object { "  $($_.TimeCreated) $($_.LevelDisplayName): $($_.Message)" })
-    Ok "$($ev.Count) Woodpile entries in the Application event log"
+    Ok "$($ev.Count) Woodshed entries in the Application event log"
 }
 
 function Check-Status([string]$exe) {
     $out = & $exe status 2>&1 | Out-String
     Write-Host $out
-    if ($LASTEXITCODE -ne 0) { Die "woodpile status exited $LASTEXITCODE" }
-    if ($out -notmatch "Service: +running" -or $out -notmatch "UDP 0\.0\.0\.0:514: listening") { Die "woodpile status output" }
-    Ok "woodpile status shows the service and listeners"
+    if ($LASTEXITCODE -ne 0) { Die "woodshed status exited $LASTEXITCODE" }
+    if ($out -notmatch "Service: +running" -or $out -notmatch "UDP 0\.0\.0\.0:514: listening") { Die "woodshed status output" }
+    Ok "woodshed status shows the service and listeners"
 }
 
-function Restart-Woodpile {
+function Restart-Woodshed {
     Say "restart"
-    $before = (Get-CimInstance Win32_Service -Filter "Name='Woodpile'").ProcessId
-    Restart-Service Woodpile
+    $before = (Get-CimInstance Win32_Service -Filter "Name='Woodshed'").ProcessId
+    Restart-Service Woodshed
     Wait-Up | Out-Null
-    $after = (Get-CimInstance Win32_Service -Filter "Name='Woodpile'").ProcessId
+    $after = (Get-CimInstance Win32_Service -Filter "Name='Woodshed'").ProcessId
     if ($after -eq $before) { Die "the pid didn't change" }
     Ok "restarted (pid $before -> $after)"
 }
 
 function Check-Gone {
     Start-Sleep 2
-    if (Get-Service Woodpile -ErrorAction SilentlyContinue) { Die "the service still exists" }
+    if (Get-Service Woodshed -ErrorAction SilentlyContinue) { Die "the service still exists" }
     try { Invoke-RestMethod -TimeoutSec 2 "$Ui/healthz" | Out-Null; Die "the UI still answers" } catch { }
     foreach ($p in "UDP", "TCP") {
-        if (Get-NetFirewallRule -DisplayName "Woodpile syslog ($p 514)" -ErrorAction SilentlyContinue) { Die "firewall rule $p left behind" }
+        if (Get-NetFirewallRule -DisplayName "Woodshed syslog ($p 514)" -ErrorAction SilentlyContinue) { Die "firewall rule $p left behind" }
     }
     Ok "service and firewall rules removed"
 }
@@ -168,7 +168,7 @@ function Refuses([string]$want, [string]$exe, [string[]]$a) {
     $out = & $exe @a 2>&1 | Out-String
     if ($LASTEXITCODE -eq 0) { Die "$exe $($a -join ' ') should have refused: $out" }
     if ($out -notmatch [regex]::Escape($want)) { Die "refused for the wrong reason: $out" }
-    Ok "woodpile $($a -join ' ') refuses: $($out.Trim().Split("`n")[0])"
+    Ok "woodshed $($a -join ' ') refuses: $($out.Trim().Split("`n")[0])"
 }
 
 switch ($Mode) {
@@ -183,15 +183,15 @@ switch ($Mode) {
         Check-Status $Exe
         Refuses "package already installed" $Exe @("install")
         Refuses "installed by the package" $Exe @("uninstall")
-        Restart-Woodpile
+        Restart-Woodshed
         Still-There $r1 "a restart"
 
         Say "major upgrade to $UpgradeMsi"
         Install-Msi $UpgradeMsi (Join-Path $Logs "upgrade-v2.log")
         $st = Check-Running
         if ($st.version -eq $v1) { Die "still version $v1 after the upgrade" }
-        $products = @(Get-CimInstance Win32_Product -Filter "Name='Woodpile'")
-        if ($products.Count -ne 1) { Die "$($products.Count) Woodpile products installed after the upgrade" }
+        $products = @(Get-CimInstance Win32_Product -Filter "Name='Woodshed'")
+        if ($products.Count -ne 1) { Die "$($products.Count) Woodshed products installed after the upgrade" }
         Ok "upgraded $v1 -> $($st.version), one product registered"
         Still-There $r1 "the upgrade"
 
@@ -220,10 +220,10 @@ switch ($Mode) {
         New-Item -ItemType Directory -Force -Path $target | Out-Null
         Set-Content (Join-Path $target "keep.txt") "keep"
         cmd /c mklink /J (Join-Path $Data "logs\evil-junction") $target | Out-Null
-        Say "woodpile install (no package)"
+        Say "woodshed install (no package)"
         $installOut = & $bin install 2>&1 | Out-String
         Write-Host $installOut
-        if ($LASTEXITCODE -ne 0) { Die "woodpile install exited $LASTEXITCODE" }
+        if ($LASTEXITCODE -ne 0) { Die "woodshed install exited $LASTEXITCODE" }
         if (Test-Path (Join-Path $Data "logs\evil-junction")) { Die "the planted junction survived the install" }
         if (-not (Test-Path (Join-Path $target "keep.txt"))) { Die "the junction's target was changed" }
         if ($installOut -notmatch "removed .*evil-junction") { Die "install didn't say it removed the junction" }
@@ -233,7 +233,7 @@ switch ($Mode) {
         Write-Host "logs ACL: $child"
         if ($child -match ";;;WD\)") { Die "the planted Everyone entry on logs survived the install" }
         Ok "install reset the ACL of a pre-created child folder (no Everyone entry)"
-        $privs = (sc.exe qprivs Woodpile) -join " "
+        $privs = (sc.exe qprivs Woodshed) -join " "
         Write-Host $privs
         if ($privs -notmatch "SeChangeNotifyPrivilege" -or $privs -match "SeImpersonatePrivilege") { Die "required privileges aren't limited" }
         Ok "the service's required privileges are only SeChangeNotifyPrivilege"
@@ -242,13 +242,13 @@ switch ($Mode) {
         Check-EventLog
         Check-Status $Exe
         Refuses "already installed" $bin @("install")
-        Restart-Woodpile
+        Restart-Woodshed
         Still-There $r1 "a restart"
-        Say "woodpile uninstall keeps the data"
+        Say "woodshed uninstall keeps the data"
         Native $bin @("uninstall")
         Check-Gone
         Check-DataKept
-        Still-There $r1 "woodpile uninstall"
+        Still-There $r1 "woodshed uninstall"
         Say "install again over the kept data, then uninstall --delete-logs"
         Native $bin @("install")
         Wait-Up | Out-Null

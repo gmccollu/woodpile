@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gmccollu/woodpile/internal/model"
+	"github.com/gmccollu/woodshed/internal/model"
 )
 
 // TestStatsRollupBoundary drives the maintenance pass's rollup with the fake clock.

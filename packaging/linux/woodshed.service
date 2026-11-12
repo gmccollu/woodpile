@@ -1,13 +1,13 @@
 [Unit]
-Description=Woodpile syslog server
+Description=Woodshed syslog server
 After=network.target
 
 [Service]
 Type=simple
-User=woodpile
-Group=woodpile
-ExecStart=/usr/bin/woodpile run --service --config /etc/woodpile/woodpile.toml
-WorkingDirectory=/var/lib/woodpile
+User=woodshed
+Group=woodshed
+ExecStart=/usr/bin/woodshed run --service --config /etc/woodshed/woodshed.toml
+WorkingDirectory=/var/lib/woodshed
 Restart=on-failure
 RestartSec=5s
 UMask=0027
@@ -22,7 +22,7 @@ NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
-ReadWritePaths=/var/lib/woodpile /etc/woodpile
+ReadWritePaths=/var/lib/woodshed /etc/woodshed
 
 # Further hardening that a syslog server never needs to relax.
 ProtectKernelTunables=yes

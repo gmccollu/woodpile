@@ -59,7 +59,7 @@ func TestJSONPutKeepsFileOnlyFields(t *testing.T) {
 }
 
 func TestLoadCreatesDefaults(t *testing.T) {
-	dir := filepath.Join(t.TempDir(), "etc", "woodpile")
+	dir := filepath.Join(t.TempDir(), "etc", "woodshed")
 	path := filepath.Join(dir, FileName)
 	def := testConfig(t)
 	c, created, err := LoadOrCreate(path, def)
@@ -249,15 +249,15 @@ func TestPaths(t *testing.T) {
 		getenv    func(string) string
 		cfg, data string
 	}{
-		{"linux", none, "/etc/woodpile/woodpile.toml", "/var/lib/woodpile"},
-		{"darwin", none, "/Library/Application Support/Woodpile/woodpile.toml", "/Library/Application Support/Woodpile"},
-		{"windows", none, `C:\ProgramData\Woodpile\woodpile.toml`, `C:\ProgramData\Woodpile`},
+		{"linux", none, "/etc/woodshed/woodshed.toml", "/var/lib/woodshed"},
+		{"darwin", none, "/Library/Application Support/Woodshed/woodshed.toml", "/Library/Application Support/Woodshed"},
+		{"windows", none, `C:\ProgramData\Woodshed\woodshed.toml`, `C:\ProgramData\Woodshed`},
 		{"windows", func(k string) string {
 			if k == "ProgramData" {
 				return `D:\PD\`
 			}
 			return ""
-		}, `D:\PD\Woodpile\woodpile.toml`, `D:\PD\Woodpile`},
+		}, `D:\PD\Woodshed\woodshed.toml`, `D:\PD\Woodshed`},
 	}
 	for _, tc := range cases {
 		c, d := pathsFor(tc.goos, tc.getenv)

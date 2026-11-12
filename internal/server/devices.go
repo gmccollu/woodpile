@@ -6,8 +6,8 @@ import (
 	"slices"
 	"time"
 
-	"github.com/gmccollu/woodpile/internal/api"
-	"github.com/gmccollu/woodpile/internal/index"
+	"github.com/gmccollu/woodshed/internal/api"
+	"github.com/gmccollu/woodshed/internal/index"
 )
 
 // QueryDevices pages the device list in SQL (index.QueryDevices, security

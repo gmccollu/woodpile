@@ -47,7 +47,7 @@ func openLockFile(path string, create bool) (*os.File, error) {
 }
 
 // MatchOwner gives the lock file, through its descriptor, the data folder's owner,
-// when this process is root and created it there (re-test N10): a `sudo woodpile
+// when this process is root and created it there (re-test N10): a `sudo woodshed
 // reindex` must not leave a root-owned lock the service can't open.
 func (l *DirLock) MatchOwner(dataDir string) error {
 	if l == nil || l.f == nil || os.Geteuid() != 0 {

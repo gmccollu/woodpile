@@ -1,4 +1,4 @@
-// Package store writes received messages to Woodpile's plain log files (SPEC §3.3–3.4)
+// Package store writes received messages to Woodshed's plain log files (SPEC §3.3–3.4)
 // and keeps them within the disk budget.
 //
 // Layout: <data>/logs/<model.DeviceID(sender)>/<YYYY-MM-DD>.log is a device's active
@@ -25,9 +25,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/gmccollu/woodpile/internal/index"
-	"github.com/gmccollu/woodpile/internal/model"
-	"github.com/gmccollu/woodpile/internal/store/logfile"
+	"github.com/gmccollu/woodshed/internal/index"
+	"github.com/gmccollu/woodshed/internal/model"
+	"github.com/gmccollu/woodshed/internal/store/logfile"
 )
 
 // Defaults for Options.
@@ -339,7 +339,7 @@ func Open(opts Options) (*Store, error) {
 	if err := s.applyIndex(); err != nil {
 		s.log.Warn("store: index update failed", "err", err)
 	}
-	// A clock that stepped back while Woodpile was stopped counts too.
+	// A clock that stepped back while Woodshed was stopped counts too.
 	if files, err := s.idx.Files(s.ctx, ""); err == nil {
 		for _, f := range files {
 			if ms := f.LastReceived.UnixMilli(); ms > s.clockHW.Load() {

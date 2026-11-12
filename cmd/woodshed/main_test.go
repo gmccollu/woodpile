@@ -15,18 +15,18 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gmccollu/woodpile/internal/api"
-	"github.com/gmccollu/woodpile/internal/config"
-	"github.com/gmccollu/woodpile/internal/index"
-	"github.com/gmccollu/woodpile/internal/peer"
-	"github.com/gmccollu/woodpile/internal/server"
-	"github.com/gmccollu/woodpile/internal/service"
-	"github.com/gmccollu/woodpile/internal/store"
-	"github.com/gmccollu/woodpile/internal/store/logfile"
+	"github.com/gmccollu/woodshed/internal/api"
+	"github.com/gmccollu/woodshed/internal/config"
+	"github.com/gmccollu/woodshed/internal/index"
+	"github.com/gmccollu/woodshed/internal/peer"
+	"github.com/gmccollu/woodshed/internal/server"
+	"github.com/gmccollu/woodshed/internal/service"
+	"github.com/gmccollu/woodshed/internal/store"
+	"github.com/gmccollu/woodshed/internal/store/logfile"
 )
 
 // TestMain keeps every test away from the real service manager: on a machine
-// with Woodpile installed, reset-password would otherwise restart (or fail to
+// with Woodshed installed, reset-password would otherwise restart (or fail to
 // restart) the real service, and status would report it.
 func TestMain(m *testing.M) {
 	noService()
@@ -131,7 +131,7 @@ func TestHelpNeverRunsTheCommand(t *testing.T) {
 		if name == "help" {
 			name = args[1]
 		}
-		if code != 0 || !strings.HasPrefix(out, "usage: woodpile "+name) || errOut != "" {
+		if code != 0 || !strings.HasPrefix(out, "usage: woodshed "+name) || errOut != "" {
 			t.Errorf("%v: code %d, stdout %.60q, stderr %q", args, code, out, errOut)
 		}
 	}
@@ -156,7 +156,7 @@ func TestTopLevel(t *testing.T) {
 	if code, out, _ := runCLI("help"); code != 0 || !strings.Contains(out, "portable") {
 		t.Errorf("help: %d %q", code, out)
 	}
-	if code, out, _ := runCLI("version"); code != 0 || !strings.HasPrefix(out, "woodpile "+version) {
+	if code, out, _ := runCLI("version"); code != 0 || !strings.HasPrefix(out, "woodshed "+version) {
 		t.Errorf("version: %d %q", code, out)
 	}
 	if code, _, errOut := runCLI("version", "extra"); code != 2 || !strings.Contains(errOut, "unexpected argument") {
@@ -175,7 +175,7 @@ func TestSendUsageErrors(t *testing.T) {
 		{"send", "--port", port, "--duration", "5s", "--rate", "10", "--count", "3"},
 		{"send", "--port", port, "--bogus"},
 	} {
-		if code, _, errOut := runCLI(args...); code != 2 || !strings.Contains(errOut, "woodpile send:") {
+		if code, _, errOut := runCLI(args...); code != 2 || !strings.Contains(errOut, "woodshed send:") {
 			t.Errorf("%v: code %d, stderr %q", args, code, errOut)
 		}
 	}
@@ -203,7 +203,7 @@ func TestSendNothingListening(t *testing.T) {
 	port := l.Addr().(*net.TCPAddr).Port
 	l.Close()
 	code, _, errOut := runCLI("send", "--proto", "tcp", "--port", fmt.Sprint(port))
-	if code != 1 || !strings.Contains(errOut, "woodpile send:") || !strings.Contains(errOut, "refused") {
+	if code != 1 || !strings.Contains(errOut, "woodshed send:") || !strings.Contains(errOut, "refused") {
 		t.Errorf("code %d, stderr %q", code, errOut)
 	}
 }
@@ -220,7 +220,7 @@ func testConfig(t *testing.T, edit func(*config.Config)) (cfgPath, dataDir strin
 	if edit != nil {
 		edit(&c)
 	}
-	cfgPath = filepath.Join(dir, "woodpile.toml")
+	cfgPath = filepath.Join(dir, "woodshed.toml")
 	if err := config.Save(cfgPath, c); err != nil {
 		t.Fatal(err)
 	}
@@ -326,7 +326,7 @@ func TestResetPasswordNeedsWriteAccess(t *testing.T) {
 }
 
 func TestResetPasswordNoConfig(t *testing.T) {
-	missing := filepath.Join(t.TempDir(), "nope", "woodpile.toml")
+	missing := filepath.Join(t.TempDir(), "nope", "woodshed.toml")
 	code, _, errOut := runCLI("reset-password", "--config", missing)
 	if code != 1 || !strings.Contains(errOut, "no config file") {
 		t.Errorf("%d %q", code, errOut)
@@ -355,7 +355,7 @@ func TestReindex(t *testing.T) {
 		t.Fatal(err)
 	}
 	code, _, errOut := runCLI("reindex", "--config", cfgPath)
-	if code != 1 || !strings.Contains(errOut, "Woodpile is running") || !strings.Contains(errOut, "stop it first") {
+	if code != 1 || !strings.Contains(errOut, "Woodshed is running") || !strings.Contains(errOut, "stop it first") {
 		t.Errorf("while locked: %d %q", code, errOut)
 	}
 	lock.Unlock()
@@ -374,7 +374,7 @@ func TestReindex(t *testing.T) {
 		t.Errorf("device after reindex: %+v %v", d, err)
 	}
 	evs, _ := idx.Events(context.Background(), time.Time{}, time.Time{}, 0)
-	if len(evs) == 0 || !strings.Contains(evs[len(evs)-1].Text, "woodpile reindex") {
+	if len(evs) == 0 || !strings.Contains(evs[len(evs)-1].Text, "woodshed reindex") {
 		t.Errorf("events = %+v", evs)
 	}
 }

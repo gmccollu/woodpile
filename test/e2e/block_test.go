@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gmccollu/woodpile/internal/loadgen"
+	"github.com/gmccollu/woodshed/internal/loadgen"
 )
 
 // TestBlockDevice: a device blocked through PATCH stops landing, live, while
@@ -21,7 +21,7 @@ func TestBlockDevice(t *testing.T) {
 	dir := t.TempDir()
 	syslogPort, uiPort := pickPorts(t)
 	cfgPath, dataDir := writeConfig(t, dir, syslogPort, uiPort)
-	p := startWoodpile(t, cfgPath, dataDir, uiPort)
+	p := startWoodshed(t, cfgPath, dataDir, uiPort)
 
 	ips := senderIPs(t)
 	blocked, other := "127.0.0.1", ips[1] // 127.0.0.2 where loopback aliases exist

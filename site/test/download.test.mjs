@@ -7,27 +7,27 @@ import { summarize } from '../tools/releases.mjs';
 // Every file the release workflow produces (packaging commit 79b5d2f): X is the version,
 // "1.0.0" or a prerelease such as "0.9.0-rc2" (a hyphen, never "~" or ".rc").
 const namesFor = (X) => [
-  `woodpile_${X}_windows_amd64.msi`,
-  `woodpile_${X}_windows_arm64.msi`,
-  `woodpile_${X}_macos_universal.pkg`,
-  `woodpile_${X}_amd64.deb`,
-  `woodpile_${X}_arm64.deb`,
-  `woodpile-${X}-1.x86_64.rpm`,
-  `woodpile-${X}-1.aarch64.rpm`,
-  `woodpile_${X}_windows_amd64.zip`,
-  `woodpile_${X}_windows_arm64.zip`,
-  `woodpile_${X}_darwin_universal.tar.gz`,
-  `woodpile_${X}_linux_amd64.tar.gz`,
-  `woodpile_${X}_linux_arm64.tar.gz`,
+  `woodshed_${X}_windows_amd64.msi`,
+  `woodshed_${X}_windows_arm64.msi`,
+  `woodshed_${X}_macos_universal.pkg`,
+  `woodshed_${X}_amd64.deb`,
+  `woodshed_${X}_arm64.deb`,
+  `woodshed-${X}-1.x86_64.rpm`,
+  `woodshed-${X}-1.aarch64.rpm`,
+  `woodshed_${X}_windows_amd64.zip`,
+  `woodshed_${X}_windows_arm64.zip`,
+  `woodshed_${X}_darwin_universal.tar.gz`,
+  `woodshed_${X}_linux_amd64.tar.gz`,
+  `woodshed_${X}_linux_arm64.tar.gz`,
   'checksums.txt',
 ];
 const releaseFor = (X) => ({
   tag_name: `v${X}`,
-  html_url: `https://github.com/gmccollu/woodpile/releases/tag/v${X}`,
+  html_url: `https://github.com/gmccollu/woodshed/releases/tag/v${X}`,
   assets: namesFor(X).map((name, i) => ({
     name,
     size: 1_000_000 + i,
-    browser_download_url: `https://github.com/gmccollu/woodpile/releases/download/v${X}/${name}`,
+    browser_download_url: `https://github.com/gmccollu/woodshed/releases/download/v${X}/${name}`,
     digest: `sha256:${String(i).padStart(64, '0')}`,
   })),
 });
@@ -39,20 +39,20 @@ const names = (list) => list.map((a) => a.name);
 test('every release file is classified; checksums.txt is kept apart', () => {
   for (const n of NAMES.slice(0, -1)) assert.ok(classify(n), n);
   assert.equal(classify('checksums.txt'), null);
-  assert.equal(classify('woodpile_1.0.0_linux_amd64.tar.gz.intoto.jsonl'), null);
-  assert.deepEqual(classify('woodpile_1.0.0_windows_arm64.msi'), { os: 'windows', kind: 'installer', arch: 'arm64', label: 'Windows installer (ARM64)', format: 'msi' });
-  assert.equal(classify('woodpile-1.0.0-1.aarch64.rpm').arch, 'arm64');
-  assert.equal(classify('woodpile_1.0.0_darwin_universal.tar.gz').kind, 'portable');
+  assert.equal(classify('woodshed_1.0.0_linux_amd64.tar.gz.intoto.jsonl'), null);
+  assert.deepEqual(classify('woodshed_1.0.0_windows_arm64.msi'), { os: 'windows', kind: 'installer', arch: 'arm64', label: 'Windows installer (ARM64)', format: 'msi' });
+  assert.equal(classify('woodshed-1.0.0-1.aarch64.rpm').arch, 'arm64');
+  assert.equal(classify('woodshed_1.0.0_darwin_universal.tar.gz').kind, 'portable');
 });
 
 test('the best files per platform, installer first', () => {
   const p = (os, arch) => names(pick(RELEASE.assets, { os, arch }).best);
-  assert.deepEqual(p('windows', 'x64'), ['woodpile_1.0.0_windows_amd64.msi', 'woodpile_1.0.0_windows_amd64.zip']);
-  assert.deepEqual(p('windows', 'arm64'), ['woodpile_1.0.0_windows_arm64.msi', 'woodpile_1.0.0_windows_arm64.zip']);
-  assert.deepEqual(p('windows', 'unknown'), ['woodpile_1.0.0_windows_amd64.msi', 'woodpile_1.0.0_windows_amd64.zip']);
-  assert.deepEqual(p('macos', 'arm64'), ['woodpile_1.0.0_macos_universal.pkg', 'woodpile_1.0.0_darwin_universal.tar.gz']);
-  assert.deepEqual(p('linux', 'x64'), ['woodpile_1.0.0_amd64.deb', 'woodpile-1.0.0-1.x86_64.rpm', 'woodpile_1.0.0_linux_amd64.tar.gz']);
-  assert.deepEqual(p('linux', 'arm64'), ['woodpile_1.0.0_arm64.deb', 'woodpile-1.0.0-1.aarch64.rpm', 'woodpile_1.0.0_linux_arm64.tar.gz']);
+  assert.deepEqual(p('windows', 'x64'), ['woodshed_1.0.0_windows_amd64.msi', 'woodshed_1.0.0_windows_amd64.zip']);
+  assert.deepEqual(p('windows', 'arm64'), ['woodshed_1.0.0_windows_arm64.msi', 'woodshed_1.0.0_windows_arm64.zip']);
+  assert.deepEqual(p('windows', 'unknown'), ['woodshed_1.0.0_windows_amd64.msi', 'woodshed_1.0.0_windows_amd64.zip']);
+  assert.deepEqual(p('macos', 'arm64'), ['woodshed_1.0.0_macos_universal.pkg', 'woodshed_1.0.0_darwin_universal.tar.gz']);
+  assert.deepEqual(p('linux', 'x64'), ['woodshed_1.0.0_amd64.deb', 'woodshed-1.0.0-1.x86_64.rpm', 'woodshed_1.0.0_linux_amd64.tar.gz']);
+  assert.deepEqual(p('linux', 'arm64'), ['woodshed_1.0.0_arm64.deb', 'woodshed-1.0.0-1.aarch64.rpm', 'woodshed_1.0.0_linux_arm64.tar.gz']);
   assert.deepEqual(p('unknown', 'unknown'), []);
 });
 
@@ -85,34 +85,34 @@ test('the same labels and picks for 1.0.0 and a prerelease (0.9.0-rc2)', () => {
     assert.deepEqual(names.slice(0, -1).map((n) => classify(n)?.label), LABELS, X);
     const rel = releaseFor(X);
     assert.deepEqual(pick(rel.assets, { os: 'linux', arch: 'arm64' }).best.map((a) => a.name), [
-      `woodpile_${X}_arm64.deb`,
-      `woodpile-${X}-1.aarch64.rpm`,
-      `woodpile_${X}_linux_arm64.tar.gz`,
+      `woodshed_${X}_arm64.deb`,
+      `woodshed-${X}-1.aarch64.rpm`,
+      `woodshed_${X}_linux_arm64.tar.gz`,
     ]);
     assert.deepEqual(pick(rel.assets, { os: 'windows', arch: 'x64' }).best.map((a) => a.name), [
-      `woodpile_${X}_windows_amd64.msi`,
-      `woodpile_${X}_windows_amd64.zip`,
+      `woodshed_${X}_windows_amd64.msi`,
+      `woodshed_${X}_windows_amd64.zip`,
     ]);
   }
 });
 
 test('the broken rc1 forms ("~", and GitHub\'s ".rc1" rename) still get the right label, never a wrong one', () => {
   const broken = {
-    'woodpile_0.9.0~rc1_amd64.deb': 'Debian / Ubuntu package (x64)',
-    'woodpile_0.9.0.rc1_amd64.deb': 'Debian / Ubuntu package (x64)',
-    'woodpile_0.9.0~rc1_arm64.deb': 'Debian / Ubuntu package (ARM64)',
-    'woodpile_0.9.0.rc1_arm64.deb': 'Debian / Ubuntu package (ARM64)',
-    'woodpile-0.9.0~rc1-1.x86_64.rpm': 'Fedora / RHEL package (x64)',
-    'woodpile-0.9.0.rc1-1.x86_64.rpm': 'Fedora / RHEL package (x64)',
-    'woodpile-0.9.0~rc1-1.aarch64.rpm': 'Fedora / RHEL package (ARM64)',
-    'woodpile-0.9.0.rc1-1.aarch64.rpm': 'Fedora / RHEL package (ARM64)',
-    'woodpile_0.9.0.rc1_linux_amd64.tar.gz': 'Linux portable (x64)',
-    'woodpile_0.9.0.rc1_windows_arm64.msi': 'Windows installer (ARM64)',
-    'woodpile_0.9.0.rc1_macos_universal.pkg': 'macOS installer (Intel and Apple silicon)',
+    'woodshed_0.9.0~rc1_amd64.deb': 'Debian / Ubuntu package (x64)',
+    'woodshed_0.9.0.rc1_amd64.deb': 'Debian / Ubuntu package (x64)',
+    'woodshed_0.9.0~rc1_arm64.deb': 'Debian / Ubuntu package (ARM64)',
+    'woodshed_0.9.0.rc1_arm64.deb': 'Debian / Ubuntu package (ARM64)',
+    'woodshed-0.9.0~rc1-1.x86_64.rpm': 'Fedora / RHEL package (x64)',
+    'woodshed-0.9.0.rc1-1.x86_64.rpm': 'Fedora / RHEL package (x64)',
+    'woodshed-0.9.0~rc1-1.aarch64.rpm': 'Fedora / RHEL package (ARM64)',
+    'woodshed-0.9.0.rc1-1.aarch64.rpm': 'Fedora / RHEL package (ARM64)',
+    'woodshed_0.9.0.rc1_linux_amd64.tar.gz': 'Linux portable (x64)',
+    'woodshed_0.9.0.rc1_windows_arm64.msi': 'Windows installer (ARM64)',
+    'woodshed_0.9.0.rc1_macos_universal.pkg': 'macOS installer (Intel and Apple silicon)',
   };
   for (const [name, label] of Object.entries(broken)) assert.equal(classify(name)?.label, label, name);
   // Nothing that merely looks similar is offered: a deb/rpm without its arch, or other files.
-  for (const name of ['woodpile_0.9.0~rc1.deb', 'woodpile-0.9.0.rc1.x86_64.rpm', 'woodpile_0.9.0.rc1_amd64.deb.sig', 'checksums.txt.rc1'])
+  for (const name of ['woodshed_0.9.0~rc1.deb', 'woodshed-0.9.0.rc1.x86_64.rpm', 'woodshed_0.9.0.rc1_amd64.deb.sig', 'checksums.txt.rc1'])
     assert.equal(classify(name), null, name);
 });
 
@@ -161,8 +161,8 @@ test('releases.json with only a prerelease: offered as a release candidate', asy
   assert.equal(r.kind, 'prerelease');
   assert.equal(r.release.tag_name, 'v0.9.0-rc2');
   assert.deepEqual(pick(r.release.assets, { os: 'macos', arch: 'arm64' }).best.map((a) => a.name), [
-    'woodpile_0.9.0-rc2_macos_universal.pkg',
-    'woodpile_0.9.0-rc2_darwin_universal.tar.gz',
+    'woodshed_0.9.0-rc2_macos_universal.pkg',
+    'woodshed_0.9.0-rc2_darwin_universal.tar.gz',
   ]);
 });
 
@@ -178,14 +178,14 @@ test('neither, or no usable files, or no file at all: the releases-page fallback
 test('releases.json is built from the API: latest stable and latest prerelease, no drafts, only the fields used', () => {
   const api = (tag, published_at, extra = {}) => ({
     tag_name: tag,
-    name: `Woodpile ${tag}`,
-    html_url: `https://github.com/gmccollu/woodpile/releases/tag/${tag}`,
+    name: `Woodshed ${tag}`,
+    html_url: `https://github.com/gmccollu/woodshed/releases/tag/${tag}`,
     published_at,
     draft: false,
     prerelease: tag.includes('-'),
     body: 'long notes',
     author: { login: 'someone' },
-    assets: [{ name: `woodpile_${tag.slice(1)}_amd64.deb`, size: 5, browser_download_url: 'https://x/y', digest: 'sha256:ab', uploader: {}, id: 1 }],
+    assets: [{ name: `woodshed_${tag.slice(1)}_amd64.deb`, size: 5, browser_download_url: 'https://x/y', digest: 'sha256:ab', uploader: {}, id: 1 }],
     ...extra,
   });
   // --slurp gives an array of pages
@@ -198,7 +198,7 @@ test('releases.json is built from the API: latest stable and latest prerelease, 
   assert.equal(out.stable.tag_name, 'v0.8.0');
   assert.equal(out.prerelease.tag_name, 'v0.9.0-rc2');
   assert.deepEqual(Object.keys(out.prerelease).sort(), ['assets', 'html_url', 'name', 'published_at', 'tag_name']);
-  assert.deepEqual(out.prerelease.assets[0], { name: 'woodpile_0.9.0-rc2_amd64.deb', size: 5, browser_download_url: 'https://x/y', digest: 'sha256:ab' });
+  assert.deepEqual(out.prerelease.assets[0], { name: 'woodshed_0.9.0-rc2_amd64.deb', size: 5, browser_download_url: 'https://x/y', digest: 'sha256:ab' });
   assert.deepEqual(summarize([], new Date(0)), { generated_at: '1970-01-01T00:00:00.000Z', stable: null, prerelease: null });
 });
 

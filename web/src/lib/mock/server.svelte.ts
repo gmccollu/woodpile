@@ -1,4 +1,4 @@
-// In-browser fake of the Woodpile server for `npm run dev:mock`. It answers every
+// In-browser fake of the Woodshed server for `npm run dev:mock`. It answers every
 // route in docs/api.md with realistic data and simulates the live tail over a
 // fake EventSource. Only main.ts imports it, and only when VITE_MOCK is set, so
 // it isn't in the production bundle.
@@ -14,7 +14,7 @@
 //   mock_latency=N    simulated response time in ms (default 120)
 //   mock_releases=URL releases_url in /api/status (default empty: no public releases page yet)
 //   mock_panel=0      hide the mock control panel (for screenshots)
-//   mock_auth=1       LAN mode with auth: the password is "woodpile-demo" and the session starts logged out
+//   mock_auth=1       LAN mode with auth: the password is "woodshed-demo" and the session starts logged out
 //   mock_loggedin=1   with mock_auth: start logged in
 //   mock_locked=1     with mock_auth: logins from "this address" are locked out for 15 minutes
 //   mock_password=1   localhost mode, but a password is already set (so LAN mode can be turned on)
@@ -23,7 +23,7 @@
 //   mock_export_secs=N seconds an export takes to build (default 8)
 //   mock_devices=N    add N generated devices (up to 10,000) to the fleet
 //   mock_device_limit=1 new senders are being refused (device_limit banner)
-//   mock_service_514=1 the installed Woodpile service holds UDP and TCP 514; this copy starts on 15514
+//   mock_service_514=1 the installed Woodshed service holds UDP and TCP 514; this copy starts on 15514
 //   mock_listen_514=1  with mock_service_514: start on 514 (so the clash shows straight away)
 //   mock_ui_port_busy=1 the installed service can't open its UI because this copy holds the UI port
 //   mock_blocked=LIST  start with this blocklist (comma-separated IPs or CIDRs)
@@ -74,11 +74,11 @@ export const mock = $state({
   deviceLimit: P.get('mock_device_limit') === '1',
   /** Generated devices added to the fleet. */
   fleetExtra: 0,
-  /** Another Woodpile (the installed service) holds port 514 on UDP and TCP. */
+  /** Another Woodshed (the installed service) holds port 514 on UDP and TCP. */
   service514: P.get('mock_service_514') === '1',
 });
 
-export const MOCK_PASSWORD = 'woodpile-demo';
+export const MOCK_PASSWORD = 'woodshed-demo';
 
 const authState = {
   password: P.get('mock_auth') === '1' || P.get('mock_password') === '1' ? MOCK_PASSWORD : '',
@@ -96,7 +96,7 @@ function newToken(): string {
 /** For the smoke checks: what the mock saw (header values and /api/session bodies). */
 const probe = {
   livePaths: [] as string[],
-  /** X-Woodpile-Session on the last request of each kind. */
+  /** X-Woodshed-Session on the last request of each kind. */
   lastGetHeader: '' as string | null,
   lastWriteHeader: '' as string | null,
   lastLiveHeader: '' as string | null,
@@ -119,7 +119,7 @@ const probe = {
   /** Simulates a request that has the cookie but not the header (e.g. another app on this host). */
   cookieOnly: false,
 };
-(window as unknown as { __woodpileMock: typeof probe }).__woodpileMock = probe;
+(window as unknown as { __woodshedMock: typeof probe }).__woodshedMock = probe;
 
 // mock_loggedin=1 starts with a session, as if this browser had logged in earlier: the mock
 // issues a secret and puts it where the UI keeps one.
@@ -150,7 +150,7 @@ export function expireSession() {
 /** Login is required in LAN mode, and on localhost too when require_login_local is on. */
 const authOn = () => mock.lan || (!!settings.ui.require_login_local && !!authState.password);
 
-/** The mock's stand-in for "cookie and matching X-Woodpile-Session header". */
+/** The mock's stand-in for "cookie and matching X-Woodshed-Session header". */
 const hasSession = (header: string | null) => mock.loggedIn && !!authState.secret && header === authState.secret;
 
 function sessionJSON(header: string | null = null) {
@@ -348,10 +348,10 @@ let settings: Settings = {
   },
   storage: {
     data_dir: OS.startsWith('windows')
-      ? 'C:\\ProgramData\\Woodpile'
+      ? 'C:\\ProgramData\\Woodshed'
       : OS.startsWith('linux')
-        ? '/var/lib/woodpile'
-        : '/Library/Application Support/Woodpile',
+        ? '/var/lib/woodshed'
+        : '/Library/Application Support/Woodshed',
     retention_days: 30,
     retention_bytes: 20 * GiB,
     part_bytes: 100 * MiB,
@@ -380,7 +380,7 @@ function validate(s: Settings): Record<string, string> {
         'On macOS a port below 1024 can only be bound on all addresses (0.0.0.0 or ::). Use the sender allowlist to restrict senders.';
   }
   if (!s.listeners.udp.enabled && !s.listeners.tcp.enabled)
-    e['listeners.udp.enabled'] = 'Keep at least one listener on, or Woodpile receives nothing.';
+    e['listeners.udp.enabled'] = 'Keep at least one listener on, or Woodshed receives nothing.';
   (s.listeners.blocklist ?? []).forEach((c, i) => {
     const [ip, bits, extra] = c.split('/');
     let bad = extra !== undefined || !isIP(ip);
@@ -770,7 +770,7 @@ function deviceJSON(d: Dev, now: number): Device {
 /** Who holds a port this copy wants, if anyone (mock only). */
 function holderOf(proto: 'udp' | 'tcp', port: number): Partial<Status['listeners'][number]> | null {
   if (mock.service514 && port === 514)
-    return { holder: 'woodpile (pid 4242)', holder_kind: 'woodpile_service', holder_pid: 4242, holder_ui_url: 'http://localhost:8514/' };
+    return { holder: 'woodshed (pid 4242)', holder_kind: 'woodshed_service', holder_pid: 4242, holder_ui_url: 'http://localhost:8514/' };
   if (mock.clash && proto === 'tcp' && port === 514) return { holder: 'syslogd (pid 312)' };
   return null;
 }
@@ -788,13 +788,13 @@ function statusJSON(): Status {
   const down = listeners.filter((x) => !x.ok);
   if (down.length) {
     const ports = down.map((x) => `${x.proto.toUpperCase()} ${x.port}`).join(' and ');
-    const woodpile = down.some((x) => x.holder_kind === 'woodpile_service');
+    const woodshed = down.some((x) => x.holder_kind === 'woodshed_service');
     banners.push({
       kind: 'listener_bind',
       action: 'retry_listeners',
       level: 'error',
-      text: woodpile
-        ? `${ports} ${down.length > 1 ? 'are' : 'is'} in use by another Woodpile (the installed service).`
+      text: woodshed
+        ? `${ports} ${down.length > 1 ? 'are' : 'is'} in use by another Woodshed (the installed service).`
         : `${ports} is in use by syslogd (pid 312). Stop the other syslog service, or move the listener to another port in Settings, then press Retry.`,
     });
   }
@@ -813,7 +813,7 @@ function statusJSON(): Status {
       kind: 'ui_port_busy',
       action: '',
       level: 'warn',
-      text: "The installed Woodpile service is running but can't open its web page, because this copy is using port 8514. Stop this copy to use the service.",
+      text: "The installed Woodshed service is running but can't open its web page, because this copy is using port 8514. Stop this copy to use the service.",
     });
   if (mock.deviceLimit || activeDevices(Date.now()) >= settings.listeners.max_devices)
     banners.push({
@@ -1166,7 +1166,7 @@ async function route(method: string, url: URL, body: unknown, header: string | n
   }
   const ticketed = method === 'GET' && /^\/api\/exports\/[^/]+\/download$/.test(p) && url.searchParams.has('ticket');
   if (authOn() && !PUBLIC.includes(p) && !ticketed) {
-    // docs/api.md: the cookie and the X-Woodpile-Session header together; either alone is a 401.
+    // docs/api.md: the cookie and the X-Woodshed-Session header together; either alone is a 401.
     if (!hasSession(header)) return err(401, 'Log in first.');
   }
   if (method === 'PUT' && p === '/api/password') {
@@ -1341,7 +1341,7 @@ async function route(method: string, url: URL, body: unknown, header: string | n
       probe.downloads.push({ id: e.id, ticket: t !== null, status: 200 });
       if (e.state === 'expired') return err(404, 'That export has expired.');
       if (e.state !== 'ready') return err(409, 'That export is not ready yet.');
-      const name = `woodpile-${e.from.slice(0, 16).replace(/:/g, '')}-${e.to.slice(0, 16).replace(/:/g, '')}.zip`;
+      const name = `woodshed-${e.from.slice(0, 16).replace(/:/g, '')}-${e.to.slice(0, 16).replace(/:/g, '')}.zip`;
       return new Response('mock export', {
         status: 200,
         headers: { 'Content-Type': 'application/zip', 'Content-Disposition': `attachment; filename="${name}"` },
@@ -1365,17 +1365,17 @@ export const mockTransport: Transport = {
     const body = typeof init?.body === 'string' ? JSON.parse(init.body) : undefined;
     await sleep(mock.latency * (0.5 + Math.random()));
     if (mock.slowScan && url.pathname === '/api/search') await sleep(700);
-    const header = probe.cookieOnly ? null : new Headers(init?.headers).get('X-Woodpile-Session');
+    const header = probe.cookieOnly ? null : new Headers(init?.headers).get('X-Woodshed-Session');
     return route(method, url, body, header, init?.signal ?? undefined);
   },
   async download(path) {
-    // Like a browser download: the cookie goes along, the X-Woodpile-Session header can't.
+    // Like a browser download: the cookie goes along, the X-Woodshed-Session header can't.
     const res = await mockTransport.fetch(path, { headers: {} });
     probe.lastDownloadStatus = res.status;
     if (!res.ok) return;
     const a = document.createElement('a');
     a.href = URL.createObjectURL(await res.blob());
-    a.download = /filename="([^"]+)"/.exec(res.headers.get('Content-Disposition') ?? '')?.[1] ?? 'woodpile-export.zip';
+    a.download = /filename="([^"]+)"/.exec(res.headers.get('Content-Disposition') ?? '')?.[1] ?? 'woodshed-export.zip';
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   },

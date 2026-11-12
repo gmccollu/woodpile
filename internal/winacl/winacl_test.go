@@ -31,18 +31,18 @@ func TestServiceSID(t *testing.T) {
 	if got := serviceSID("TrustedInstaller"); got != "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464" {
 		t.Fatalf("derivation is wrong: %s", got)
 	}
-	if got := serviceSID("Woodpile"); got != ServiceSID {
+	if got := serviceSID("Woodshed"); got != ServiceSID {
 		t.Errorf("ServiceSID = %s, derived %s", ServiceSID, got)
 	}
 }
 
 func TestMSIUsesTheSameACL(t *testing.T) {
-	wxs, err := os.ReadFile("../../packaging/windows/woodpile.wxs")
+	wxs, err := os.ReadFile("../../packaging/windows/woodshed.wxs")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(wxs), `Sddl="`+DataSDDL+`"`) {
-		t.Error("packaging/windows/woodpile.wxs's PermissionEx differs from DataSDDL; change both together")
+		t.Error("packaging/windows/woodshed.wxs's PermissionEx differs from DataSDDL; change both together")
 	}
 }
 

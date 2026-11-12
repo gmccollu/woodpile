@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gmccollu/woodpile/internal/hub"
-	"github.com/gmccollu/woodpile/internal/index"
-	"github.com/gmccollu/woodpile/internal/store/logfile"
+	"github.com/gmccollu/woodshed/internal/hub"
+	"github.com/gmccollu/woodshed/internal/index"
+	"github.com/gmccollu/woodshed/internal/store/logfile"
 )
 
 type buildResult struct {
@@ -24,8 +24,8 @@ type buildResult struct {
 
 // Manifest is manifest.json.
 type Manifest struct {
-	Format          string         `json:"format"` // "woodpile-export/1"
-	WoodpileVersion string         `json:"woodpile_version"`
+	Format          string         `json:"format"` // "woodshed-export/1"
+	WoodshedVersion string         `json:"woodshed_version"`
 	ExportedAt      time.Time      `json:"exported_at"`
 	ID              string         `json:"id"`
 	Request         ManifestReq    `json:"request"`
@@ -231,7 +231,7 @@ func (m *Manager) build(ctx context.Context, e *entry) (buildResult, error) {
 	}
 	gaps := ComputeGaps(evs, info.From, info.To, exportedAt, lastMessage)
 
-	if err := zw.create("woodpile-events.log", -1); err != nil {
+	if err := zw.create("woodshed-events.log", -1); err != nil {
 		return res, err
 	}
 	var eb []byte
@@ -267,12 +267,12 @@ func (m *Manager) build(ctx context.Context, e *entry) (buildResult, error) {
 		devs = append(devs, ManifestDevice{ID: d.ID, IP: d.IP, Name: d.Name, Group: d.Group})
 	}
 	man := Manifest{
-		Format: "woodpile-export/1", WoodpileVersion: m.opts.Version, ExportedAt: exportedAt, ID: info.ID,
+		Format: "woodshed-export/1", WoodshedVersion: m.opts.Version, ExportedAt: exportedAt, ID: info.ID,
 		Request: ManifestReq{From: info.From, To: info.To, Devices: devs, Filters: ManifestFilters{
 			Devices: nonNil(info.Named), Group: info.Filters.Group, Ungrouped: info.Filters.Ungrouped, Severities: SeverityList(info.Filters.Severities),
 			Q: info.Filters.Q, Regex: info.Filters.Regex, Case: info.Filters.Case}},
 		Files: nonNil(files), Lines: res.lines, Gaps: nonNil(gaps), GapsNote: GapsNote,
-		EventsFile: "woodpile-events.log", Events: len(inRange),
+		EventsFile: "woodshed-events.log", Events: len(inRange),
 	}
 	mb, err := json.MarshalIndent(man, "", "  ")
 	if err != nil {
@@ -317,13 +317,13 @@ func nonNil[T any](s []T) []T {
 
 func readme(info Info) string {
 	var b bytes.Buffer
-	fmt.Fprintf(&b, "Woodpile export %s\n", info.ID)
+	fmt.Fprintf(&b, "Woodshed export %s\n", info.ID)
 	fmt.Fprintf(&b, "Range: %s to %s (UTC, received time; the end is exclusive)\n\n",
 		info.From.Format(time.RFC3339), info.To.Format(time.RFC3339))
 	b.WriteString(strings.TrimLeft(`
 logs/<device>/<YYYY-MM-DD>.log
-    The messages Woodpile received from each device on that day (UTC), oldest
-    first, one message per line, exactly as Woodpile stores them:
+    The messages Woodshed received from each device on that day (UTC), oldest
+    first, one message per line, exactly as Woodshed stores them:
         <received time, UTC> <sender IP> <message>
     In <message>, a carriage return is written \r, a line feed \n and a
     backslash \\, so a message never spans lines; every other byte is as
@@ -334,12 +334,12 @@ logs/<device>/<YYYY-MM-DD>.log
 manifest.json
     What was exported: the request (devices with their names and groups, the
     range and any filters), each log file's line count and SHA-256, and "gaps":
-    periods in the range when Woodpile wasn't running or a listener was down,
-    so "the device sent nothing" can be told apart from "Woodpile wasn't
+    periods in the range when Woodshed wasn't running or a listener was down,
+    so "the device sent nothing" can be told apart from "Woodshed wasn't
     listening". "gaps_note" says how the gaps are worked out.
 
-woodpile-events.log
-    Woodpile's own events in the range: starts and stops, listener bind errors,
+woodshed-events.log
+    Woodshed's own events in the range: starts and stops, listener bind errors,
     file rotations and deletions, dropped messages, paused writes.
 
 To check a file: sha256sum logs/<device>/<day>.log (or on Windows:

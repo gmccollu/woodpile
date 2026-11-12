@@ -16,26 +16,26 @@
     if (live.status) prune(live.status.banners);
   });
 
-  /** One line per failed listener; plain words when the holder is another Woodpile. */
+  /** One line per failed listener; plain words when the holder is another Woodshed. */
   function holderText(l: Listener): string {
     const port = `port ${l.port}`;
-    if (l.holder_kind === 'woodpile_service')
-      return `Another copy of Woodpile is using ${port}: the installed service. This copy can't receive logs; stop it, or use the service's page.`;
-    if (l.holder_kind === 'woodpile')
-      return `Another copy of Woodpile is using ${port}. This copy can't receive logs; stop the other copy, or use its page.`;
+    if (l.holder_kind === 'woodshed_service')
+      return `Another copy of Woodshed is using ${port}: the installed service. This copy can't receive logs; stop it, or use the service's page.`;
+    if (l.holder_kind === 'woodshed')
+      return `Another copy of Woodshed is using ${port}. This copy can't receive logs; stop the other copy, or use its page.`;
     return `${l.proto.toUpperCase()} ${l.addr}:${l.port}: ${l.error}${l.holder ? ` (held by ${l.holder})` : ''}`;
   }
-  const isWoodpile = (l: Listener) => l.holder_kind === 'woodpile_service' || l.holder_kind === 'woodpile';
+  const isWoodshed = (l: Listener) => l.holder_kind === 'woodshed_service' || l.holder_kind === 'woodshed';
   // The same holder on UDP and TCP gets one sentence, not two.
   const lines = $derived.by(() => {
     const seen = new Set<string>();
     const out: { key: string; text: string; url: string }[] = [];
     for (const l of failed) {
       const text = holderText(l);
-      const k = isWoodpile(l) ? `${l.holder_kind}:${l.port}` : `${l.proto}:${l.port}`;
+      const k = isWoodshed(l) ? `${l.holder_kind}:${l.port}` : `${l.proto}:${l.port}`;
       if (seen.has(k)) continue;
       seen.add(k);
-      out.push({ key: k, text, url: isWoodpile(l) ? (l.holder_ui_url ?? '') : '' });
+      out.push({ key: k, text, url: isWoodshed(l) ? (l.holder_ui_url ?? '') : '' });
     }
     return out;
   });
@@ -59,7 +59,7 @@
 {#if live.statusError}
   <div class="banner error" role="alert">
     <Icon name="alert" />
-    <div class="grow">Can't reach the Woodpile service ({live.statusError}). Retrying every 5 s.</div>
+    <div class="grow">Can't reach the Woodshed service ({live.statusError}). Retrying every 5 s.</div>
   </div>
 {/if}
 {#each shown as b, i (`${i}:${b.kind}`)}

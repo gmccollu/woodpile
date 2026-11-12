@@ -3,26 +3,26 @@
 <plist version="1.0">
 <dict>
 	<key>Label</key>
-	<string>com.woodpile.daemon</string>
+	<string>com.woodshed.daemon</string>
 
 	<key>ProgramArguments</key>
 	<array>
-		<string>/usr/local/bin/woodpile</string>
+		<string>/usr/local/bin/woodshed</string>
 		<string>run</string>
 		<string>--service</string>
 		<string>--config</string>
-		<string>/Library/Application Support/Woodpile/woodpile.toml</string>
+		<string>/Library/Application Support/Woodshed/woodshed.toml</string>
 	</array>
 
 	<!-- Least privilege: a dedicated hidden system user created by the installer.
 	     Binding port 514 on the wildcard address works as a non-root user on macOS (SPEC 5). -->
 	<key>UserName</key>
-	<string>_woodpile</string>
+	<string>_woodshed</string>
 	<key>GroupName</key>
-	<string>_woodpile</string>
+	<string>_woodshed</string>
 
 	<key>WorkingDirectory</key>
-	<string>/Library/Application Support/Woodpile</string>
+	<string>/Library/Application Support/Woodshed</string>
 	<key>Umask</key>
 	<integer>23</integer>
 
@@ -45,10 +45,10 @@
 	</dict>
 
 	<!-- The service's own stdout/stderr (not the syslog data). Rotated by
-	     /etc/newsyslog.d/com.woodpile.daemon.conf. -->
+	     /etc/newsyslog.d/com.woodshed.daemon.conf. -->
 	<key>StandardOutPath</key>
-	<string>/Library/Logs/Woodpile/woodpile.log</string>
+	<string>/Library/Logs/Woodshed/woodshed.log</string>
 	<key>StandardErrorPath</key>
-	<string>/Library/Logs/Woodpile/woodpile.log</string>
+	<string>/Library/Logs/Woodshed/woodshed.log</string>
 </dict>
 </plist>

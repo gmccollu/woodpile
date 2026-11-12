@@ -1,4 +1,4 @@
-// Command woodpile is a simple, reliable syslog server with a web UI.
+// Command woodshed is a simple, reliable syslog server with a web UI.
 package main
 
 import (
@@ -16,10 +16,10 @@ var (
 	releasesURL = ""
 )
 
-const usage = `usage: woodpile [<command> [flags]]
+const usage = `usage: woodshed [<command> [flags]]
 
-With no command (or a double-click), Woodpile runs in portable mode: right
-here, with nothing installed, keeping its logs in woodpile-data next to it.
+With no command (or a double-click), Woodshed runs in portable mode: right
+here, with nothing installed, keeping its logs in woodshed-data next to it.
 
 commands:
   portable        run in portable mode (the default with no command)
@@ -33,7 +33,7 @@ commands:
   bench           measure sustained throughput
   version         print the version
 
-Run "woodpile <command> --help" for a command's flags.
+Run "woodshed <command> --help" for a command's flags.
 `
 
 // command is one subcommand. run returns the process exit code.
@@ -71,7 +71,7 @@ func realMain(args []string, stdout, stderr io.Writer) int {
 	switch name {
 	case "-h", "-help", "--help", "help":
 		if len(args) > 1 && name == "help" {
-			// "woodpile help send" is "woodpile send --help".
+			// "woodshed help send" is "woodshed send --help".
 			return realMain([]string{args[1], "--help"}, stdout, stderr)
 		}
 		fmt.Fprint(stdout, usage)
@@ -84,18 +84,18 @@ func realMain(args []string, stdout, stderr io.Writer) int {
 			return c.run(args[1:], stdout, stderr)
 		}
 	}
-	fmt.Fprintf(stderr, "woodpile: unknown command %q\n\n%s", name, usage)
+	fmt.Fprintf(stderr, "woodshed: unknown command %q\n\n%s", name, usage)
 	return 2
 }
 
-// fail prints a "woodpile <cmd>: <err>" line and returns exit code 1.
+// fail prints a "woodshed <cmd>: <err>" line and returns exit code 1.
 func fail(stderr io.Writer, cmd string, err error) int {
 	msg := err.Error()
 	// Package prefixes ("config: ", "loadgen: ") don't help a user.
 	for _, p := range []string{"config: ", "loadgen: ", "listen: ", "store: ", "index: "} {
 		msg = strings.TrimPrefix(msg, p)
 	}
-	fmt.Fprintf(stderr, "woodpile %s: %s\n", cmd, msg)
+	fmt.Fprintf(stderr, "woodshed %s: %s\n", cmd, msg)
 	return 1
 }
 
@@ -104,6 +104,6 @@ func cmdVersion(args []string, stdout, stderr io.Writer) int {
 	if code, done := parse(fs, args, stdout); done {
 		return code
 	}
-	fmt.Fprintf(stdout, "woodpile %s (%s) %s\n", version, commit, platform())
+	fmt.Fprintf(stdout, "woodshed %s (%s) %s\n", version, commit, platform())
 	return 0
 }

@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gmccollu/woodpile/internal/export"
-	"github.com/gmccollu/woodpile/internal/index"
+	"github.com/gmccollu/woodshed/internal/export"
+	"github.com/gmccollu/woodshed/internal/index"
 )
 
 // TestEventsMatchGapDetection runs the real service and listeners through a

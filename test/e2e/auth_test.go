@@ -12,12 +12,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gmccollu/woodpile/internal/loadgen"
+	"github.com/gmccollu/woodshed/internal/loadgen"
 )
 
 // TestRequireLoginLocal runs the real binary with require_login_local: the
 // session cookie alone (what another server on this host could catch) gets
-// nothing; cookie and session secret together work; `woodpile status` still
+// nothing; cookie and session secret together work; `woodshed status` still
 // reports the server.
 func TestRequireLoginLocal(t *testing.T) {
 	if testing.Short() {
@@ -26,7 +26,7 @@ func TestRequireLoginLocal(t *testing.T) {
 	dir := t.TempDir()
 	syslogPort, uiPort := pickPorts(t)
 	cfgPath, dataDir := writeConfig(t, dir, syslogPort, uiPort)
-	p := startWoodpile(t, cfgPath, dataDir, uiPort)
+	p := startWoodshed(t, cfgPath, dataDir, uiPort)
 
 	req := func(method, path, body string, headers ...string) (int, []byte, http.Header) {
 		t.Helper()
@@ -66,7 +66,7 @@ func TestRequireLoginLocal(t *testing.T) {
 	code, b, h := req("POST", "/api/login", `{"password": "e2e local password"}`)
 	var cookieLine string
 	for _, v := range h.Values("Set-Cookie") {
-		if strings.HasPrefix(v, "woodpile_session=") {
+		if strings.HasPrefix(v, "woodshed_session=") {
 			cookieLine = v
 		}
 	}
@@ -79,10 +79,10 @@ func TestRequireLoginLocal(t *testing.T) {
 	}
 	json.Unmarshal(b, &info)
 	cookie := strings.SplitN(cookieLine, ";", 2)[0]
-	if !info.Authenticated || info.SessionSecret == "" || !strings.HasPrefix(cookie, "woodpile_session=") {
+	if !info.Authenticated || info.SessionSecret == "" || !strings.HasPrefix(cookie, "woodshed_session=") {
 		t.Fatalf("login: %s, cookie %q", b, cookie)
 	}
-	ck, secret := "Cookie: "+cookie, "X-Woodpile-Session: "+info.SessionSecret
+	ck, secret := "Cookie: "+cookie, "X-Woodshed-Session: "+info.SessionSecret
 	for _, tc := range []struct {
 		headers []string
 		want    int
@@ -128,7 +128,7 @@ func TestRequireLoginLocal(t *testing.T) {
 
 	out, err := exec.Command(binary, "status", "--config", cfgPath).CombinedOutput()
 	if !strings.Contains(string(out), "the UI needs a login") {
-		t.Errorf("woodpile status (%v):\n%s", err, out)
+		t.Errorf("woodshed status (%v):\n%s", err, out)
 	}
 	if code, _, _ := req("POST", "/api/logout", "", ck, secret); code != 204 {
 		t.Errorf("logout %d", code)

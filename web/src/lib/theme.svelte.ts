@@ -1,6 +1,6 @@
 // Light/dark mode: follows the OS until the user picks one, then remembers it.
 
-const KEY = 'woodpile.theme';
+const KEY = 'woodshed.theme';
 type Mode = 'light' | 'dark';
 
 const media = matchMedia('(prefers-color-scheme: dark)');

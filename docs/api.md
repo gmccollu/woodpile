@@ -1,4 +1,4 @@
-# Woodpile HTTP API (v1 contract)
+# Woodshed HTTP API (v1 contract)
 
 The UI talks only to these routes. All responses are JSON unless noted. Times are RFC 3339 UTC strings.
 Byte counts are integers. The frontend builds against this contract with mock data; the backend implements it.
@@ -10,7 +10,7 @@ Change this file first if the contract changes.
 ```json
 {
   "version": "0.1.0", "build": "abc1234", "os": "darwin/arm64",
-  "data_dir": "/Library/Application Support/Woodpile",
+  "data_dir": "/Library/Application Support/Woodshed",
   "started_at": "2026-11-10T20:00:00Z",
   "first_message_at": null,                   // null until the first message is received (drives the Welcome page)
   "udp_rcvbuf_bytes": 33554432,               // what the OS actually granted
@@ -27,12 +27,12 @@ Change this file first if the contract changes.
                "action": "retry_listeners"}]   // action: "" | "retry_listeners"; kinds: listener_bind, writes_paused, low_disk, ui_port_busy
 }
 ```
-A listener that failed to bind may also carry, when known, `holder_kind` (`"woodpile_service"`: the installed Woodpile
-service; `"woodpile"`: another running copy of Woodpile; omitted otherwise), `holder_pid` (integer) and `holder_ui_url`
-(that Woodpile's UI address). Another user's process (the service runs as its own account) is invisible to `lsof` and
-`/proc` for an ordinary user, so when the holder can't be seen and an installed Woodpile service is running (or the
-default data folder's run-state file names another live Woodpile), that one is reported as the likely holder.
-Banner kind `ui_port_busy` (warn): another Woodpile (usually the installed service) is running but can't open its UI
+A listener that failed to bind may also carry, when known, `holder_kind` (`"woodshed_service"`: the installed Woodshed
+service; `"woodshed"`: another running copy of Woodshed; omitted otherwise), `holder_pid` (integer) and `holder_ui_url`
+(that Woodshed's UI address). Another user's process (the service runs as its own account) is invisible to `lsof` and
+`/proc` for an ordinary user, so when the holder can't be seen and an installed Woodshed service is running (or the
+default data folder's run-state file names another live Woodshed), that one is reported as the likely holder.
+Banner kind `ui_port_busy` (warn): another Woodshed (usually the installed service) is running but can't open its UI
 because this copy holds the UI port.
 
 `POST /api/listeners/retry` → `204`, then re-read `/api/status`.
@@ -45,7 +45,7 @@ because this copy holds the UI port.
   "devices": {"total": 14, "online": 12, "quiet": 1, "offline": 1},
   "disk": {"used_bytes": 3435973836, "cap_bytes": 21474836480, "free_bytes": 400000000000, "days_kept": 30,
            "bytes_per_day": 2361393152, "compression_ratio": 9.2, "estimated_days": 9.1, "limited_by": "cap"},
-  "dropped_24h": 0,                           // drops Woodpile itself saw (disk guard, write errors)
+  "dropped_24h": 0,                           // drops Woodshed itself saw (disk guard, write errors)
   "kernel_dropped_24h": null,                 // integer on Linux, null where the OS doesn't expose it
   "truncated_24h": 0,
   "rejected_24h": 0                           // refused messages and TCP connections (allowlist, per-source limit)
@@ -176,8 +176,8 @@ first. `ready_at` / `expires_at` are set once the export is ready; `filters` ech
 
 `GET /api/exports/{id}` → one entry, same shape.
 
-`GET /api/exports/{id}/download` → the zip (`Content-Disposition: attachment; filename="woodpile-<from>-<to>.zip"`).
-When login is required, a browser download can't send the `X-Woodpile-Session` header, so the UI first calls
+`GET /api/exports/{id}/download` → the zip (`Content-Disposition: attachment; filename="woodshed-<from>-<to>.zip"`).
+When login is required, a browser download can't send the `X-Woodshed-Session` header, so the UI first calls
 `POST /api/exports/{id}/ticket` (normal auth) → `{"url": "/api/exports/{id}/download?ticket=<opaque>"}` and navigates
 to that URL. A ticket is single-use, valid for 60 s, bound to the session that asked for it and to that export, and
 stored only hashed; the download route accepts it in place of the header (the cookie is still required). Without
@@ -193,10 +193,10 @@ them first), but not against the log retention cap.
 - `logs/<device-id>/<YYYY-MM-DD>.log`: the matching lines as stored, one message per line, in received order: each
   line is `<received> <sender> <message>`, with CR, LF and backslash in the message escaped as `\r`, `\n` and `\\`
   (`README.txt` shows how to unescape). Search and context results still return the raw message unescaped.
-- `manifest.json`: Woodpile version, export time, the request (devices with names and groups, range, filters), and
-  per-file line count and SHA-256. Also `gaps`: periods inside the range when Woodpile wasn't running or a listener
+- `manifest.json`: Woodshed version, export time, the request (devices with names and groups, range, filters), and
+  per-file line count and SHA-256. Also `gaps`: periods inside the range when Woodshed wasn't running or a listener
   was down, from the event log.
-- `woodpile-events.log`: the service's own events in the range (start, stop, bind errors, rotations, deletions,
+- `woodshed-events.log`: the service's own events in the range (start, stop, bind errors, rotations, deletions,
   drops, pauses).
 - `README.txt`: a short note on what each file is.
 
@@ -242,7 +242,7 @@ otherwise) except `/api/session`, `/api/login`, `/api/logout` and `GET /healthz`
 {"mode": "lan", "auth_required": true, "authenticated": true, "password_set": true}
 ```
 In localhost mode: `{"mode": "localhost", "auth_required": false, "authenticated": true, "password_set": false}`.
-`authenticated` is true only when the request carries both the session cookie and the matching `X-Woodpile-Session`
+`authenticated` is true only when the request carries both the session cookie and the matching `X-Woodshed-Session`
 header (below). `/api/session` never returns the session secret.
 `password_set` reports the real state in both modes (the LAN checkbox depends on it).
 
@@ -250,10 +250,10 @@ header (below). `/api/session` never returns the session secret.
 turned off): when true and a password is set, localhost mode also requires login
 (the same session rules as LAN mode). It can't be turned on without a password.
 
-`PUT /api/password` requires `current` whenever a password is already set, in both modes. `woodpile
+`PUT /api/password` requires `current` whenever a password is already set, in both modes. `woodshed
 reset-password` on the machine is the only way to replace a password without knowing it.
 
-**Forgotten password:** on the Woodpile machine, an administrator runs `woodpile reset-password`. It deletes the
+**Forgotten password:** on the Woodshed machine, an administrator runs `woodshed reset-password`. It deletes the
 password hash, turns LAN mode off in the config, and restarts the UI on `http://localhost:<port>/`. There's no
 recovery over the network by design.
 
@@ -268,13 +268,13 @@ The UI calls this first: in LAN mode with `authenticated: false` it shows the lo
 
 `POST /api/login` body `{"password": "..."}` → `200` with the session object above plus `"session_secret": "opaque"`
 (returned only here, once per login), and a session cookie
-(`__Host-woodpile_session`, `Secure; HttpOnly; SameSite=Strict; Path=/`; with `require_login_local` on plain
-localhost, `woodpile_session`, the same without `Secure`). `401` for a wrong password, `400` in localhost mode
+(`__Host-woodshed_session`, `Secure; HttpOnly; SameSite=Strict; Path=/`; with `require_login_local` on plain
+localhost, `woodshed_session`, the same without `Secure`). `401` for a wrong password, `400` in localhost mode
 without `require_login_local`. Limits (`429` with `Retry-After`): each IP (each /64 for IPv6) gets 5 quick attempts,
 then one a second; from the 5th failure (the count resets after 15 minutes without one), each address (the full
 address, zone included) and each IPv4 address or IPv6 /64 waits 1 s, 2 s, 4 s … up to 15 minutes before its next
 attempt, after which the right password works; and over 50 failures an hour across all clients spaces every attempt
-60 s apart. A successful login also sets `woodpile_known_client` (`HttpOnly; SameSite=Strict`, `Secure` in LAN
+60 s apart. A successful login also sets `woodshed_known_client` (`HttpOnly; SameSite=Strict`, `Secure` in LAN
 mode, 90 days; stored hashed): attempts that carry it skip the per-network and global limits, though not their
 own address's backoff.
 
@@ -287,7 +287,7 @@ wrong; it counts toward the login limits). With a session it also ends every oth
 
 **Session secret (replaces the CSRF token):** whenever login is required (LAN mode, or `require_login_local`),
 every `/api/` request except `/api/session`, `/api/login`, `/api/logout` and `/healthz` must carry **both** the
-session cookie **and** an `X-Woodpile-Session: <session_secret>` header; either one alone gets `401`. The cookie
+session cookie **and** an `X-Woodshed-Session: <session_secret>` header; either one alone gets `401`. The cookie
 isn't port-scoped, so another server on the same host could receive it; the secret lives only in the page's
 `localStorage`, which is scoped to the exact origin (scheme, host and port), and a custom header can't be sent
 cross-site, so it also does the CSRF token's job. The live tail therefore uses `fetch()` with a streaming reader

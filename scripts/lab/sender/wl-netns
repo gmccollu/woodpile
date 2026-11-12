@@ -1,5 +1,5 @@
 #!/bin/bash
-# wl-netns: sender namespaces for the Woodpile lab load source. Each namespace wps<i> holds one
+# wl-netns: sender namespaces for the Woodshed lab load source. Each namespace wps<i> holds one
 # ipvlan (L2) leg off the host's NIC $PARENT with one sender address, so a syslog server on the
 # same subnet sees N distinct devices over a real network. The legs share the parent's MAC
 # (ipvlan), which suits virtual switches that drop forged MACs. No default route: a namespace

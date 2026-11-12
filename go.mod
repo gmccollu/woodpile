@@ -1,4 +1,4 @@
-module github.com/gmccollu/woodpile
+module github.com/gmccollu/woodshed
 
 go 1.27.4
 

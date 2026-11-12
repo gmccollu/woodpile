@@ -5,8 +5,8 @@ import (
 	"regexp"
 	"unicode/utf8"
 
-	"github.com/gmccollu/woodpile/internal/model"
-	"github.com/gmccollu/woodpile/internal/store/logfile"
+	"github.com/gmccollu/woodshed/internal/model"
+	"github.com/gmccollu/woodshed/internal/store/logfile"
 )
 
 // Severity returns the syslog severity (0-7) of a raw message from its PRI, or

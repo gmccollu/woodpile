@@ -305,8 +305,8 @@
       <ul class="m-0 list-disc space-y-1.5 pl-5 text-[14px] leading-relaxed">
         <li><b>The logs</b>, one plain-text file per device per day, exactly as received, so anyone can open them.</li>
         <li><b>A manifest</b> with the devices, range and filters, and a line count and SHA-256 checksum for every file, so the recipient can tell nothing was changed or lost.</li>
-        <li><b>A gaps report</b>: times when Woodpile wasn't running or a listener was down. "No logs at 14:05" then means something definite.</li>
-        <li><b>Woodpile's own events</b> for the range (restarts, rotations, deletions, drops), so "the device sent nothing" can be told apart from "Woodpile wasn't listening".</li>
+        <li><b>A gaps report</b>: times when Woodshed wasn't running or a listener was down. "No logs at 14:05" then means something definite.</li>
+        <li><b>Woodshed's own events</b> for the range (restarts, rotations, deletions, drops), so "the device sent nothing" can be told apart from "Woodshed wasn't listening".</li>
       </ul>
     </section>
   </div>

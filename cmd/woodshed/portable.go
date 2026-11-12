@@ -17,31 +17,31 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/gmccollu/woodpile/internal/api"
-	"github.com/gmccollu/woodpile/internal/config"
-	"github.com/gmccollu/woodpile/internal/server"
-	"github.com/gmccollu/woodpile/internal/winacl"
+	"github.com/gmccollu/woodshed/internal/api"
+	"github.com/gmccollu/woodshed/internal/config"
+	"github.com/gmccollu/woodshed/internal/server"
+	"github.com/gmccollu/woodshed/internal/winacl"
 )
 
 // Portable mode: download, double-click, and it runs, with nothing installed. The
-// data folder is woodpile-data/ next to the binary (or ~/Woodpile when that isn't
+// data folder is woodshed-data/ next to the binary (or ~/Woodshed when that isn't
 // writable), the config is created there with the defaults, and the console shows
 // a short banner, then one line per new device.
 
 const (
-	portableDirName = "woodpile-data"
-	portableHomeDir = "Woodpile"
+	portableDirName = "woodshed-data"
+	portableHomeDir = "Woodshed"
 	// uiFallbackPorts is how many ports after the configured UI port are tried
 	// when it's taken (8514 -> 8515..8530). The syslog port never falls back.
 	uiFallbackPorts = 16
 	// portableShutdownTimeout fits Windows' ~5 s grace after a console close,
 	// logoff or shutdown.
 	portableShutdownTimeout = 4 * time.Second
-	portableNote            = "Starting in portable mode; `woodpile help` lists commands."
+	portableNote            = "Starting in portable mode; `woodshed help` lists commands."
 )
 
 type portableOpts struct {
-	dir       string // explicit data folder ("" = next to the binary, else ~/Woodpile)
+	dir       string // explicit data folder ("" = next to the binary, else ~/Woodshed)
 	port      int    // syslog port for UDP and TCP (0 = the config's)
 	listen    string // syslog bind address ("" = the config's)
 	uiPort    int    // UI port to try first (0 = the config's)
@@ -50,7 +50,7 @@ type portableOpts struct {
 	launched launch
 }
 
-// startPortable runs portable mode for `woodpile` with no arguments. A variable so
+// startPortable runs portable mode for `woodshed` with no arguments. A variable so
 // tests can stub it.
 var startPortable = func(stdout, stderr io.Writer) int {
 	l := detectLaunch()
@@ -62,13 +62,13 @@ var startPortable = func(stdout, stderr io.Writer) int {
 
 func cmdPortable(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("portable", "", `
-Run Woodpile right here, with nothing installed: it keeps its config and logs in
-woodpile-data/ next to this program (or in ~/Woodpile if that folder can't be
+Run Woodshed right here, with nothing installed: it keeps its config and logs in
+woodshed-data/ next to this program (or in ~/Woodshed if that folder can't be
 written), listens for syslog on UDP and TCP 514, and opens the UI in your
 browser. Stop it with Ctrl-C or by closing the window; everything is saved.
 
-Running "woodpile" with no command, or double-clicking it, does the same.`, stderr)
-	dir := fs.String("dir", "", "data `folder` (default: woodpile-data next to the program)")
+Running "woodshed" with no command, or double-clicking it, does the same.`, stderr)
+	dir := fs.String("dir", "", "data `folder` (default: woodshed-data next to the program)")
 	port := fs.Int("port", 0, "syslog `port` for UDP and TCP (default: the config's, 514)")
 	listen := fs.String("listen", "", "syslog bind `address` (default: the config's, every interface)")
 	uiPort := fs.Int("ui-port", 0, "UI `port` to try first (default: the config's, 8514); the next 16 are tried if it's taken")
@@ -77,7 +77,7 @@ Running "woodpile" with no command, or double-clicking it, does the same.`, stde
 		return code
 	}
 	if *port < 0 || *port > 65535 || *uiPort < 0 || *uiPort > 65535 {
-		fmt.Fprintf(stderr, "woodpile portable: ports must be between 1 and 65535\n")
+		fmt.Fprintf(stderr, "woodshed portable: ports must be between 1 and 65535\n")
 		return 2
 	}
 	return runPortable(portableOpts{dir: *dir, port: *port, listen: *listen, uiPort: *uiPort, noBrowser: *noBrowser,
@@ -127,7 +127,7 @@ func makeWritable(dir string) error {
 }
 
 // chooseDataDir picks the portable data folder: explicit if given (no fallback),
-// else woodpile-data next to the binary, else ~/Woodpile. note says why it fell
+// else woodshed-data next to the binary, else ~/Woodshed. note says why it fell
 // back, for the banner.
 func chooseDataDir(explicit string, e dirEnv) (dir, note string, err error) {
 	if explicit != "" {
@@ -214,7 +214,7 @@ func runPortable(o portableOpts, stdout, stderr io.Writer) (code int) {
 		}
 	}()
 	failf := func(format string, args ...any) int {
-		fmt.Fprintf(stderr, "Woodpile can't start: "+format+"\n", args...)
+		fmt.Fprintf(stderr, "Woodshed can't start: "+format+"\n", args...)
 		return 1
 	}
 
@@ -224,7 +224,7 @@ func runPortable(o portableOpts, stdout, stderr io.Writer) (code int) {
 	}
 	cfgPath := filepath.Join(dir, config.FileName)
 	// An existing folder, config or password hash must be this user's (re-test N13):
-	// someone else's woodpile-data could hold a config or password of theirs.
+	// someone else's woodshed-data could hold a config or password of theirs.
 	for _, p := range []string{dir, cfgPath, filepath.Join(dir, api.PasswordFile)} {
 		if err := checkOwnedByMe(p); err != nil {
 			return failf("%v", err)
@@ -265,12 +265,12 @@ func runPortable(o portableOpts, stdout, stderr io.Writer) (code int) {
 	if errs := cfg.Validate(nil); len(errs) > 0 {
 		return failf("%s: %v", cfgPath, errs)
 	}
-	// Saved so the settings page and `woodpile status` agree with what's running.
+	// Saved so the settings page and `woodshed status` agree with what's running.
 	if err := config.Save(cfgPath, cfg); err != nil {
 		return failf("%v", err)
 	}
 
-	logPath := filepath.Join(dir, "woodpile.log")
+	logPath := filepath.Join(dir, "woodshed.log")
 	logFile, err := os.OpenFile(logPath, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o640)
 	if err != nil {
 		return failf("%v", err)
@@ -336,19 +336,19 @@ func runPortable(o portableOpts, stdout, stderr io.Writer) (code int) {
 	err = <-done
 	fmt.Fprintln(stdout)
 	if err != nil {
-		fmt.Fprintf(stderr, "Woodpile stopped with an error: %v (details in %s)\n", err, logPath)
+		fmt.Fprintf(stderr, "Woodshed stopped with an error: %v (details in %s)\n", err, logPath)
 		return 1
 	}
-	fmt.Fprintf(stdout, "Woodpile stopped; everything is saved in %s\n", dir)
+	fmt.Fprintf(stdout, "Woodshed stopped; everything is saved in %s\n", dir)
 	return 0
 }
 
 func alreadyRunning(dir string) string {
-	msg := fmt.Sprintf("Woodpile is already running on %s. Use the window that's already open", dir)
+	msg := fmt.Sprintf("Woodshed is already running on %s. Use the window that's already open", dir)
 	if rs, err := server.ReadState(dir); err == nil && rs.UI.URL != "" {
 		msg += ", or its UI at " + rs.UI.URL
 	}
-	return msg + "; to run a second copy, give it its own folder with `woodpile portable --dir <folder>`."
+	return msg + "; to run a second copy, give it its own folder with `woodshed portable --dir <folder>`."
 }
 
 var errStoppedEarly = errors.New("the server stopped while starting")
@@ -434,7 +434,7 @@ type bannerInfo struct {
 
 func bannerText(b bannerInfo) string {
 	var s strings.Builder
-	fmt.Fprintf(&s, "\nWoodpile %s, portable mode\n", b.Version)
+	fmt.Fprintf(&s, "\nWoodshed %s, portable mode\n", b.Version)
 	fmt.Fprintf(&s, "  Data folder:  %s\n", b.DataDir)
 	if b.DirNote != "" {
 		fmt.Fprintf(&s, "                (%s)\n", b.DirNote)
@@ -450,7 +450,7 @@ func bannerText(b bannerInfo) string {
 	fmt.Fprintf(&s, "  Send logs to: %s\n", strings.Join(ips, ", "))
 	fmt.Fprintf(&s, "  Web UI:       %s\n", b.URL)
 	if b.UIFellBackFrom != 0 {
-		fmt.Fprintf(&s, "                (port %d is in use, maybe by an installed Woodpile, so this copy uses %s)\n",
+		fmt.Fprintf(&s, "                (port %d is in use, maybe by an installed Woodshed, so this copy uses %s)\n",
 			b.UIFellBackFrom, portOf(b.URL))
 	}
 	s.WriteString(listenersHelp(b.Listeners, b.GOOS))
@@ -556,8 +556,8 @@ func listenerHelp(what string, l api.Listener, goos string) string {
 	case "denied":
 		if goos == "linux" && l.Port < 1024 {
 			fmt.Fprintf(&s, "\n  %s %d need extra rights on Linux. Allow this program to use the port once, then run it\n", what, l.Port)
-			s.WriteString("  as yourself:\n      sudo setcap cap_net_bind_service=+ep ./woodpile\n")
-			s.WriteString("  or run it as root for this time only:\n      sudo ./woodpile\n")
+			s.WriteString("  as yourself:\n      sudo setcap cap_net_bind_service=+ep ./woodshed\n")
+			s.WriteString("  or run it as root for this time only:\n      sudo ./woodshed\n")
 		} else {
 			fmt.Fprintf(&s, "\n  %s %d: the system refused the port (%s).\n", what, l.Port, l.Error)
 		}
@@ -567,8 +567,8 @@ func listenerHelp(what string, l api.Listener, goos string) string {
 			holder = l.Holder
 		}
 		fmt.Fprintf(&s, "\n  %s %d: in use by %s.\n", what, l.Port, holder)
-		if strings.Contains(strings.ToLower(l.Holder), "woodpile") {
-			s.WriteString("  That's probably an installed Woodpile service: use it (http://localhost:8514/), or stop it first.\n")
+		if strings.Contains(strings.ToLower(l.Holder), "woodshed") {
+			s.WriteString("  That's probably an installed Woodshed service: use it (http://localhost:8514/), or stop it first.\n")
 		} else {
 			s.WriteString("  It's usually the system's own syslog service. Stop it, then press Retry in the web UI.\n")
 		}

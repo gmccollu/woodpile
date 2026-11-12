@@ -14,7 +14,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/gmccollu/woodpile/internal/config"
+	"github.com/gmccollu/woodshed/internal/config"
 )
 
 // saveConfigKeepingOwner rewrites the config at path with c, keeping its owner and
@@ -112,7 +112,7 @@ func checkOwnedByMe(path string) error {
 }
 
 // runAsOwnerFirst refuses, as root, a data folder owned by another user, with the
-// command to run instead (`woodpile reindex` must run as the folder's owner).
+// command to run instead (`woodshed reindex` must run as the folder's owner).
 func runAsOwnerFirst(dataDir string) error {
 	if os.Geteuid() != 0 {
 		return nil
@@ -131,9 +131,9 @@ func runAsOwnerFirst(dataDir string) error {
 
 // runAsOwnerHint is the command that runs reindex as the data folder's owner.
 func runAsOwnerHint(dataDir string) string {
-	name := "woodpile"
+	name := "woodshed"
 	if runtime.GOOS == "darwin" {
-		name = "_woodpile"
+		name = "_woodshed"
 	}
 	if fi, err := os.Stat(dataDir); err == nil {
 		if st, ok := fi.Sys().(*syscall.Stat_t); ok {

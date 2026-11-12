@@ -1,10 +1,10 @@
 [Desktop Entry]
 Type=Application
-Name=Woodpile
+Name=Woodshed
 GenericName=Syslog server
-Comment=Open the Woodpile web UI (the woodpile service must be running)
+Comment=Open the Woodshed web UI (the woodshed service must be running)
 Exec=xdg-open http://localhost:8514/
-Icon=woodpile
+Icon=woodshed
 Terminal=false
 Categories=Network;System;Monitor;
 Keywords=syslog;logs;

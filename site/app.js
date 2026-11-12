@@ -75,13 +75,13 @@ async function downloads() {
     const note = el(
       'p',
       'notice small',
-      "It's a test build: good for trying Woodpile out and for reporting problems. For an always-on server, the stable release is on its way.",
+      "It's a test build: good for trying Woodshed out and for reporting problems. For an always-on server, the stable release is on its way.",
     );
     note.id = 'dl-rc-note';
     document.getElementById('dl-rc-note')?.remove();
     status.after(note);
   } else {
-    status.textContent = `Woodpile ${version}${forWhat}`;
+    status.textContent = `Woodshed ${version}${forWhat}`;
   }
   primary.replaceChildren(...best.map((a) => assetCard(a, true)));
 

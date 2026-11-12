@@ -1,7 +1,7 @@
-# Woodpile developer tasks. Build output goes to dist/ (gitignored).
+# Woodshed developer tasks. Build output goes to dist/ (gitignored).
 #
 #   make web        build the frontend into web/dist (skipped until web/package.json exists)
-#   make build      web + the woodpile binary for this machine -> dist/woodpile
+#   make build      web + the woodshed binary for this machine -> dist/woodshed
 #   make test       go vet + go test -race
 #   make fuzz       run every fuzz target for FUZZTIME (default 30s)
 #   make snapshot   goreleaser release --snapshot (archives, deb, rpm; nothing published)
@@ -37,7 +37,7 @@ web:
 	fi
 
 build: web
-	CGO_ENABLED=0 $(GO) build -trimpath -ldflags "$(LDFLAGS)" -o dist/woodpile$(EXE) ./cmd/woodpile
+	CGO_ENABLED=0 $(GO) build -trimpath -ldflags "$(LDFLAGS)" -o dist/woodshed$(EXE) ./cmd/woodshed
 
 vet:
 	$(GO) vet ./...

@@ -1,5 +1,5 @@
 [Unit]
-Description=Woodpile lab sender namespaces (ipvlan legs, one source IP each)
+Description=Woodshed lab sender namespaces (ipvlan legs, one source IP each)
 After=network-online.target
 Wants=network-online.target
 

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gmccollu/woodpile/internal/config"
+	"github.com/gmccollu/woodshed/internal/config"
 )
 
 // Tests for the installer findings of the 1.0 security review (M1, M2). The
@@ -31,15 +31,15 @@ func writeHostileConfig(t *testing.T, h *host, path, dataDir string) {
 // M1a: a data_dir with a newline must never reach the unit as a directive.
 func TestM1aNewlineInPathsNeverReachesTheUnit(t *testing.T) {
 	unixOnly(t)
-	if _, err := systemdUnit(linuxBin, "/etc/woodpile/woodpile.toml", "/var/lib/woodpile\nExecStartPre=+/tmp/x"); err == nil {
+	if _, err := systemdUnit(linuxBin, "/etc/woodshed/woodshed.toml", "/var/lib/woodshed\nExecStartPre=+/tmp/x"); err == nil {
 		t.Fatal("systemdUnit accepted a newline")
 	}
 	for _, bad := range []string{"/var/lib/wp\"x", "relative/dir", "/var/lib/../etc", "/var/lib/wp\\x", "/a\x00b"} {
-		if _, err := systemdUnit(linuxBin, "/etc/woodpile/woodpile.toml", bad); err == nil {
+		if _, err := systemdUnit(linuxBin, "/etc/woodshed/woodshed.toml", bad); err == nil {
 			t.Errorf("systemdUnit accepted %q", bad)
 		}
 	}
-	if u, err := systemdUnit(linuxBin, "/etc/woodpile/woodpile.toml", "/srv/100%logs"); err != nil || !strings.Contains(u, "WorkingDirectory=/srv/100%%logs\n") {
+	if u, err := systemdUnit(linuxBin, "/etc/woodshed/woodshed.toml", "/srv/100%logs"); err != nil || !strings.Contains(u, "WorkingDirectory=/srv/100%%logs\n") {
 		t.Errorf("%% isn't escaped: %v\n%s", err, u)
 	}
 	if _, err := launchdPlist(darwinPkgConfig, "/x\n<key>"); err == nil {
@@ -48,8 +48,8 @@ func TestM1aNewlineInPathsNeverReachesTheUnit(t *testing.T) {
 
 	// And the config's data_dir isn't used at all: the install refuses the mismatch.
 	h, r := linuxHost(t)
-	writeHostileConfig(t, h, "/etc/woodpile/woodpile.toml", "/var/lib/woodpile\nExecStartPre=+/tmp/x")
-	_, err := installSystemd(h, InstallOptions{ConfigPath: "/etc/woodpile/woodpile.toml", Exe: fakeExe(t)}, "/var/lib/woodpile")
+	writeHostileConfig(t, h, "/etc/woodshed/woodshed.toml", "/var/lib/woodshed\nExecStartPre=+/tmp/x")
+	_, err := installSystemd(h, InstallOptions{ConfigPath: "/etc/woodshed/woodshed.toml", Exe: fakeExe(t)}, "/var/lib/woodshed")
 	if err == nil || !strings.Contains(err.Error(), "names data_dir") {
 		t.Fatalf("install with a hostile config: %v", err)
 	}
@@ -80,7 +80,7 @@ func TestM1bM2SystemFoldersAreRefused(t *testing.T) {
 	if err := checkDataDir("linux", "/srv/x", []string{"/srv/x"}); err == nil {
 		t.Error("accepted the caller's home folder")
 	}
-	for _, ok := range []string{"/var/lib/woodpile", "/srv/syslog/woodpile", "/home/alice/woodpile-data"} {
+	for _, ok := range []string{"/var/lib/woodshed", "/srv/syslog/woodshed", "/home/alice/woodshed-data"} {
 		if err := checkDataDir("linux", ok, nil); err != nil {
 			t.Errorf("refused %s: %v", ok, err)
 		}
@@ -88,22 +88,22 @@ func TestM1bM2SystemFoldersAreRefused(t *testing.T) {
 
 	// config data_dir="/etc": refused, nothing chowned.
 	h, r := linuxHost(t)
-	writeHostileConfig(t, h, "/etc/woodpile/woodpile.toml", "/etc")
-	if _, err := installSystemd(h, InstallOptions{ConfigPath: "/etc/woodpile/woodpile.toml", Exe: fakeExe(t)}, "/var/lib/woodpile"); err == nil {
+	writeHostileConfig(t, h, "/etc/woodshed/woodshed.toml", "/etc")
+	if _, err := installSystemd(h, InstallOptions{ConfigPath: "/etc/woodshed/woodshed.toml", Exe: fakeExe(t)}, "/var/lib/woodshed"); err == nil {
 		t.Fatal("installed with data_dir=/etc in the config")
 	}
 	if len(r.chowned) > 0 {
 		t.Errorf("chowned %v", r.chowned)
 	}
 	// --data-dir /etc on the command line: refused too.
-	if _, err := installSystemd(h, InstallOptions{ConfigPath: "/etc/woodpile/woodpile.toml", Exe: fakeExe(t)}, "/etc"); err == nil {
+	if _, err := installSystemd(h, InstallOptions{ConfigPath: "/etc/woodshed/woodshed.toml", Exe: fakeExe(t)}, "/etc"); err == nil {
 		t.Fatal("installed with --data-dir /etc")
 	}
-	// M2: --config /etc/woodpile.toml would give /etc to the service account.
+	// M2: --config /etc/woodshed.toml would give /etc to the service account.
 	h2, _ := linuxHost(t)
-	if _, err := installSystemd(h2, InstallOptions{ConfigPath: "/etc/woodpile.toml", Exe: fakeExe(t)}, "/var/lib/woodpile"); err == nil ||
+	if _, err := installSystemd(h2, InstallOptions{ConfigPath: "/etc/woodshed.toml", Exe: fakeExe(t)}, "/var/lib/woodshed"); err == nil ||
 		!strings.Contains(err.Error(), "config's folder") {
-		t.Fatalf("--config /etc/woodpile.toml: %v", err)
+		t.Fatalf("--config /etc/woodshed.toml: %v", err)
 	}
 }
 
@@ -113,8 +113,8 @@ func TestNonEmptyForeignFolderRefused(t *testing.T) {
 	h, _ := linuxHost(t)
 	os.MkdirAll(h.path("/srv/stuff"), 0o755)
 	os.WriteFile(h.path("/srv/stuff/notes.txt"), []byte("mine"), 0o644)
-	if _, err := installSystemd(h, InstallOptions{ConfigPath: "/etc/woodpile/woodpile.toml", Exe: fakeExe(t)}, "/srv/stuff"); err == nil ||
-		!strings.Contains(err.Error(), "isn't a Woodpile data folder") {
+	if _, err := installSystemd(h, InstallOptions{ConfigPath: "/etc/woodshed/woodshed.toml", Exe: fakeExe(t)}, "/srv/stuff"); err == nil ||
+		!strings.Contains(err.Error(), "isn't a Woodshed data folder") {
 		t.Fatalf("install into a foreign folder: %v", err)
 	}
 	var res Result
@@ -139,12 +139,12 @@ func TestM1cM1fChownSkipsLinks(t *testing.T) {
 	outside := h.path("/etc/shadow")
 	os.MkdirAll(filepath.Dir(outside), 0o755)
 	os.WriteFile(outside, []byte("secret"), 0o600)
-	data := "/var/lib/woodpile"
+	data := "/var/lib/woodshed"
 	os.MkdirAll(h.path(data+"/logs"), 0o750)
 	os.WriteFile(h.path(data+"/logs/a.log"), []byte("x"), 0o640)
 	os.Symlink(outside, h.path(data+"/evil-symlink"))
 	os.Link(outside, h.path(data+"/evil-hardlink"))
-	skipped, err := h.chownTree(data, "woodpile", "woodpile")
+	skipped, err := h.chownTree(data, "woodshed", "woodshed")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,9 +161,9 @@ func TestM1cM1fChownSkipsLinks(t *testing.T) {
 	}
 	// A symlinked config is refused before anything is chowned.
 	h2, r2 := linuxHost(t)
-	os.MkdirAll(h2.path("/etc/woodpile"), 0o750)
-	os.Symlink(outside, h2.path("/etc/woodpile/woodpile.toml"))
-	if _, err := installSystemd(h2, InstallOptions{ConfigPath: "/etc/woodpile/woodpile.toml", Exe: fakeExe(t)}, data); err == nil ||
+	os.MkdirAll(h2.path("/etc/woodshed"), 0o750)
+	os.Symlink(outside, h2.path("/etc/woodshed/woodshed.toml"))
+	if _, err := installSystemd(h2, InstallOptions{ConfigPath: "/etc/woodshed/woodshed.toml", Exe: fakeExe(t)}, data); err == nil ||
 		!strings.Contains(err.Error(), "is a link") {
 		t.Fatalf("symlinked config: %v", err)
 	}
@@ -174,7 +174,7 @@ func TestM1cM1fChownSkipsLinks(t *testing.T) {
 	h3, _ := linuxHost(t)
 	os.MkdirAll(h3.path("/var/lib"), 0o755)
 	os.Symlink(h3.path("/etc"), h3.path(data))
-	if _, err := installSystemd(h3, InstallOptions{ConfigPath: "/etc/woodpile/woodpile.toml", Exe: fakeExe(t)}, data); err == nil {
+	if _, err := installSystemd(h3, InstallOptions{ConfigPath: "/etc/woodshed/woodshed.toml", Exe: fakeExe(t)}, data); err == nil {
 		t.Fatal("symlinked data folder accepted")
 	}
 }
@@ -188,35 +188,35 @@ func TestM1dWindowsFoldersRefused(t *testing.T) {
 	}
 }
 
-// Re-test N12: system folders are refused as prefixes too, with Woodpile's own
+// Re-test N12: system folders are refused as prefixes too, with Woodshed's own
 // places allowed; Windows paths are normalized first.
 func TestN12SystemPrefixes(t *testing.T) {
 	for _, c := range []struct {
 		goos, dir string
 		ok        bool
 	}{
-		{"linux", "/usr/share/woodpile", false},
-		{"linux", "/etc/woodpile-data", false},
+		{"linux", "/usr/share/woodshed", false},
+		{"linux", "/etc/woodshed-data", false},
 		{"linux", "/lib64/x", false},
 		{"linux", "/boot/efi/x", false},
-		{"linux", "/var/log/woodpile", false},
+		{"linux", "/var/log/woodshed", false},
 		{"linux", "/var/lib", false},
-		{"linux", "/var/lib/woodpile", true},
+		{"linux", "/var/lib/woodshed", true},
 		{"linux", "/var/lib/syslog-archive", true},
-		{"linux", "/var/lib/woodpile/sub", true},
-		{"linux", "/srv/woodpile", true},
-		{"linux", "/opt/woodpile/data", true},
-		{"darwin", "/Library/Application Support/Woodpile", true},
-		{"darwin", "/library/application support/woodpile", true},
+		{"linux", "/var/lib/woodshed/sub", true},
+		{"linux", "/srv/woodshed", true},
+		{"linux", "/opt/woodshed/data", true},
+		{"darwin", "/Library/Application Support/Woodshed", true},
+		{"darwin", "/library/application support/woodshed", true},
 		{"darwin", "/Library/Application Support/Other", false},
-		{"darwin", "/Library/Logs/Woodpile", false},
+		{"darwin", "/Library/Logs/Woodshed", false},
 		{"darwin", "/System/Volumes/Data/x", false},
 		{"darwin", "/private/var/db/x", false},
-		{"windows", `C:\ProgramData\Woodpile`, true},
-		{"windows", `D:\syslog\woodpile`, true},
+		{"windows", `C:\ProgramData\Woodshed`, true},
+		{"windows", `D:\syslog\woodshed`, true},
 		{"windows", `C:\Windows\Temp\wp`, false},
 		{"windows", `C:\Windows.\Temp`, false},
-		{"windows", `C:\Program Files\Woodpile\data`, false},
+		{"windows", `C:\Program Files\Woodshed\data`, false},
 		{"windows", `\\?\C:\Windows\System32\x`, false},
 		{"windows", `C:/Windows/x`, false},
 		{"windows", `C:\ProgramData`, false},

@@ -3,7 +3,7 @@ package index
 import (
 	"time"
 
-	"github.com/gmccollu/woodpile/internal/store/logfile"
+	"github.com/gmccollu/woodshed/internal/store/logfile"
 )
 
 // Checkpoint is a point in a file's uncompressed stream; see logfile.Checkpoint for
@@ -61,7 +61,7 @@ type Counts struct {
 	Msgs      int64 // messages stored
 	Bytes     int64 // raw bytes stored
 	Truncated int64 // messages cut at the max message size (still stored)
-	Dropped   int64 // messages Woodpile received but could not store
+	Dropped   int64 // messages Woodshed received but could not store
 }
 
 // Add adds o to c.

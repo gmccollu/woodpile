@@ -1,5 +1,5 @@
 {
-  "name": "woodpile-site",
+  "name": "woodshed-site",
   "private": true,
   "type": "module",
   "description": "The project website (GitHub Pages). No build step; these scripts only test and check it.",

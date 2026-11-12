@@ -182,7 +182,7 @@ func TestExportRoutes(t *testing.T) {
 	srv.b.mu.Unlock()
 	r = do(t, c, "GET", srv.url("/api/exports/"+id+"/download"), "")
 	if r.code != 200 || string(r.body) != "PK\x03\x04 pretend zip" || r.header.Get("Content-Type") != "application/zip" ||
-		r.header.Get("Content-Disposition") != `attachment; filename="woodpile-20261110T000000Z-20261110T060000Z.zip"` {
+		r.header.Get("Content-Disposition") != `attachment; filename="woodshed-20261110T000000Z-20261110T060000Z.zip"` {
 		t.Errorf("download %d %q %v", r.code, r.body, r.header)
 	}
 	r = do(t, c, "GET", srv.url("/api/exports/"+id+"/download"), "", "Range: bytes=0-1")

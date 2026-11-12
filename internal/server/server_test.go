@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/gmccollu/woodpile/internal/peer"
+	"github.com/gmccollu/woodshed/internal/peer"
 	"io"
 	"log/slog"
 	"net"
@@ -17,12 +17,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gmccollu/woodpile/internal/api"
-	"github.com/gmccollu/woodpile/internal/config"
-	"github.com/gmccollu/woodpile/internal/index"
-	"github.com/gmccollu/woodpile/internal/listen"
-	"github.com/gmccollu/woodpile/internal/loadgen"
-	"github.com/gmccollu/woodpile/internal/store"
+	"github.com/gmccollu/woodshed/internal/api"
+	"github.com/gmccollu/woodshed/internal/config"
+	"github.com/gmccollu/woodshed/internal/index"
+	"github.com/gmccollu/woodshed/internal/listen"
+	"github.com/gmccollu/woodshed/internal/loadgen"
+	"github.com/gmccollu/woodshed/internal/store"
 )
 
 var quiet = slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -63,7 +63,7 @@ func writeConfig(t *testing.T, dir string, syslogPort, uiPort int, edit func(*co
 	if edit != nil {
 		edit(&c)
 	}
-	path := filepath.Join(dir, "woodpile.toml")
+	path := filepath.Join(dir, "woodshed.toml")
 	if err := config.Save(path, c); err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +84,7 @@ func start(t *testing.T, cfgPath string) *running {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// No real peer lookup: a Woodpile service installed on the test machine
+	// No real peer lookup: a Woodshed service installed on the test machine
 	// would change the banners (peer_test.go covers that path with fakes).
 	srv.be.peers.find = func(context.Context, peer.Options) (peer.Info, bool) { return peer.Info{}, false }
 	ctx, cancel := context.WithCancel(context.Background())
@@ -405,12 +405,12 @@ func TestDeviceStatus(t *testing.T) {
 
 func TestLoadConfigDataDirNextToConfig(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "sub", "woodpile.toml")
+	path := filepath.Join(dir, "sub", "woodshed.toml")
 	c, created, err := LoadConfig(path)
 	if err != nil || !created {
 		t.Fatalf("LoadConfig: %v, created %v", err, created)
 	}
-	if want := filepath.Join(filepath.Dir(path), "woodpile-data"); c.Storage.DataDir != want {
+	if want := filepath.Join(filepath.Dir(path), "woodshed-data"); c.Storage.DataDir != want {
 		t.Errorf("data_dir = %s, want %s", c.Storage.DataDir, want)
 	}
 	if errs := c.Validate(nil); len(errs) > 0 {

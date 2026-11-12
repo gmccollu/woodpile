@@ -20,12 +20,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gmccollu/woodpile/internal/hub"
-	"github.com/gmccollu/woodpile/internal/index"
-	"github.com/gmccollu/woodpile/internal/model"
-	"github.com/gmccollu/woodpile/internal/search"
-	"github.com/gmccollu/woodpile/internal/store"
-	"github.com/gmccollu/woodpile/internal/store/logfile"
+	"github.com/gmccollu/woodshed/internal/hub"
+	"github.com/gmccollu/woodshed/internal/index"
+	"github.com/gmccollu/woodshed/internal/model"
+	"github.com/gmccollu/woodshed/internal/search"
+	"github.com/gmccollu/woodshed/internal/store"
+	"github.com/gmccollu/woodshed/internal/store/logfile"
 )
 
 var bg = context.Background()
@@ -106,7 +106,7 @@ func newEnv(t *testing.T, perDay int) *env {
 	t.Cleanup(func() { st.Close() })
 	e := &env{t: t, dir: dir, idx: idx, st: st, clock: c, day0: day0}
 	idx.AddEvent(bg, index.Event{Time: day0.Add(time.Millisecond), Level: index.LevelInfo, Kind: index.KindStart,
-		Source: index.SourceService, Text: "Woodpile 1.0 (abc) started on test/test; data folder x."})
+		Source: index.SourceService, Text: "Woodshed 1.0 (abc) started on test/test; data folder x."})
 	i := 0
 	for d := 0; d < 2; d++ {
 		start := day0.Add(time.Duration(d) * 24 * time.Hour)
@@ -227,8 +227,8 @@ func checkExport(t *testing.T, files map[string][]byte, want map[string][]byte) 
 	if _, ok := files["README.txt"]; !ok {
 		t.Error("no README.txt")
 	}
-	if _, ok := files["woodpile-events.log"]; !ok {
-		t.Error("no woodpile-events.log")
+	if _, ok := files["woodshed-events.log"]; !ok {
+		t.Error("no woodshed-events.log")
 	}
 	got := 0
 	for name, b := range files {
@@ -286,7 +286,7 @@ func TestExportZipContents(t *testing.T) {
 	if names[len(names)-1] != "manifest.json" {
 		t.Errorf("entries %v", names)
 	}
-	if man.WoodpileVersion != "1.2.3" || !man.Request.From.Equal(from) || len(man.Request.Devices) != 2 ||
+	if man.WoodshedVersion != "1.2.3" || !man.Request.From.Equal(from) || len(man.Request.Devices) != 2 ||
 		man.Request.Devices[0].Group != "HQ" || man.Request.Devices[1].IP != "2001:db8::7" {
 		t.Errorf("manifest %+v", man)
 	}
@@ -338,7 +338,7 @@ func TestExportZipContents(t *testing.T) {
 	if !strings.Contains(string(files["README.txt"]), `perl -pe`) {
 		t.Error("README doesn't explain the escaping")
 	}
-	ev := string(files["woodpile-events.log"])
+	ev := string(files["woodshed-events.log"])
 	if !strings.Contains(ev, "Z warn clock system clock stepped back 7m12s") {
 		t.Errorf("clock warning missing from the events log")
 	}

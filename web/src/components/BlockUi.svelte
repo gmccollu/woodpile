@@ -50,7 +50,7 @@
   <div class="scrim" role="presentation" onclick={() => (blockUi.confirm = null)}></div>
   <div class="dialog glass" role="alertdialog" aria-modal="true" aria-labelledby="blk-t" aria-describedby="blk-d">
     <h2 id="blk-t" class="m-0 text-[18px] font-bold">Block {targetLabel(blockUi.confirm)}?</h2>
-    <p id="blk-d" class="mt-2 mb-0 text-[14.5px]">Woodpile will refuse and count its messages. Its existing logs stay searchable.</p>
+    <p id="blk-d" class="mt-2 mb-0 text-[14.5px]">Woodshed will refuse and count its messages. Its existing logs stay searchable.</p>
     {#if blockUi.error}<p class="mt-2 mb-0 text-[13.5px] font-medium text-bad-fg" role="alert">{blockUi.error}</p>{/if}
     <div class="mt-4 flex justify-end gap-2">
       <button bind:this={cancelBtn} class="ghost-btn" onclick={() => (blockUi.confirm = null)}>Cancel</button>

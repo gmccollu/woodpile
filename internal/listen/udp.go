@@ -6,8 +6,8 @@ import (
 	"net/netip"
 	"time"
 
-	"github.com/gmccollu/woodpile/internal/config"
-	"github.com/gmccollu/woodpile/internal/syslog"
+	"github.com/gmccollu/woodshed/internal/config"
+	"github.com/gmccollu/woodshed/internal/syslog"
 )
 
 // udpReadBuf is the read buffer: big enough for any UDP datagram (65,507 bytes

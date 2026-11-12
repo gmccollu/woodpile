@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gmccollu/woodpile/internal/config"
+	"github.com/gmccollu/woodshed/internal/config"
 )
 
 // allowlist is the parsed sender allowlist (empty allows everyone) and blocklist.

@@ -1,21 +1,21 @@
 <#
 .SYNOPSIS
-  Woodpile lab, Windows VM side. Copied to C:\woodpile-lab by `wl stage`; called by the driver over
+  Woodshed lab, Windows VM side. Copied to C:\woodpile-lab by `wl stage`; called by the driver over
   OpenSSH as an administrator:  powershell -NoProfile -ExecutionPolicy Bypass -File C:\woodpile-lab\win-lab.ps1 <Action> [args]
 
 .DESCRIPTION
   install MSI                     msiexec /i /qn with a verbose log
-  svc                             JSON: service state, start type, account, sockets, UI, woodpile status
+  svc                             JSON: service state, start type, account, sockets, UI, woodshed status
   fw-state                        JSON: profiles enabled, the MSI's rules and their state
   fw-enable                       turn every firewall profile on (the OpenSSH rule must exist first)
-  fw-open | fw-close              enable / disable the MSI's Woodpile rules (the negative control)
-  verify RUN N [MISSING_OK] [WAIT]   verifyseq -json against C:\ProgramData\Woodpile
+  fw-open | fw-close              enable / disable the MSI's Woodshed rules (the negative control)
+  verify RUN N [MISSING_OK] [WAIT]   verifyseq -json against C:\ProgramData\Woodshed
   stats                           GET /api/stats
   devices                         device folders under logs\
   sample OUT INTERVAL SECS [PID]  CSV of working set, private bytes, CPU seconds, handles, threads
   soak-sampler start SECS|stop|status   the sampler as a SYSTEM scheduled task (survives logoff)
   verify-detached RUN N OUTJSON   verifyseq as a scheduled task (long runs)
-  portable start|stop|status PORT [allow]   the zip's woodpile.exe by hand on PORT; "allow" adds a temporary rule
+  portable start|stop|status PORT [allow]   the zip's woodshed.exe by hand on PORT; "allow" adds a temporary rule
   reboot                          shutdown /r in 5 s
   api METHOD PATH [BODYFILE]      any local API call; download PATH OUT saves a body (export zips)
   parse                           check this script parses
@@ -25,11 +25,11 @@ param([Parameter(Position = 0, Mandatory = $true)][string]$Action,
       [Parameter(Position = 1, ValueFromRemainingArguments = $true)][string[]]$Rest)
 $ErrorActionPreference = "Stop"
 $L = "C:\woodpile-lab"
-$Data = Join-Path $env:ProgramData "Woodpile"
+$Data = Join-Path $env:ProgramData "Woodshed"
 $Ui = "http://127.0.0.1:8514"
 function Arg($i, $default = $null) { if ($Rest -and $Rest.Count -gt $i) { $Rest[$i] } else { $default } }
-function SvcPid { (Get-CimInstance Win32_Service -Filter "Name='Woodpile'").ProcessId }
-function MsiRules { Get-NetFirewallRule -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -like "*Woodpile*" } }
+function SvcPid { (Get-CimInstance Win32_Service -Filter "Name='Woodshed'").ProcessId }
+function MsiRules { Get-NetFirewallRule -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -like "*Woodshed*" } }
 
 switch ($Action) {
   "install" {
@@ -40,14 +40,14 @@ switch ($Action) {
     exit $p.ExitCode
   }
   "svc" {
-    $s = Get-CimInstance Win32_Service -Filter "Name='Woodpile'"
+    $s = Get-CimInstance Win32_Service -Filter "Name='Woodshed'"
     $procId = if ($s) { $s.ProcessId } else { 0 }
     $udp = @(Get-NetUDPEndpoint -LocalPort 514 -ErrorAction SilentlyContinue | Where-Object OwningProcess -eq $procId).Count
     $tcp = @(Get-NetTCPConnection -LocalPort 514 -State Listen -ErrorAction SilentlyContinue | Where-Object OwningProcess -eq $procId).Count
     $health = try { (Invoke-WebRequest -UseBasicParsing -TimeoutSec 3 "$Ui/healthz").Content } catch { "" }
-    $status = try { (& "$env:ProgramFiles\Woodpile\woodpile.exe" status 2>&1 | Out-String) } catch { "$_" }
+    $status = try { (& "$env:ProgramFiles\Woodshed\woodshed.exe" status 2>&1 | Out-String) } catch { "$_" }
     [ordered]@{ state = $s.State; start_mode = $s.StartMode; account = $s.StartName; pid = $procId
-      udp514_sockets = $udp; tcp514_listen = $tcp; healthz = $health; woodpile_status = $status } | ConvertTo-Json -Compress
+      udp514_sockets = $udp; tcp514_listen = $tcp; healthz = $health; woodshed_status = $status } | ConvertTo-Json -Compress
   }
   "fw-state" {
     $prof = Get-NetFirewallProfile | ForEach-Object { "$($_.Name)=$($_.Enabled)" }
@@ -55,7 +55,7 @@ switch ($Action) {
     $rules = MsiRules | ForEach-Object {
       $pf = $_ | Get-NetFirewallPortFilter; $af = $_ | Get-NetFirewallApplicationFilter
       "$($_.DisplayName) [$($_.Direction) $($_.Action) enabled=$($_.Enabled) profile=$($_.Profile) $($pf.Protocol)/$($pf.LocalPort) $($af.Program)]" }
-    [ordered]@{ profiles = $prof; nic_profiles = $active; woodpile_rules = @($rules) } | ConvertTo-Json -Compress
+    [ordered]@{ profiles = $prof; nic_profiles = $active; woodshed_rules = @($rules) } | ConvertTo-Json -Compress
   }
   "fw-enable" {
     if (-not (Get-NetFirewallRule -ErrorAction SilentlyContinue | Where-Object { $_.Enabled -eq "True" -and ($_ | Get-NetFirewallPortFilter).LocalPort -eq 22 })) {
@@ -64,8 +64,8 @@ switch ($Action) {
     Set-NetFirewallProfile -Profile Domain, Private, Public -Enabled True
     Get-NetFirewallProfile | ForEach-Object { "$($_.Name)=$($_.Enabled)" }
   }
-  "fw-open" { MsiRules | Enable-NetFirewallRule; "enabled $(@(MsiRules).Count) Woodpile rules" }
-  "fw-close" { MsiRules | Disable-NetFirewallRule; "disabled $(@(MsiRules).Count) Woodpile rules (negative control)" }
+  "fw-open" { MsiRules | Enable-NetFirewallRule; "enabled $(@(MsiRules).Count) Woodshed rules" }
+  "fw-close" { MsiRules | Disable-NetFirewallRule; "disabled $(@(MsiRules).Count) Woodshed rules (negative control)" }
   "verify" {
     $dataDir = if ($env:WL_DATA) { $env:WL_DATA } else { $Data }
     & "$L\verifyseq.exe" -data $dataDir -run (Arg 0) -n (Arg 1) -missing-ok (Arg 2 0) -wait (Arg 3 "30s") -json
@@ -131,9 +131,9 @@ data_dir = "$dataDir"
 
 [ui]
 port = 18514
-"@ | Out-File -Encoding ascii (Join-Path $P "woodpile.toml")
+"@ | Out-File -Encoding ascii (Join-Path $P "woodshed.toml")
         # A scheduled task as the lab admin, not a child of this ssh session (OpenSSH kills those on exit).
-        $a = New-ScheduledTaskAction -Execute (Join-Path $P "woodpile.exe") -Argument "run --config `"$P\woodpile.toml`"" -WorkingDirectory $P
+        $a = New-ScheduledTaskAction -Execute (Join-Path $P "woodshed.exe") -Argument "run --config `"$P\woodshed.toml`"" -WorkingDirectory $P
         Register-ScheduledTask -TaskName "woodpile-lab-portable" -Action $a -User SYSTEM -Force | Out-Null
         Start-ScheduledTask -TaskName "woodpile-lab-portable"
         if ($allow) {
@@ -146,12 +146,12 @@ port = 18514
       }
       "stop" {
         Stop-ScheduledTask -TaskName "woodpile-lab-portable" -ErrorAction SilentlyContinue
-        Get-Process woodpile -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "$P*" } | Stop-Process -Force
+        Get-Process woodshed -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "$P*" } | Stop-Process -Force
         Unregister-ScheduledTask -TaskName "woodpile-lab-portable" -Confirm:$false -ErrorAction SilentlyContinue
         Get-NetFirewallRule -DisplayName "woodpile-lab portable *" -ErrorAction SilentlyContinue | Remove-NetFirewallRule
         "portable stopped, temporary rules removed"
       }
-      "status" { Get-Process woodpile -ErrorAction SilentlyContinue | Select-Object Id, Path | Format-Table -AutoSize | Out-String }
+      "status" { Get-Process woodshed -ErrorAction SilentlyContinue | Select-Object Id, Path | Format-Table -AutoSize | Out-String }
     }
   }
   # shutdown.exe schedules the restart in the OS; a child process would die with the ssh session (OpenSSH job object)
@@ -171,14 +171,14 @@ port = 18514
     $out = Arg 0
     $d = Join-Path $env:TEMP ("wl-collect-" + [guid]::NewGuid().ToString("N").Substring(0, 8))
     New-Item -ItemType Directory -Force $d | Out-Null
-    Get-WinEvent -FilterHashtable @{ LogName = "Application"; ProviderName = "Woodpile" } -MaxEvents 2000 -ErrorAction SilentlyContinue |
+    Get-WinEvent -FilterHashtable @{ LogName = "Application"; ProviderName = "Woodshed" } -MaxEvents 2000 -ErrorAction SilentlyContinue |
       Format-List TimeCreated, LevelDisplayName, Id, Message | Out-File (Join-Path $d "eventlog.txt")
-    sc.exe qc Woodpile | Out-File (Join-Path $d "sc-qc.txt")
-    sc.exe qfailure Woodpile | Out-File (Join-Path $d "sc-qfailure.txt")
+    sc.exe qc Woodshed | Out-File (Join-Path $d "sc-qc.txt")
+    sc.exe qfailure Woodshed | Out-File (Join-Path $d "sc-qfailure.txt")
     MsiRules | Format-List * | Out-File (Join-Path $d "firewall-rules.txt")
     Get-NetFirewallProfile | Format-List Name, Enabled, DefaultInboundAction | Out-File (Join-Path $d "firewall-profiles.txt")
-    Copy-Item (Join-Path $Data "woodpile.toml") $d -ErrorAction SilentlyContinue
-    try { & "$env:ProgramFiles\Woodpile\woodpile.exe" status *> (Join-Path $d "woodpile-status.txt") } catch { }
+    Copy-Item (Join-Path $Data "woodshed.toml") $d -ErrorAction SilentlyContinue
+    try { & "$env:ProgramFiles\Woodshed\woodshed.exe" status *> (Join-Path $d "woodshed-status.txt") } catch { }
     Get-ChildItem -Recurse $Data -ErrorAction SilentlyContinue | Select-Object FullName, Length, LastWriteTimeUtc | Out-File (Join-Path $d "data-listing.txt")
     (Get-Acl $Data).Sddl | Out-File (Join-Path $d "data-acl.txt")
     Copy-Item "$L\*.csv", "$L\*.json", "$L\*.log" $d -ErrorAction SilentlyContinue

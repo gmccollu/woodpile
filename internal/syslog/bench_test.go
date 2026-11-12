@@ -6,7 +6,7 @@ import (
 	"io"
 	"testing"
 
-	"github.com/gmccollu/woodpile/internal/model"
+	"github.com/gmccollu/woodshed/internal/model"
 )
 
 // benchMessages are typical messages; TestParseAllocs also checks each one.

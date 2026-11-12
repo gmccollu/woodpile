@@ -1,5 +1,5 @@
 /*
- * Woodpile site. The colour tokens are the app's (web/src/app.css), light and dark
+ * Woodshed site. The colour tokens are the app's (web/src/app.css), light and dark
  * following the visitor's OS. Every text/background pair is checked for WCAG AA by
  * site/tools/contrast.mjs; change both together.
  */

@@ -4,7 +4,7 @@ import (
 	"net/netip"
 	"time"
 
-	"github.com/gmccollu/woodpile/internal/store/logfile"
+	"github.com/gmccollu/woodshed/internal/store/logfile"
 )
 
 // The line format lives in package logfile; these are shortcuts for callers that only

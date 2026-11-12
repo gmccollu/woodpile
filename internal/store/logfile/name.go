@@ -39,7 +39,7 @@ func (n Name) String() string {
 }
 
 // ParseName parses a log file's base name. It reports false for anything that isn't a
-// Woodpile log file (temp files, user files).
+// Woodshed log file (temp files, user files).
 func ParseName(base string) (Name, bool) {
 	var n Name
 	if s, ok := strings.CutSuffix(base, ".gz"); ok {
