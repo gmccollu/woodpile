@@ -257,9 +257,9 @@
         <DevicePicker bind:value={scope} />
         {#if count !== null}<span class="text-[13px] text-muted">{num(count)} device{count === 1 ? '' : 's'}</span>{/if}
       </div>
-      <div class="row">
+      <div class="row top">
         <span class="lbl">Time range</span>
-        <TimeRange bind:value={range} />
+        <div class="min-w-0 grow"><TimeRange bind:value={range} /></div>
       </div>
       <div class="row">
         <span class="lbl">Severities</span>
@@ -379,6 +379,12 @@
     flex-wrap: wrap;
     align-items: center;
     gap: 8px 14px;
+  }
+  .row.top {
+    align-items: flex-start;
+  }
+  .row.top > .lbl {
+    padding-top: 8px;
   }
   .lbl {
     width: 150px;

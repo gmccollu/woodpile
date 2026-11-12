@@ -66,7 +66,20 @@ export interface Stats {
   /** msgs/sec averaged per minute, oldest first, last 60 minutes. */
   sparkline: number[];
   devices: { total: number; online: number; quiet: number; offline: number };
-  disk: { used_bytes: number; cap_bytes: number; free_bytes: number; days_kept: number };
+  disk: {
+    used_bytes: number;
+    cap_bytes: number;
+    free_bytes: number;
+    days_kept: number;
+    /** On-disk bytes written over the last 24 h (raw / compression_ratio); null until there's 1 h of data. */
+    bytes_per_day: number | null;
+    /** Measured on this server's closed files (8 until it has closed one). */
+    compression_ratio: number | null;
+    /** cap_bytes / bytes_per_day, or null. */
+    estimated_days: number | null;
+    /** "cap" when the size cap, not the age limit, decides how long logs are kept. */
+    limited_by: 'cap' | 'age' | null;
+  };
   dropped_24h: number;
   /** Integer on Linux; null where the OS doesn't expose kernel UDP drops. */
   kernel_dropped_24h: number | null;
@@ -525,6 +538,15 @@ export const exportTicket = (id: string) =>
 export const getSettings = () => request<Settings>('GET', '/api/settings');
 export const putSettings = (s: Settings) => request<Settings>('PUT', '/api/settings', s);
 export const getStorageHistory = () => request<StorageHistoryEntry[]>('GET', '/api/storage/history');
+
+export interface StorageEstimate {
+  estimated_days: number | null;
+  bytes_per_day: number | null;
+  compression_ratio: number | null;
+}
+/** The retention estimate for a cap that hasn't been saved yet (docs/api.md). */
+export const getStorageEstimate = (retentionBytes: number, signal?: AbortSignal) =>
+  request<StorageEstimate>('GET', `/api/storage/estimate${query({ retention_bytes: Math.round(retentionBytes) })}`, undefined, signal);
 
 export interface LiveHandlers {
   onMessage(line: LogLine): void;

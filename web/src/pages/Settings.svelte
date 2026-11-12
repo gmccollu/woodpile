@@ -2,6 +2,7 @@
   import {
     ApiError,
     getRejected,
+    getStorageEstimate,
     getSettings,
     getStorageHistory,
     putSettings,
@@ -9,7 +10,7 @@
     type Settings,
     type StorageHistoryEntry,
   } from '../lib/api';
-  import { ago, bytes, dateTime, GiB, MiB, num } from '../lib/format';
+  import { ago, approxDays, bytes, dateTime, GiB, MiB, num } from '../lib/format';
   import { deviceName, live, refreshStatus } from '../lib/status.svelte';
   import { auth, loadSession } from '../lib/session.svelte';
   import { router } from '../lib/router.svelte';
@@ -176,13 +177,32 @@
     }
   });
 
+  // The retention estimate for the cap being typed (docs/api.md), debounced.
+  let est = $state<Awaited<ReturnType<typeof getStorageEstimate>> | null | undefined>(undefined);
+  $effect(() => {
+    const gib = form ? n(form.retentionGiB) : 0;
+    if (!form || !(gib > 0)) return;
+    const ctrl = new AbortController();
+    const t = setTimeout(async () => {
+      try {
+        est = await getStorageEstimate(gib * GiB, ctrl.signal);
+      } catch (e) {
+        if ((e as Error).name !== 'AbortError') est = null;
+      }
+    }, 300);
+    return () => {
+      clearTimeout(t);
+      ctrl.abort();
+    };
+  });
+
   // Banners and toasts link to a section: #/settings?section=limits or section=blocklist.
   let scrolled = false;
   $effect(() => {
-    const m = /section=(limits|blocklist)/.exec(router.query);
+    const m = /section=(limits|blocklist|storage)/.exec(router.query);
     if (scrolled || !form || !m) return;
     scrolled = true;
-    const id = m[1] === 'limits' ? 'sender-limits' : 'blocklist';
+    const id = m[1] === 'limits' ? 'sender-limits' : m[1];
     requestAnimationFrame(() => document.getElementById(id)?.scrollIntoView({ block: 'start', behavior: 'instant' }));
   });
 
@@ -543,7 +563,7 @@
     </section>
 
     <section class="card">
-      <h2 class="sec">Storage</h2>
+      <h2 class="sec" id="storage">Storage</h2>
       <p class="hint mt-0">Logs are deleted oldest first when either limit is reached. If the disk runs low, Woodpile deletes more, and never fills it.</p>
       <label class="lbl">
         <span>Data folder</span>
@@ -562,12 +582,47 @@
           <input class="field" type="number" min="1" step="any" bind:value={form.retentionGiB} aria-invalid={!!err('storage.retention_bytes')} aria-describedby="err-storage.retention_bytes" />
           {@render fieldError('storage.retention_bytes')}
         </label>
+        <div class="estimate sm:col-span-3" aria-live="polite" data-estimate>
+          {#if est === undefined}
+            <span class="text-muted">Estimating…</span>
+          {:else if est === null || est.estimated_days === null}
+            <span class="text-muted">Not enough data yet for an estimate: it needs about an hour of logs.</span>
+          {:else}
+            <b>{bytes(Math.round(n(form.retentionGiB) * GiB))} {approxDays(est.estimated_days)}</b> at the current rate
+            {#if est.bytes_per_day !== null}(≈ {bytes(est.bytes_per_day)}/day){/if}.
+            {#if est.estimated_days < n(form.retentionDays)}
+              <span class="cap">The size cap is reached first, so logs are kept for {approxDays(est.estimated_days).replace('≈ ', 'about ')}, not {n(form.retentionDays)} days.</span>
+            {:else}
+              The {n(form.retentionDays)}-day limit is reached first.
+            {/if}
+          {/if}
+        </div>
         <label class="lbl">
           <span>Split files at (MiB)</span>
           <input class="field" type="number" min="1" step="any" bind:value={form.partMiB} aria-invalid={!!err('storage.part_bytes')} aria-describedby="err-storage.part_bytes" />
           {@render fieldError('storage.part_bytes')}
         </label>
       </div>
+
+      <p class="hint mt-3">
+        Both limits apply: logs are kept for the number of days you set <i>or</i> until the size cap is full, whichever comes first.
+      </p>
+      <details class="examples">
+        <summary class="text-[14px] font-semibold">How long does {bytes(Math.round(n(form.retentionGiB) * GiB))} last?</summary>
+        <p class="hint mt-2">Typical syslog compresses to about 25 bytes a message on disk. Your own rate is in the estimate above.</p>
+        <table class="ex">
+          <thead><tr><th scope="col">Messages a second</th><th scope="col" class="text-right">On disk a day</th><th scope="col" class="text-right">{bytes(Math.round(n(form.retentionGiB) * GiB))} lasts</th></tr></thead>
+          <tbody>
+            {#each [100, 1000, 10000] as r (r)}
+              <tr>
+                <td>{num(r)}</td>
+                <td class="text-right tabular-nums">{bytes(r * 25 * 86400)}</td>
+                <td class="text-right tabular-nums">{approxDays((n(form.retentionGiB) * GiB) / (r * 25 * 86400))}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </details>
 
       <h3 class="mt-5 mb-2 text-[14px] font-semibold">Storage history</h3>
       {#if history === null}
@@ -744,6 +799,35 @@
     border-radius: 22px;
     border: 1px solid var(--info-border);
     background: var(--info-bg);
+  }
+  #storage {
+    scroll-margin-top: 90px;
+  }
+  .estimate {
+    padding: 10px 14px;
+    border-radius: 14px;
+    background: var(--glass-strong);
+    border: 1px solid var(--border);
+    font-size: 14px;
+  }
+  .estimate .cap {
+    color: var(--warn-fg);
+    font-weight: 600;
+  }
+  .examples {
+    margin-top: 8px;
+  }
+  .examples summary {
+    cursor: pointer;
+  }
+  table.ex {
+    border-collapse: collapse;
+    font-size: 13.5px;
+    margin-top: 4px;
+  }
+  table.ex th,
+  table.ex td {
+    padding: 5px 14px 5px 0;
   }
   .lists {
     display: grid;

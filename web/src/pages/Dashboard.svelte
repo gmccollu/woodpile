@@ -1,6 +1,6 @@
 <script lang="ts">
   import { getDevices, getStats, type Device, type Stats } from '../lib/api';
-  import { ago, agoShort, bytes, num, rate } from '../lib/format';
+  import { ago, agoShort, approxDays, bytes, num, num1, rate } from '../lib/format';
   import { anyUngrouped, deviceName, DEVICE_POLL_MS, groupsSeen, live, NOW_WITHIN_S, remember } from '../lib/status.svelte';
   import { ui } from '../lib/ui.svelte';
   import LiveTail from '../components/LiveTail.svelte';
@@ -132,6 +132,16 @@
     };
   });
 
+  // How the "≈ N days of history" estimate is made (docs/api.md → retention estimate).
+  const estimateTip = $derived.by(() => {
+    const d = stats?.disk;
+    if (!d || d.estimated_days === null || d.bytes_per_day === null) return '';
+    const ratio = d.compression_ratio ? `${num1(d.compression_ratio)}×` : 'about 8×';
+    return (
+      `Estimated from the last 24 h of intake (${bytes(d.bytes_per_day)} a day on disk), the compression measured on this machine's ` +
+      `closed files (${ratio}), the ${bytes(d.cap_bytes)} size cap and the age limit. Whichever is reached first decides how long logs are kept.`
+    );
+  });
   const diskPct = $derived(stats ? Math.min(100, (stats.disk.used_bytes / Math.max(1, stats.disk.cap_bytes)) * 100) : 0);
   const osName = $derived(
     live.status?.os.startsWith('darwin') ? 'macOS' : live.status?.os.startsWith('windows') ? 'Windows' : 'this OS',
@@ -178,6 +188,13 @@
     </div>
     {#if stats}
       <p class="sub" title="{bytes(stats.disk.free_bytes)} free on the data volume">of {bytes(stats.disk.cap_bytes)} · {stats.disk.days_kept} {stats.disk.days_kept === 1 ? 'day' : 'days'} kept</p>
+      {#if stats.disk.estimated_days !== null}
+        <p class="sub est" title={estimateTip}>
+          {approxDays(stats.disk.estimated_days)} of history at the current rate
+          <span class="sr-only">. {estimateTip}</span>
+          {#if stats.disk.limited_by === 'cap'}<span class="cap"> · limited by the size cap</span>{/if}
+        </p>
+      {/if}
     {/if}
   </div>
   <div class="card">
@@ -267,6 +284,10 @@
     font-weight: 700;
     letter-spacing: -1px;
     line-height: 1.2;
+  }
+  .est .cap {
+    color: var(--warn-fg);
+    font-weight: 600;
   }
   .sub {
     margin: 8px 0 0;

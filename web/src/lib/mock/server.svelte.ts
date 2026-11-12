@@ -27,6 +27,8 @@
 //   mock_listen_514=1  with mock_service_514: start on 514 (so the clash shows straight away)
 //   mock_ui_port_busy=1 the installed service can't open its UI because this copy holds the UI port
 //   mock_blocked=LIST  start with this blocklist (comma-separated IPs or CIDRs)
+//   mock_young=1       less than an hour of data: no retention estimate yet
+//   (at mock_rate=1284 the 20 GiB cap lasts about 13 days, so the size cap limits retention)
 
 import type {
   Device,
@@ -673,18 +675,24 @@ class LiveSub {
     for (const l of ring.filter((x) => matches(x, this.filters)).slice(-200)) this.send('message', l);
   }
 
+  /** Matching lines a second, as of the last full second (scaled to the true rate). */
+  private matchedRate = 0;
+
   offer(l: GenLine) {
     if (!matches(l, this.filters)) return;
     this.matchedThisSecond++;
-    // Like the server: above ~50 lines/s send a sample.
-    if (mock.rate > SAMPLE_LIMIT && this.sentThisSecond >= SAMPLE_LIMIT) return;
-    if (mock.rate > SAMPLE_LIMIT && Math.random() > SAMPLE_LIMIT / Math.min(mock.rate, 200)) return;
+    // Like the server: sample only when what matches this stream's filters is above ~50
+    // lines a second, not when the overall rate is (a narrow filter gets every line).
+    const sampling = this.matchedRate > SAMPLE_LIMIT;
+    if (sampling && this.sentThisSecond >= SAMPLE_LIMIT) return;
+    if (sampling && Math.random() > SAMPLE_LIMIT / Math.min(this.matchedRate, 200)) return;
     this.sentThisSecond++;
     this.send('message', l);
   }
 
   flushSecond(scale: number) {
     const rate = this.matchedThisSecond * scale;
+    this.matchedRate = rate;
     if (rate > SAMPLE_LIMIT) this.send('sampled', { rate: Math.round(rate * 10) / 10, shown: this.sentThisSecond });
     this.sentThisSecond = 0;
     this.matchedThisSecond = 0;
@@ -790,6 +798,16 @@ function statusJSON(): Status {
         : `${ports} is in use by syslogd (pid 312). Stop the other syslog service, or move the listener to another port in Settings, then press Retry.`,
     });
   }
+  {
+    const e = estimateFor(settings.storage.retention_bytes);
+    if (e.estimated_days !== null && e.estimated_days < settings.storage.retention_days)
+      banners.push({
+        kind: 'retention_cap',
+        action: '',
+        level: 'warn',
+        text: `At the current rate the ${Math.round(settings.storage.retention_bytes / GiB)} GiB cap keeps about ${Math.round(e.estimated_days)} days, less than the ${settings.storage.retention_days}-day setting.`,
+      });
+  }
   if (P.get('mock_ui_port_busy') === '1')
     banners.push({
       kind: 'ui_port_busy',
@@ -829,6 +847,19 @@ function statusJSON(): Status {
   };
 }
 
+// The retention estimate: raw bytes over 24 h at the mock rate (about 140 bytes a line),
+// divided by a measured compression ratio. Null on a first run (less than 1 h of data).
+const RATIO = 9.2;
+function bytesPerDay(): number | null {
+  if (mock.firstRun || P.get('mock_young') === '1') return null;
+  return Math.round((mock.rate * 86400 * 140) / RATIO);
+}
+function estimateFor(capBytes: number) {
+  const bpd = bytesPerDay();
+  const days = bpd ? Math.round((capBytes / bpd) * 10) / 10 : null;
+  return { estimated_days: days, bytes_per_day: bpd, compression_ratio: bpd ? RATIO : null };
+}
+
 function statsJSON(now: number): Stats {
   const visible = [...devs.values()].filter((d) => !d.hidden && !blockedBy(d.def.ip));
   const st = visible.map((d) => status(d, now));
@@ -847,6 +878,10 @@ function statsJSON(now: number): Stats {
       cap_bytes: settings.storage.retention_bytes,
       free_bytes: mock.paused ? 0.8 * GiB : 400e9,
       days_kept: devs.size > 1 ? settings.storage.retention_days : firstMessageAt ? 1 : 0,
+      ...(() => {
+        const e = estimateFor(settings.storage.retention_bytes);
+        return { ...e, limited_by: e.estimated_days === null ? null : e.estimated_days < settings.storage.retention_days ? 'cap' : 'age' } as const;
+      })(),
     },
     dropped_24h: droppedByGuard,
     kernel_dropped_24h: OS.startsWith('linux') ? 12 : null,
@@ -1216,6 +1251,11 @@ async function route(method: string, url: URL, body: unknown, header: string | n
     return json(settings);
   }
   if (method === 'GET' && p === '/api/storage/history') return json(history());
+  if (method === 'GET' && p === '/api/storage/estimate') {
+    const n = Number(url.searchParams.get('retention_bytes'));
+    if (!Number.isFinite(n) || n <= 0) return err(400, 'retention_bytes must be a positive number of bytes.');
+    return json(estimateFor(n));
+  }
   if (method === 'GET' && p === '/api/rejected') return json(rejected(now));
   if (method === 'GET' && p === '/api/search') return searchRoute(url.searchParams, now);
   if (method === 'GET' && p === '/api/context') {

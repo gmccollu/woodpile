@@ -238,11 +238,12 @@
     </div>
     <div class="flex flex-wrap items-center gap-3">
       <DevicePicker bind:value={scope} />
-      <TimeRange bind:value={range} error={rangeError} />
       <div class="seg" role="radiogroup" aria-label="Order">
         <button type="button" role="radio" aria-checked={order === 'desc'} onclick={() => (order = 'desc')}>Newest first</button>
         <button type="button" role="radio" aria-checked={order === 'asc'} onclick={() => (order = 'asc')}>Oldest first</button>
       </div>
+      <!-- Last, so an open custom range gets its own line under the other controls. -->
+      <TimeRange bind:value={range} error={rangeError} />
     </div>
     <div class="sevbar"><SeverityChips bind:value={sev} label="Search severities" /></div>
   </form>

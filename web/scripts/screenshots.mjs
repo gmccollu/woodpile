@@ -243,8 +243,10 @@ const SHOTS = [
     name: 'tail-embedded-break-raw-light',
     mode: 'light',
     url: '/?mock_panel=0&mock_rate=400#/dashboard',
-    act: `__set(document.querySelector('input[type=search]'), 'job finished'); await __tick(); __btn('Raw').click();`,
-    after: 4000,
+    act: `__set(document.querySelector('input[type=search]'), 'job finished'); await __tick(); __btn('Raw').click();
+      // These messages are rare in the mock traffic: wait (up to 20 s) for some to arrive before judging.
+      for (let k = 0; k < 40 && !document.querySelector('[role=log] .logline'); k++) await new Promise((r) => setTimeout(r, 500));`,
+    after: 1500,
     check: `(() => { const l = [...document.querySelectorAll('[role=log] .logline')];
       return l.length > 0 && l.every((x) => x.offsetHeight <= 24 && x.textContent.includes('\\\\r\\\\n')); })()`,
     report: `JSON.stringify([...document.querySelectorAll('[role=log] .logline')].slice(0, 6).map((x) => [x.offsetHeight, x.textContent.slice(0, 140)]))`,
@@ -584,6 +586,79 @@ const SHOTS = [
       row.querySelector('[aria-label="Unblock 10.1.0.2"]').click();`,
     after: 300,
     check: `!__field('Blocklist').value.includes('10.1.0.2')`,
+  },
+
+  // ---- Custom time range (Export and Search), 1400 and 900 px ----
+  ...[1400, 900].flatMap((w) =>
+    ['export', 'search'].flatMap((page) =>
+      both({
+        name: `${page}-custom-range-${w}`,
+        w,
+        url: page === 'export' ? '/?mock_panel=0#/export' : '/?mock_panel=0#/search?q=deny&r=24h',
+        wait: 1800,
+        act: `__btn('Custom').click(); await __tick();`,
+        after: 400,
+        check: `(() => {
+          const ins = [...document.querySelectorAll('.custom input')];
+          if (ins.length !== 4) return false;
+          const [fd, ft, td, tt] = ins.map((i) => i.getBoundingClientRect());
+          const sameRow = (a, b) => Math.abs(a.top - b.top) < 4;
+          // Wide: From and To on one line. Narrow: To below From. Never a time input wrapped away from its date.
+          const ok = sameRow(fd, ft) && sameRow(td, tt);
+          const readout = document.querySelector('.custom .readout').textContent.trim();
+          return ok && ins.every((i) => Math.abs(i.getBoundingClientRect().height - 36) < 1) && /^covers /.test(readout); })()`,
+      }),
+    ),
+  ),
+  {
+    name: 'custom-range-from-after-to',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/export',
+    wait: 1500,
+    act: `__btn('Custom').click(); await __tick();
+      const [fd] = document.querySelectorAll('.custom input');
+      const later = new Date(Date.now() + 2 * 86400000);
+      const v = later.getFullYear() + '-' + String(later.getMonth() + 1).padStart(2, '0') + '-' + String(later.getDate()).padStart(2, '0');
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(fd, v);
+      fd.dispatchEvent(new Event('change', { bubbles: true }));`,
+    after: 400,
+    check: `document.querySelector('.tr .ferr')?.textContent === '"From" must be before "To".' && document.querySelector('.custom input').getAttribute('aria-invalid') === 'true'`,
+  },
+
+  // ---- Retention estimate ----
+  {
+    name: 'disk-estimate-and-cap-banner-light',
+    mode: 'light',
+    url: '/?mock_panel=0&mock_rate=1284#/dashboard',
+    wait: 2000,
+    check: `(() => { const e = document.querySelector('.est'); return !!e && e.textContent.includes('≈ 13 days of history at the current rate')
+      && e.textContent.includes('limited by the size cap')
+      && e.title.startsWith('Estimated from the last 24 h of intake') && e.title.includes("compression measured on this machine's closed files (9.2×)")
+      && [...document.querySelectorAll('.banner.warn')].some((b) => b.textContent.includes('cap keeps about 13 days') && !!b.querySelector('a[href="#/settings?section=storage"]')); })()`,
+  },
+  {
+    name: 'disk-estimate-age-limited',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/dashboard',
+    wait: 2000,
+    check: `(() => { const e = document.querySelector('.est'); return !!e && /≈ \\d+ days of history at the current rate/.test(e.textContent) && !e.textContent.includes('limited by')
+      && !document.body.innerText.includes('cap keeps about'); })()`,
+  },
+  {
+    name: 'settings-estimate-preview-while-typing-light',
+    mode: 'light',
+    url: '/?mock_panel=0&mock_rate=1284#/settings?section=storage',
+    wait: 1500,
+    act: `const cap = __field('Disk cap (GiB)');
+      __set(cap, '10'); await new Promise((r) => setTimeout(r, 900));
+      window.__p1 = document.querySelector('[data-estimate]').textContent.replace(/\\s+/g, ' ').trim();
+      __set(cap, '40'); await new Promise((r) => setTimeout(r, 900));`,
+    after: 100,
+    check: `(() => { const p2 = document.querySelector('[data-estimate]').textContent.replace(/\\s+/g, ' ').trim();
+      return window.__p1.startsWith('10 GiB ≈ 6.4 days at the current rate (≈ 1.6 GiB/day).') && window.__p1.includes('The size cap is reached first')
+        && p2.startsWith('40 GiB ≈ 25 days at the current rate') && document.querySelectorAll('table.ex tbody tr').length === 3; })()`,
   },
 
   // ---- Search ----

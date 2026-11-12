@@ -73,6 +73,12 @@
           <a class="text-link underline" href="#/settings?section=limits">Settings → Sender limits</a>.
         </div>
       {/if}
+      {#if b.kind === 'retention_cap'}
+        <div class="detail-text">
+          Older logs are deleted to stay under the size cap. To keep more, raise the cap in
+          <a class="text-link underline" href="#/settings?section=storage">Settings → Storage</a>.
+        </div>
+      {/if}
       {#if b.kind === 'listener_bind'}
         {#each lines as ln (ln.key)}
           <div class="detail-text" data-holder>

@@ -75,6 +75,16 @@ export function agoShort(iso: string, now = Date.now(), nowWithin = 2): string {
   return `${Math.floor(s / 86400)}d`;
 }
 
+/** "≈ 9 days", "≈ 1.5 days", "≈ 18 h", "≈ 40 min": how long a cap lasts. */
+export function approxDays(days: number): string {
+  if (days >= 10) return `≈ ${Math.round(days)} days`;
+  if (days >= 1.05) return `≈ ${num1(days)} days`;
+  if (days >= 0.95) return '≈ 1 day';
+  const h = days * 24;
+  if (h >= 1) return `≈ ${Math.round(h)} h`;
+  return `≈ ${Math.max(1, Math.round(h * 60))} min`;
+}
+
 /** Remaining time like "23 h 12 min" or "4 min". */
 export function remaining(ms: number): string {
   const m = Math.max(0, Math.floor(ms / 60000));
