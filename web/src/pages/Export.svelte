@@ -20,6 +20,7 @@
   import { defaultRange, rangeFromQuery, resolveRange, type Range } from '../lib/range';
   import { router } from '../lib/router.svelte';
   import { scopeFromQuery, sevFromQuery, type Scope } from '../lib/scope';
+  import { fieldsFromQuery, noFields, splitList, type FieldFilters } from '../lib/fields';
   import { deviceName, groupSize, live, ungroupedCount } from '../lib/status.svelte';
   import { SEVERITIES } from '../lib/severity';
   import DevicePicker from '../components/DevicePicker.svelte';
@@ -29,13 +30,14 @@
 
   const DAY = 86_400_000;
 
-  // ----- the form; "Export these results" from Search fills it through the URL -----
+  // ----- the form; "Export these results" on Events fills it through the URL -----
   let scope = $state<Scope>({ mode: 'all', group: '', devices: [] });
   let range = $state<Range>(defaultRange());
   let sev = $state<SevKey[]>([...ALL_SEVS]);
   let q = $state('');
   let regex = $state(false);
   let cs = $state(false);
+  let fields = $state<FieldFilters>(noFields());
   let fromSearch = $state(false);
 
   $effect(() => {
@@ -48,6 +50,7 @@
     q = p.get('q') ?? '';
     regex = p.get('re') === '1';
     cs = p.get('cs') === '1';
+    fields = fieldsFromQuery(p);
     fromSearch = true;
   });
 
@@ -77,7 +80,18 @@
           : scope.mode === 'all'
             ? { all_devices: true }
             : { devices: scope.devices };
-    return { ...who, from, to, severities: sev, q: q.trim(), regex, case: cs };
+    return {
+      ...who,
+      from,
+      to,
+      severities: sev,
+      q: q.trim(),
+      regex,
+      case: cs,
+      app: splitList(fields.app),
+      host: splitList(fields.host),
+      exclude: fields.exclude,
+    };
   }
 
   // ----- estimate (an upper bound from the index, before building) -----
@@ -85,7 +99,7 @@
   let estError = $state('');
   let estBusy = $state(false);
   $effect(() => {
-    const key = JSON.stringify({ scope, range, sev, q, regex, cs, e: formError });
+    const key = JSON.stringify({ scope, range, sev, q, regex, cs, fields, e: formError });
     void key;
     if (formError) {
       est = null;
@@ -237,6 +251,9 @@
       const how = [f.regex ? 'regex' : '', f.case ? 'case' : ''].filter(Boolean).join(', ');
       bits.push(`“${f.q}”${how ? ` (${how})` : ''}`);
     }
+    if (f.app?.length) bits.push(`program: ${f.app.join(', ')}`);
+    if (f.host?.length) bits.push(`host: ${f.host.join(', ')}`);
+    if (f.exclude) bits.push(`not “${f.exclude}”`);
     return bits.join(' · ');
   }
   const STATE: Record<string, string> = { queued: 'Queued', building: 'Building', ready: 'Ready', failed: 'Failed', expired: 'Expired' };
@@ -248,7 +265,7 @@
       <div>
         <h1 id="ex-title" class="m-0 text-xl font-bold tracking-tight">Export logs</h1>
         <p class="mt-1 mb-0 text-[13.5px] text-muted">
-          {fromSearch ? 'Filled in from your search. Check it, then build.' : 'Build a zip of the raw logs to send to someone else.'}
+          {fromSearch ? 'Filled in from Events. Check it, then build.' : 'Build a zip of the raw logs to send to someone else.'}
         </p>
       </div>
 
@@ -276,6 +293,30 @@
         />
         <button type="button" class="toggle" aria-pressed={regex} onclick={() => (regex = !regex)} title="Regular expression (RE2 syntax)">.* Regex</button>
         <button type="button" class="toggle" aria-pressed={cs} onclick={() => (cs = !cs)} title="Match upper and lower case exactly">Aa Case</button>
+      </div>
+      <div class="row">
+        <label class="lbl" for="exapp">Program/tag</label>
+        <input
+          id="exapp"
+          class="field w-auto min-w-0 grow basis-40 font-mono"
+          bind:value={fields.app}
+          placeholder="Optional, e.g. sshd, %FW-6-*"
+          spellcheck="false"
+        />
+      </div>
+      <div class="row">
+        <label class="lbl" for="exhost">Host</label>
+        <input id="exhost" class="field w-auto min-w-0 grow basis-40 font-mono" bind:value={fields.host} placeholder="Optional, e.g. web-01" spellcheck="false" />
+      </div>
+      <div class="row">
+        <label class="lbl" for="exex">Exclude</label>
+        <input
+          id="exex"
+          class="field w-auto min-w-0 grow basis-40 font-mono"
+          bind:value={fields.exclude}
+          placeholder={regex ? 'Optional regular expression to leave out' : 'Optional text to leave out'}
+          spellcheck="false"
+        />
       </div>
 
       <div class="estimate" aria-live="polite">

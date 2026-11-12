@@ -1,5 +1,5 @@
 // Records the demo GIF and video from mock mode (vendor-neutral demo data):
-// the dashboard filling up, a device filter, the debug chip, Search with the context
+// the dashboard filling up, a device filter, the debug chip, Events with the context
 // panel, and an Export from estimate to Ready. Drives headless Chrome over the DevTools
 // protocol with real mouse and keyboard events (and a drawn pointer, since headless has
 // none), then assembles the frames with ffmpeg.
@@ -155,8 +155,8 @@ try {
   await click(`document.querySelector('[aria-label="Live tail severities"] button[title^="Debug"]')`, 1);
   await sleep(1200);
 
-  // 4. Search: type a query, results stream in, open the lines around one.
-  await click(`document.querySelector('nav a[href="#/search"]')`);
+  // 4. Events: type a query, results stream in, open the lines around one.
+  await click(`document.querySelector('nav a[href="#/events"]')`);
   await sleep(250);
   await click(`document.getElementById('sq')`);
   await type('deny tcp');

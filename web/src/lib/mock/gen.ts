@@ -59,6 +59,9 @@ const TEMPLATES: Record<Kind, Template[]> = {
     [5, 6, 'fwd', () => { const a = inside(); const p = int(49152, 65535); return `nat translation created ${a}/${p} to 203.0.113.9/${p}`; }],
     [4, 6, 'fwd', () => `deny udp ${outside()}:5353 -> 10.1.0.255:5353 by acl outside_in`],
     [4, 2, 'fwd', () => `deny tcp ${outside()}:${int(1024, 65535)} -> 10.1.0.1:23 by acl outside_in`],
+    // %FAC-N-MNEMONIC tags (made up), for the Program/tag filter's prefix match (%FW-6-*).
+    [6, 8, '%FW-6-302013', () => `session built tcp ${inside()}:${int(49152, 65535)} -> ${outside()}:443`],
+    [4, 3, '%FW-4-106023', () => `session denied udp ${outside()}:${int(1024, 65535)} -> 10.1.0.1:161`],
     [3, 0.6, 'ha', () => 'failover: peer heartbeat missed on link1'],
     [2, 0.1, 'sysmon', () => `cpu usage ${int(95, 99)}% for 60 s`],
     // Some devices put a literal line break after the tag (seen on real hardware).
@@ -157,6 +160,18 @@ export function testLine(at: Date): GenLine {
     severity: 6,
     raw: `<14>${bsdTime(at)} this-host woodshed-test: Hello from Woodshed`,
   };
+}
+
+/**
+ * The header's program/tag and hostname, as the server parses them (docs/api.md → Search:
+ * app and host), for the two shapes the mock writes: RFC 5424 and "Mmm dd hh:mm:ss host tag: ".
+ */
+export function fieldsOf(raw: string): { app: string; host: string } {
+  const m5 = /^<\d{1,3}>1 \S+ (\S+) (\S+) /.exec(raw);
+  if (m5) return { host: m5[1] === '-' ? '' : m5[1], app: m5[2] === '-' ? '' : m5[2] };
+  const m3 = /^<\d{1,3}>[A-Z][a-z]{2} [ \d]\d \d\d:\d\d:\d\d (\S+) ([^\s[:]+)(?:\[\d+\])?:/.exec(raw);
+  if (m3) return { host: m3[1], app: m3[2] };
+  return { app: '', host: '' };
 }
 
 export { weighted, int };

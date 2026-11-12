@@ -6,6 +6,7 @@
   import { defaultRange, rangeFromQuery, rangeToQuery, resolveRange, type Range } from '../lib/range';
   import { go, router, setQuery } from '../lib/router.svelte';
   import { allScope, scopeFromQuery, scopeLabel, scopeParams, scopeToQuery, sevFromQuery, sevToQuery, type Scope } from '../lib/scope';
+  import { addToList, fieldsFromQuery, fieldsToQuery, noFields, splitList, type FieldFilters } from '../lib/fields';
   import { sevClass, sevLabel } from '../lib/severity';
   import { deviceName } from '../lib/status.svelte';
   import { splitRaw } from '../lib/syslog';
@@ -19,6 +20,8 @@
 
   const PAGE = 500;
   const HOST_MAX = 28;
+  /** The Host and Program/tag columns fit their longest value, up to this many characters. */
+  const FIELD_MAX = 24;
 
   // ----- the form -----
   let q = $state('');
@@ -28,6 +31,7 @@
   let range = $state<Range>(defaultRange());
   let sev = $state<SevKey[]>([...ALL_SEVS]);
   let order = $state<'desc' | 'asc'>('desc');
+  let fields = $state<FieldFilters>(noFields());
   let showRaw = $state(false);
 
   // ----- the search behind the results (frozen, so "Load more" sends the same parameters) -----
@@ -39,6 +43,7 @@
   let status = $state<'idle' | 'running' | 'done' | 'cancelled' | 'error'>('idle');
   let error = $state('');
   let qError = $state('');
+  let exError = $state('');
   let rangeError = $state('');
   let scanned = $state({ bytes: 0, files: 0 });
   let ctrl: AbortController | null = null;
@@ -52,6 +57,7 @@
     scopeToQuery(scope, p);
     rangeToQuery(range, p);
     sevToQuery(sev, p);
+    fieldsToQuery(fields, p);
     if (order === 'asc') p.set('order', 'asc');
     return p.toString();
   }
@@ -64,15 +70,23 @@
     scope = scopeFromQuery(p);
     range = rangeFromQuery(p);
     sev = sevFromQuery(p);
+    fields = fieldsFromQuery(p);
     order = p.get('order') === 'asc' ? 'asc' : 'desc';
   }
 
-  // A bookmarked or shared link (#/search?q=…) runs straight away.
+  // A bookmarked or shared link (#/events?q=…, or the old #/search?q=…) runs straight away.
+  // Opening the page without one browses the last hour of everything: an empty text box
+  // matches every stored message.
   let lastRun = '';
+  let opened = false;
   $effect(() => {
     const s = router.query;
     if (s && s !== lastRun) {
+      opened = true;
       fromQuery(s);
+      run();
+    } else if (!s && !opened) {
+      opened = true;
       run();
     }
   });
@@ -86,7 +100,7 @@
   async function run(e?: SubmitEvent) {
     e?.preventDefault();
     cancel();
-    qError = rangeError = error = '';
+    qError = exError = rangeError = error = '';
     const { from, to } = resolveRange(range);
     if (!from || !to || !(Date.parse(from) < Date.parse(to))) {
       rangeError = '"From" must be before "To".';
@@ -96,7 +110,20 @@
     lastRun = toQuery();
     setQuery(lastRun);
     activeScope = $state.snapshot(scope);
-    active = { q, regex, case: cs, ...scopeParams(scope), from, to, severities: [...sev], order, limit: PAGE };
+    active = {
+      q,
+      regex,
+      case: cs,
+      ...scopeParams(scope),
+      from,
+      to,
+      severities: [...sev],
+      app: splitList(fields.app),
+      host: splitList(fields.host),
+      exclude: fields.exclude,
+      order,
+      limit: PAGE,
+    };
     results = [];
     seen = new Set();
     cursor = '';
@@ -129,7 +156,8 @@
       if (my !== gen || (x as Error).name === 'AbortError') return;
       status = 'error';
       const m = (x as Error).message;
-      if (x instanceof ApiError && x.status === 400 && active.regex && /regexp|regular expression/i.test(m)) qError = m;
+      if (x instanceof ApiError && x.status === 400 && m.startsWith('exclude: ')) exError = m.slice('exclude: '.length);
+      else if (x instanceof ApiError && x.status === 400 && active.regex && /regexp|regular expression/i.test(m)) qError = m;
       else error = m;
     }
   }
@@ -140,7 +168,22 @@
     for (const id of new Set(results.map((r) => r.device_id))) w = Math.max(w, deviceName(id).length);
     return Math.min(w, HOST_MAX);
   });
+  const fieldCh = (pick: (r: SearchResult) => string, label: string) => {
+    let w = label.length;
+    for (const r of results) w = Math.max(w, pick(r).length);
+    return Math.min(w, FIELD_MAX);
+  };
+  const hnCh = $derived(fieldCh((r) => r.host ?? '', 'Host'));
+  const apCh = $derived(fieldCh((r) => r.app ?? '', 'Program/tag'));
   const text = (r: SearchResult) => (showRaw ? r.raw : splitRaw(r.raw).body);
+
+  /** Clicking a Host or Program/tag value narrows the search to it. */
+  function narrow(e: Event, kind: 'host' | 'app', v: string) {
+    e.stopPropagation();
+    if (kind === 'host') fields.host = addToList(fields.host, v);
+    else fields.app = addToList(fields.app, v);
+    run();
+  }
 
   // ----- context panel -----
   interface Ctx {
@@ -204,6 +247,7 @@
     if (active.q) p.set('q', active.q);
     if (active.regex) p.set('re', '1');
     if (active.case) p.set('cs', '1');
+    fieldsToQuery({ app: (active.app ?? []).join(','), host: (active.host ?? []).join(','), exclude: active.exclude ?? '' }, p);
     go('export', p.toString());
   }
 
@@ -216,14 +260,18 @@
 </script>
 
 <div class="space-y-4">
-  <form class="card space-y-3" onsubmit={run} role="search" aria-label="Search stored logs">
+  <form class="card space-y-3" onsubmit={run} role="search" aria-labelledby="ev-title">
+    <div>
+      <h1 id="ev-title" class="m-0 text-xl font-bold tracking-tight">Events</h1>
+      <p class="mt-1 mb-0 text-[13.5px] text-muted">Every stored message, including older compressed days. Leave the text empty to browse; filter by text, program/tag, host, device, time and severity.</p>
+    </div>
     <div class="flex flex-wrap items-start gap-2">
       <div class="grow basis-80">
         <label class="sr-only" for="sq">Search text</label>
         <input
           id="sq"
           class="field font-mono"
-          placeholder={regex ? 'Regular expression (RE2), e.g. deny (tcp|udp)' : 'Text to find, or leave empty to browse'}
+          placeholder={regex ? 'Regular expression (RE2), e.g. deny (tcp|udp)' : 'Browse every stored message; type to filter'}
           bind:value={q}
           spellcheck="false"
           autocomplete="off"
@@ -235,6 +283,44 @@
       <button type="button" class="toggle" aria-pressed={regex} onclick={() => (regex = !regex)} title="Regular expression (RE2 syntax)">.* Regex</button>
       <button type="button" class="toggle" aria-pressed={cs} onclick={() => (cs = !cs)} title="Match upper and lower case exactly">Aa Case</button>
       <button type="submit" class="pill-btn px-5 py-2"><Icon name="search" size={15} />Search</button>
+    </div>
+    <div class="flex flex-wrap items-start gap-2">
+      <label class="fld">
+        <span class="flab">Program/tag</span>
+        <input
+          class="field font-mono"
+          placeholder="sshd, %FW-6-*"
+          bind:value={fields.app}
+          spellcheck="false"
+          autocomplete="off"
+          title="Programs or tags, comma-separated, any case. End with * for a prefix."
+        />
+      </label>
+      <label class="fld">
+        <span class="flab">Host</span>
+        <input
+          class="field font-mono"
+          placeholder="web-01, edge-fw-01"
+          bind:value={fields.host}
+          spellcheck="false"
+          autocomplete="off"
+          title="Hostnames from the message header, comma-separated, any case"
+        />
+      </label>
+      <label class="fld grow">
+        <span class="flab">Exclude</span>
+        <input
+          class="field font-mono"
+          placeholder={regex ? 'Regular expression to leave out' : 'Text to leave out'}
+          bind:value={fields.exclude}
+          spellcheck="false"
+          autocomplete="off"
+          aria-invalid={!!exError}
+          aria-describedby="ex-err"
+          title="Lines matching this are left out. Regex and Case apply here too."
+        />
+        {#if exError}<span id="ex-err" class="ferr" role="alert">{exError}</span>{/if}
+      </label>
     </div>
     <div class="flex flex-wrap items-center gap-3">
       <DevicePicker bind:value={scope} />
@@ -252,7 +338,7 @@
     <div class="bar flex flex-wrap items-center gap-2 px-[18px] py-2.5 font-sans text-[13px]">
       <b class="text-white">Results</b>
       <span class="text-log-dim" aria-live="polite">
-        {#if status === 'idle'}Search, or leave the box empty to browse.
+        {#if status === 'idle'}Leave the text empty to browse every stored message, or type to filter.
         {:else if active}
           {num(results.length)} line{results.length === 1 ? '' : 's'}{cursor ? '+' : ''} · {scopeLabel(activeScope)} · {stamp(
             active.from!,
@@ -274,16 +360,28 @@
         class="tail-btn"
         onclick={exportThese}
         disabled={!active || !results.length}
-        title="Open Export with these devices, range, severities and text"
+        title="Open Export with these devices, range, severities, text, program/tag, host and exclude"
       >
         <Icon name="export" size={14} />Export these results
       </button>
     </div>
 
-    <div class="logview res-body overflow-auto px-[18px] py-2" class:nowrap={!prefs.wrap} style:--hostw="{hostCh}ch" style:--tw="18ch">
+    <div
+      class="logview fields res-body overflow-auto px-[18px] py-2"
+      class:nowrap={!prefs.wrap}
+      style:--hostw="{hostCh}ch"
+      style:--tw="18ch"
+      style:--hnw="{hnCh}ch"
+      style:--apw="{apCh}ch"
+    >
+      {#if results.length}
+        <div class="logline colhead" aria-hidden="true">
+          <span class="c t">Time</span><span class="c h">Device</span><span class="c hn">Host</span><span class="c ap">Program/tag</span><span class="c s">Level</span><span class="m">Message</span>
+        </div>
+      {/if}
       {#if error}
         <p class="m-0 py-6 text-center font-sans text-[var(--sev-err)]" role="alert">{error}</p>
-      {:else if qError}
+      {:else if qError || exError}
         <p class="m-0 py-6 text-center font-sans text-log-dim">Fix the regular expression above and search again.</p>
       {:else if status === 'running' && !results.length}
         <p class="m-0 py-6 text-center font-sans text-log-dim">Searching…</p>
@@ -308,8 +406,20 @@
           oncontextmenu={(e) => { e.preventDefault(); openMenu(r.device_id, e.clientX, e.clientY); }}
           onkeydown={(e) => rowKey(e, r.ref)}
         >
-          <span class="c t">{stamp(r.received, prefs.utc)}</span><span class="c h">{deviceName(r.device_id)}</span><span class="c s {sevClass(r.severity)}"
-            >{sevLabel(r.severity)}</span
+          <span class="c t">{stamp(r.received, prefs.utc)}</span><span class="c h">{deviceName(r.device_id)}</span
+          >{#if r.host}<button
+              type="button"
+              class="c hn cell"
+              title="Show only host {r.host}"
+              onclick={(e) => narrow(e, 'host', r.host)}
+              onkeydown={(e) => e.stopPropagation()}>{r.host}</button
+            >{:else}<span class="c hn none">–</span>{/if}{#if r.app}<button
+              type="button"
+              class="c ap cell"
+              title="Show only {r.app}"
+              onclick={(e) => narrow(e, 'app', r.app)}
+              onkeydown={(e) => e.stopPropagation()}>{r.app}</button
+            >{:else}<span class="c ap none">–</span>{/if}<span class="c s {sevClass(r.severity)}">{sevLabel(r.severity)}</span
           ><span class="m"><LogText text={text(r)} re={hl} raw={showRaw} /></span>
         </div>
       {/each}
@@ -420,7 +530,23 @@
     background: var(--log-bar);
     border: 1px solid var(--log-border);
   }
+  .fld {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    flex-basis: 13rem;
+  }
+  .fld.grow {
+    flex-grow: 1;
+    flex-basis: 16rem;
+  }
+  .flab {
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--muted);
+  }
   .ferr {
+    display: block;
     margin: 4px 0 0;
     font-size: 13px;
     font-weight: 500;

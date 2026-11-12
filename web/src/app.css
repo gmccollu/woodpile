@@ -269,6 +269,50 @@ body {
     width: 7ch;
     margin-right: 1ch;
   }
+  /* Events adds Host and Program/tag columns after the device, each one a button that
+     narrows the search to its value. */
+  .logview.fields .logline {
+    --msgx: calc(var(--tw, 12ch) + var(--hostw, 12ch) + var(--hnw, 10ch) + var(--apw, 10ch) + 7ch + 5.8ch);
+  }
+  .logline > .c.hn {
+    width: var(--hnw, 10ch);
+    color: var(--log-host);
+  }
+  .logline > .c.ap {
+    width: var(--apw, 10ch);
+    color: var(--log-fg);
+  }
+  .logline > .c.none {
+    color: var(--log-dim);
+  }
+  .logline > button.cell {
+    padding: 0;
+    border: 0;
+    background: none;
+    font: inherit;
+    line-height: inherit;
+    text-align: left;
+    cursor: pointer;
+    border-radius: 3px;
+  }
+  .logline > button.cell:hover,
+  .logline > button.cell:focus-visible {
+    text-decoration: underline;
+    background: rgba(255, 255, 255, 0.1);
+  }
+  .logline.colhead {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: var(--log-bg);
+    color: var(--log-dim);
+    font-weight: 600;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  }
+  .logline.colhead > .c {
+    color: var(--log-dim);
+    font-weight: 600;
+  }
   .logline.hit {
     background: rgba(157, 188, 255, 0.16);
     box-shadow: inset 3px 0 0 var(--log-host);
