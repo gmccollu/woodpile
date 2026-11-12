@@ -59,16 +59,29 @@
             <a class="btn ghost" href="install.html">How to install</a>
           </div>
           <div class="shot">
-            <picture>
-              <source srcset="img/dashboard-dark.webp" type="image/webp" media="(prefers-color-scheme: dark)" />
-              <source srcset="img/dashboard-light.webp" type="image/webp" />
+            <!-- Recorded from the UI's mock mode by web/scripts/demo.mjs. Under reduced motion, app.js
+                 stops it on the poster and shows the controls. The GIF is for browsers without video. -->
+            <video
+              class="demo"
+              autoplay
+              muted
+              loop
+              playsinline
+              preload="auto"
+              poster="img/demo-poster.jpg"
+              width="1200"
+              height="738"
+              aria-label="A 20-second demo of Woodshed: devices appear on the dashboard and the live tail fills, a click on a device filters the tail, then a search for deny tcp with the lines around one result, and an export of a device group built to Ready"
+            >
+              <source src="img/demo.webm" type="video/webm" />
+              <source src="img/demo.mp4" type="video/mp4" />
               <img
-                src="img/dashboard-light.png"
+                src="img/demo.gif"
                 width="1200"
-                height="771"
-                alt="The Woodshed dashboard: messages per second, devices online, disk used, a strip of devices and a live tail of log lines"
+                height="738"
+                alt="A demo of Woodshed: the dashboard and live tail, a device filter, a search with the lines around a result, and an export built to Ready"
               />
-            </picture>
+            </video>
           </div>
         </section>
 

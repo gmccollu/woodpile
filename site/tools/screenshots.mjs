@@ -55,13 +55,18 @@ const both = (s) => [
   { ...s, name: `${s.name}-dark`, mode: 'dark' },
 ];
 
+// The hero demo plays (WebM first), or with reduced motion waits on its poster with controls.
+const demoPlays = `(() => { const v = document.querySelector('.shot video.demo'); return !!v && !v.error && v.currentSrc.endsWith('/img/demo.webm') && !v.paused && !v.controls && v.readyState >= 2; })()`;
+const demoStill = `(() => { const v = document.querySelector('.shot video.demo'); return !!v && v.paused && v.controls && v.currentTime === 0; })()`;
+
 const SHOTS = [
   ...both({ name: 'home-desktop', path: '/', w: 1400, h: 900, client: WIN, rel: 'release',
-    check: `document.querySelectorAll('#dl-primary .asset.best').length === 2 && document.querySelector('#dl-primary .asset .n').textContent === 'Windows installer (x64)' && document.querySelectorAll('#dl-others-body li').length === 10` }),
+    check: `${demoPlays} && document.querySelectorAll('#dl-primary .asset.best').length === 2 && document.querySelector('#dl-primary .asset .n').textContent === 'Windows installer (x64)' && document.querySelectorAll('#dl-others-body li').length === 10` }),
   ...both({ name: 'home-phone', path: '/', w: 390, h: 844, client: PHONE, rel: 'release',
     check: `document.querySelectorAll('#dl-primary .asset').length === 0 && document.getElementById('dl-others').open && document.querySelectorAll('#dl-others-body li').length === 12 && document.documentElement.scrollWidth <= innerWidth
       && [...document.querySelectorAll('#dl-others-body .file')].every((f) => f.getBoundingClientRect().right <= f.closest('li').getBoundingClientRect().right)
       && [...document.querySelectorAll('#dl-others-body .dl')].every((b) => b.textContent === 'Download')` }),
+  { name: 'home-reduced-motion-light', mode: 'light', motion: 'reduce', path: '/', w: 1400, h: 900, client: WIN, rel: 'release', check: demoStill },
   { name: 'home-desktop-all-downloads-light', mode: 'light', path: '/#download', w: 1400, h: 900, client: WIN, rel: 'release',
     act: `(document.getElementById('dl-others').open = true, true)`,
     check: `[...document.querySelectorAll('#dl-others-body li')].every((li) => li.getBoundingClientRect().height < 80)` },
@@ -157,7 +162,12 @@ try {
       await send('Storage.clearDataForOrigin', { origin: new URL(BASE).origin, storageTypes: 'all' });
       await send('Emulation.setDeviceMetricsOverride', { width: s.w, height: s.h, deviceScaleFactor: 1, mobile: !!s.client.mobile });
       await send('Emulation.setUserAgentOverride', { userAgent: s.client.ua, ...(s.client.meta ? { userAgentMetadata: { brands: [], fullVersionList: [], fullVersion: '140.0', ...s.client.meta } } : {}) });
-      await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: s.mode }] });
+      await send('Emulation.setEmulatedMedia', {
+        features: [
+          { name: 'prefers-color-scheme', value: s.mode },
+          { name: 'prefers-reduced-motion', value: s.motion ?? 'no-preference' },
+        ],
+      });
       await send('Page.navigate', { url: 'about:blank' });
       await sleep(100);
       events.length = 0;

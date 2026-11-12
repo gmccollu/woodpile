@@ -248,7 +248,8 @@ h3 {
   box-shadow: var(--shadow);
   border: 1px solid var(--border);
 }
-.shot img {
+.shot img,
+.shot video {
   display: block;
   width: 100%;
   height: auto;

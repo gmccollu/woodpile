@@ -7,6 +7,15 @@ import { FALLBACK_TEXT, detectPlatform, loadRelease, pick, releasesUrl, repoUrl,
 for (const a of document.querySelectorAll('a[data-gh]')) a.href = repoUrl(a.dataset.gh);
 for (const a of document.querySelectorAll('a[data-releases]')) a.href = releasesUrl();
 
+// The hero demo plays on its own (muted, looping). With reduced motion it stays on the
+// poster, with the controls to play it.
+const demo = document.querySelector('video.demo');
+if (demo && matchMedia('(prefers-reduced-motion: reduce)').matches) {
+  demo.autoplay = false;
+  demo.pause();
+  demo.controls = true;
+}
+
 const el = (tag, cls, text) => {
   const e = document.createElement(tag);
   if (cls) e.className = cls;
