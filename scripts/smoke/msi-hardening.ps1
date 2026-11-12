@@ -60,6 +60,11 @@ function DaclOf([string]$path) { ("D:" + ((Get-Acl -LiteralPath $path).Sddl -spl
 
 if (Test-Path $Data) { Die "$Data exists before the test" }
 
+# Installed file times must be the commit's UTC time on a machine that isn't on UTC (an MSI
+# cabinet only holds zone-less local times). CI runners are on UTC, so switch for the test.
+$origTz = (Get-TimeZone).Id
+Set-TimeZone -Id "Eastern Standard Time"
+
 Write-Host "==> plant a hostile data folder"
 # The planted log is today's file (UTC, as the store names them), computed once. A file for
 # an earlier day is a closed one: the service gzips it as soon as it starts, so a fixed date
@@ -125,6 +130,11 @@ for ($i = 0; $i -lt 30 -and (Get-Service Woodshed).Status -ne "Running"; $i++) {
 if ((Get-Service Woodshed).Status -ne "Running") { Die "the service isn't running" }
 Ok "the service runs with them"
 
+$want = [DateTimeOffset]::FromUnixTimeSeconds([long](git log -1 --format=%ct)).UtcDateTime
+$got = (Get-Item (Join-Path $env:ProgramFiles "Woodshed\woodshed.exe")).LastWriteTimeUtc
+if ([math]::Abs(($got - $want).TotalSeconds) -gt 2) { Die "woodshed.exe's time is $($got.ToString('u')), want the commit's $($want.ToString('u')) (time zone $((Get-TimeZone).Id))" }
+Ok "installed woodshed.exe has the commit's time, $($want.ToString('u')), on a UTC-5 machine"
+
 # The Start-menu shortcut opens the UI, with the woodshed icon.
 $lnk = Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\Woodshed.url"
 if (-not (Test-Path $lnk)) { Die "no Start-menu shortcut at $lnk" }
@@ -172,4 +182,5 @@ Ok "fresh install: the data folder is owned by Administrators with the protected
 Msiexec @("/x", "`"$Msi`"", "DELETE_LOGS=1") (Join-Path $Logs "hardening-uninstall-fresh.log")
 
 Remove-Item -Recurse -Force $Outside -ErrorAction SilentlyContinue
+Set-TimeZone -Id $origTz
 Write-Host "`n$passes checks passed"

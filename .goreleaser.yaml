@@ -80,11 +80,20 @@ archives:
     name_template: >-
       {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ if eq .Arch "all" }}universal{{ else }}{{ .Arch }}{{ end }}
     wrap_in_directory: true
+    # Every entry carries the release commit's time, not the time the runner checked it out.
+    builds_info:
+      mtime: "{{ .CommitDate }}"
     files:
       - src: packaging/portable/README.txt
         strip_parent: true
-      - LICENSE
-      - THIRD_PARTY_NOTICES.txt
+        info:
+          mtime: "{{ .CommitDate }}"
+      - src: LICENSE
+        info:
+          mtime: "{{ .CommitDate }}"
+      - src: THIRD_PARTY_NOTICES.txt
+        info:
+          mtime: "{{ .CommitDate }}"
 
 checksum:
   name_template: checksums.txt
@@ -123,6 +132,8 @@ nfpms:
     section: net
     priority: optional
     bindir: /usr/bin
+    # Every file in the package gets the release commit's time.
+    mtime: "{{ .CommitDate }}"
     contents:
       - src: packaging/linux/woodshed.service
         dst: /usr/lib/systemd/system/woodshed.service

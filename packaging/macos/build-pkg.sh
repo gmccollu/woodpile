@@ -130,6 +130,13 @@ mkdir -p "$scripts"
 install -m 0755 "$here/scripts/preinstall" "$here/scripts/postinstall" "$scripts/"
 install -m 0644 "$here/scripts/common.sh" "$scripts/"
 
+# Every file in the pkg gets the release commit's time (SOURCE_DATE_EPOCH, else the commit),
+# not the time this machine checked out or downloaded it. The payload stores UTC times.
+epoch=${SOURCE_DATE_EPOCH:-$(git -C "$repo" log -1 --format=%ct 2>/dev/null || date +%s)}
+stamp=$(date -u -r "$epoch" +%Y%m%d%H%M.%S)
+TZ=UTC0 find "$root" "$scripts" -exec touch -h -t "$stamp" {} +
+echo "==> file times: $(date -u -r "$epoch" +%Y-%m-%dT%H:%M:%SZ)"
+
 # Drop removable xattrs. pkgbuild stores any left (macOS adds an undeletable
 # com.apple.provenance on some machines) as ._ AppleDouble entries; Installer's
 # BOMCopier merges those back into xattrs, so no ._ files land on disk.

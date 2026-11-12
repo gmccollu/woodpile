@@ -28,6 +28,8 @@ param(
     [string]$AclFix = "",
     [string]$OutDir = "",
     [string]$ProjectUrl = "https://github.com/gmccollu/woodshed",
+    # The files' time, Unix seconds (UTC). Default: SOURCE_DATE_EPOCH, else the commit's time.
+    [long]$CommitTime = 0,
     [string]$WixVersion = "5.0.2"
 )
 
@@ -117,12 +119,24 @@ Write-Host "==> wix extensions"
 Invoke-Native wix @("extension", "add", "-g", "WixToolset.Util.wixext/$wixInstalled", "WixToolset.Firewall.wixext/$wixInstalled")
 
 $msi = Join-Path $OutDir "woodshed_${fullVersion}_windows_${goarch}.msi"
+# Every staged file gets the commit's time, and so does every installed file (the MSI's
+# WoodshedFileTimes custom action; a cabinet alone can't carry a UTC time).
+if ($CommitTime -le 0) {
+    if ($env:SOURCE_DATE_EPOCH) { $CommitTime = [long]$env:SOURCE_DATE_EPOCH }
+    else { $CommitTime = [long](git -C $repo log -1 --format=%ct 2>$null) }
+}
+if ($CommitTime -le 0) { throw "no commit time: set -CommitTime or SOURCE_DATE_EPOCH" }
+$stamp = [DateTimeOffset]::FromUnixTimeSeconds($CommitTime).UtcDateTime
+Get-ChildItem -File $stage | ForEach-Object { $_.LastWriteTimeUtc = $stamp; $_.LastAccessTimeUtc = $stamp }
+Write-Host "==> file times: $($stamp.ToString('u'))"
+
 Write-Host "==> wix build $msi"
 Invoke-Native wix @("build",
     "-arch", $Arch,
     "-ext", "WixToolset.Util.wixext",
     "-ext", "WixToolset.Firewall.wixext",
     "-d", "Version=$msiVersion",
+    "-d", "CommitTime=$CommitTime",
     "-d", "BinDir=$stage",
     "-d", "ProjectUrl=$ProjectUrl",
     "-o", $msi,
