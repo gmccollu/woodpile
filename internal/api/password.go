@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 
 	"golang.org/x/crypto/argon2"
@@ -50,10 +51,33 @@ func hashPassword(password string, p argonParams) (string, error) {
 	if _, err := rand.Read(salt); err != nil {
 		return "", err
 	}
-	key := argon2.IDKey([]byte(password), salt, p.Time, p.Memory, p.Threads, p.KeyLen)
+	key := argonKey([]byte(password), salt, p.Time, p.Memory, p.Threads, p.KeyLen)
 	enc := base64.RawStdEncoding
 	return fmt.Sprintf("$argon2id$v=%d$m=%d,t=%d,p=%d$%s$%s",
 		argon2.Version, p.Memory, p.Time, p.Threads, enc.EncodeToString(salt), enc.EncodeToString(key)), nil
+}
+
+// argonSlot runs one Argon2 hash at a time: each allocates its memory parameter
+// (64 MiB by default), so concurrent logins would multiply the peak.
+var argonSlot = make(chan struct{}, 1)
+
+// argonFreeAbove (KiB) is the memory parameter from which a hash is followed by
+// debug.FreeOSMemory (a forced GC: worth it for 64 MiB, not for tests' small
+// parameters).
+const argonFreeAbove = 8 << 10
+
+// argonKey is argon2.IDKey, one at a time, returning the hash's memory to the
+// OS afterwards. Go's scavenger otherwise keeps the freed 64 MiB resident for a
+// long time (measured on Linux: an idle server went from 19 MB to 83 MB RSS
+// after setting a password and logging in, and stayed there).
+func argonKey(password, salt []byte, time, memory uint32, threads uint8, keyLen uint32) []byte {
+	argonSlot <- struct{}{}
+	defer func() { <-argonSlot }()
+	key := argon2.IDKey(password, salt, time, memory, threads, keyLen)
+	if memory >= argonFreeAbove {
+		debug.FreeOSMemory()
+	}
+	return key
 }
 
 var errBadHash = errors.New("the password hash file is not a valid Argon2id hash")
@@ -87,7 +111,7 @@ func verifyPassword(password, phc string) (bool, error) {
 	if err != nil || len(want) < 16 || len(want) > 64 {
 		return false, errBadHash
 	}
-	got := argon2.IDKey([]byte(password), salt, t, m, th, uint32(len(want)))
+	got := argonKey([]byte(password), salt, t, m, th, uint32(len(want)))
 	return subtle.ConstantTimeCompare(got, want) == 1, nil
 }
 
