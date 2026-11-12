@@ -5,6 +5,7 @@
     getStorageEstimate,
     getSettings,
     getStorageHistory,
+    isConflict,
     putSettings,
     type RejectedSender,
     type Settings,
@@ -40,11 +41,15 @@
     uiPort: number;
     certFile: string;
     keyFile: string;
+    extraHostnames: string;
+    trustedHosts: string;
     quietMin: number;
     offlineMin: number;
   }
 
   let saved = $state<Settings | null>(null);
+  /** The ETag `saved` was read or saved at; sent as If-Match on save. */
+  let etag = '';
   let form = $state<Form | null>(null);
   let loadError = $state('');
   let errors = $state<Record<string, string>>({});
@@ -55,6 +60,12 @@
   let moved = $state<{ url: string; lan: boolean; port: number } | null>(null);
   let history = $state<StorageHistoryEntry[] | null>(null);
   let rejected = $state<RejectedSender[] | null>(null);
+  /**
+   * A save refused with 409: the settings changed elsewhere (another tab, a script, Block on
+   * a device). The user's edits stay listed after Reload so they can redo them.
+   */
+  let conflict = $state<{ edits: { key: keyof Form; label: string; mine: string }[]; reloaded: boolean } | null>(null);
+  let reloading = $state(false);
   /** The lists as last sent, so "listeners.allowlist[2]" errors can name the entry. */
   let sentLists = $state<Record<string, string[]>>({});
 
@@ -82,6 +93,8 @@
       uiPort: s.ui.port,
       certFile: s.ui.cert_file ?? '',
       keyFile: s.ui.key_file ?? '',
+      extraHostnames: (s.ui.extra_hostnames ?? []).join('\n'),
+      trustedHosts: (s.ui.trusted_hosts ?? []).join('\n'),
       quietMin: round(s.quiet.quiet_after_seconds / 60),
       offlineMin: round(s.quiet.offline_after_seconds / 60),
     };
@@ -113,6 +126,8 @@
         cert_file: f.certFile.trim(),
         key_file: f.keyFile.trim(),
         require_login_local: f.requireLocal,
+        extra_hostnames: parseAllowlist(f.extraHostnames),
+        trusted_hosts: parseAllowlist(f.trustedHosts),
       },
       quiet: {
         quiet_after_seconds: Math.round(n(f.quietMin) * 60),
@@ -154,7 +169,9 @@
 
   async function load() {
     try {
-      saved = await getSettings();
+      const v = await getSettings();
+      saved = v.settings;
+      etag = v.etag;
       form = toForm(saved);
       loadError = '';
     } catch (e) {
@@ -206,7 +223,70 @@
     requestAnimationFrame(() => document.getElementById(id)?.scrollIntoView({ block: 'start', behavior: 'instant' }));
   });
 
-  const dirty = $derived(!!form && !!saved && JSON.stringify(fromForm(form)) !== JSON.stringify(saved));
+  // Compared through the form, so key order and lists an older server omits don't count as edits.
+  const savedForm = $derived(saved ? toForm(saved) : null);
+  const savedJSON = $derived(savedForm ? JSON.stringify(fromForm(savedForm)) : '');
+  const dirty = $derived(!!form && !!saved && JSON.stringify(fromForm(form)) !== savedJSON);
+
+  // For the conflict notice: each edited field by its label, with the user's value.
+  const LABELS: Record<keyof Form, string> = {
+    udpEnabled: 'UDP listener',
+    udpAddr: 'UDP bind address',
+    udpPort: 'UDP port',
+    tcpEnabled: 'TCP listener',
+    tcpAddr: 'TCP bind address',
+    tcpPort: 'TCP port',
+    allowlist: 'Sender allowlist',
+    blocklist: 'Blocklist',
+    maxDevices: 'Active devices',
+    burst: 'New senders at once',
+    perMinute: 'New senders per minute',
+    dataDir: 'Data folder',
+    retentionDays: 'Keep logs for (days)',
+    retentionGiB: 'Disk cap (GiB)',
+    partMiB: 'Split files at (MiB)',
+    lanMode: 'LAN mode',
+    requireLocal: 'Require login on this machine too',
+    uiPort: 'UI port',
+    certFile: 'Certificate file',
+    keyFile: 'Private key file',
+    extraHostnames: 'Extra certificate names',
+    trustedHosts: 'Trusted host names',
+    quietMin: 'Quiet after (minutes)',
+    offlineMin: 'Offline after (minutes)',
+  };
+  const shown = (v: unknown): string => {
+    if (typeof v === 'boolean') return v ? 'on' : 'off';
+    const t = parseAllowlist(String(v ?? '')).join(', ');
+    return t || '(empty)';
+  };
+  function edits(from: Form, to: Form) {
+    return (Object.keys(LABELS) as (keyof Form)[])
+      .filter((k) => shown(from[k]) !== shown(to[k]))
+      .map((k) => ({ key: k, label: LABELS[k], mine: shown(to[k]) }));
+  }
+
+  async function reloadAfterConflict() {
+    reloading = true;
+    try {
+      const v = await getSettings();
+      saved = v.settings;
+      etag = v.etag;
+      form = toForm(saved);
+      errors = {};
+      formError = '';
+      if (conflict) conflict = { ...conflict, reloaded: true };
+    } catch (e) {
+      formError = `Couldn't reload the settings: ${(e as Error).message}`;
+    } finally {
+      reloading = false;
+    }
+  }
+
+  // The draft adds a certificate name: saving regenerates the self-signed certificate.
+  const addsCertName = $derived(
+    !!form && !!saved && parseAllowlist(form.extraHostnames).some((h) => !(saved?.ui.extra_hostnames ?? []).includes(h)),
+  );
 
   // Field paths this page shows inline. Anything else the server reports goes in the summary.
   const FIELDS = [
@@ -230,6 +310,8 @@
     'ui.port',
     'ui.cert_file',
     'ui.key_file',
+    'ui.extra_hostnames',
+    'ui.trusted_hosts',
     'quiet.quiet_after_seconds',
     'quiet.offline_after_seconds',
   ];
@@ -264,14 +346,20 @@
     errors = {};
     formError = '';
     const body = fromForm(form);
-    sentLists = { 'listeners.allowlist': body.listeners.allowlist, 'listeners.blocklist': body.listeners.blocklist };
-    const before = saved?.ui;
+    sentLists = {
+      'listeners.allowlist': body.listeners.allowlist,
+      'listeners.blocklist': body.listeners.blocklist,
+      'ui.extra_hostnames': body.ui.extra_hostnames,
+      'ui.trusted_hosts': body.ui.trusted_hosts,
+    };
     const prevSettings = saved ? $state.snapshot(saved) : null;
     const failingBefore = failingNow();
     try {
-      saved = await putSettings(body);
+      const res = await putSettings(body, etag);
+      saved = res.settings;
       form = toForm(saved);
-      if (before && (before.lan_mode !== saved.ui.lan_mode || before.port !== saved.ui.port)) {
+      conflict = null;
+      if (res.restarting) {
         const lan = saved.ui.lan_mode;
         // location.hostname keeps IPv6 brackets. Turning LAN mode off means localhost only.
         const url = lan ? `https://${location.hostname}:${saved.ui.port}/` : `http://localhost:${saved.ui.port}/`;
@@ -280,15 +368,20 @@
       }
       savedAt = Date.now();
       setTimeout(() => (savedAt = 0), 2500);
+      etag = res.etag;
       if (!auth.movedTo) {
+        // A server that sends no ETag with the save: read the new one for the next save.
+        if (!etag) etag = await getSettings().then((v) => v.etag, () => '');
         loadRejected();
         loadSession();
         // A save that breaks a listener (a port that's taken) offers "Undo last save".
-        if (prevSettings) noteSave(prevSettings as Settings, failingBefore);
+        if (prevSettings) noteSave(prevSettings as Settings, failingBefore, etag);
         else refreshStatus();
       }
     } catch (x) {
-      if (x instanceof ApiError && Object.keys(x.fields).length) {
+      if (isConflict(x)) {
+        conflict = { edits: saved ? edits(toForm(saved), form) : [], reloaded: false };
+      } else if (x instanceof ApiError && Object.keys(x.fields).length) {
         errors = x.fields;
         formError = `${Object.keys(x.fields).length === 1 ? 'One setting needs' : 'Some settings need'} fixing before saving.`;
         await Promise.resolve();
@@ -383,6 +476,34 @@
           {#if undo.error}<b>{undo.error}</b>{/if}
         </span>
         <button type="button" class="pill-btn" onclick={undoLastSave} disabled={undo.busy}>{undo.busy ? 'Undoing…' : 'Undo last save'}</button>
+      </div>
+    {/if}
+
+    {#if conflict}
+      <div class="conflict" role="alert">
+        <p class="m-0 font-semibold">Settings changed elsewhere since you opened this page.</p>
+        <p class="m-0 mt-1 text-[14px]">
+          {#if conflict.reloaded}
+            The form now shows the current settings. Your changes weren't saved: redo the ones you still want, then save.
+          {:else}
+            Your changes weren't saved. Reload to see the current settings; your changes stay listed here so you can redo them.
+          {/if}
+        </p>
+        {#if conflict.edits.length}
+          <ul class="edits" aria-label="Your unsaved changes">
+            {#each conflict.edits as ed (ed.key)}
+              <li>
+                <b>{ed.label}</b>: yours <code>{ed.mine}</code>{#if conflict.reloaded && savedForm}, now <code>{shown(savedForm[ed.key])}</code>{/if}
+              </li>
+            {/each}
+          </ul>
+        {/if}
+        <div class="mt-3 flex flex-wrap gap-2">
+          {#if !conflict.reloaded}
+            <button type="button" class="pill-btn" onclick={reloadAfterConflict} disabled={reloading}>{reloading ? 'Reloading…' : 'Reload'}</button>
+          {/if}
+          <button type="button" class="ghost-btn" onclick={() => (conflict = null)}>{conflict.reloaded ? 'Done' : 'Dismiss'}</button>
+        </div>
       </div>
     {/if}
 
@@ -724,6 +845,43 @@
         {@render fieldError('ui.port')}
       </label>
 
+      <div class="lists mt-4">
+        <label class="lbl">
+          <span>Extra certificate names</span>
+          <textarea
+            class="field min-h-[72px] font-mono"
+            bind:value={form.extraHostnames}
+            placeholder="One per line, such as logs.example.net"
+            aria-invalid={!!err('ui.extra_hostnames')}
+            aria-describedby="err-ui.extra_hostnames hint-extra"
+            spellcheck="false"
+          ></textarea>
+          {@render fieldError('ui.extra_hostnames')}
+          <span class="hint" id="hint-extra">
+            For LAN mode: other names this machine is reached by. The hostname, its local and search-domain names, and its addresses are covered
+            already. Adding a name regenerates Woodshed's own certificate, so browsers warn about it once more.
+          </span>
+          {#if addsCertName && form.lanMode && !form.certFile}
+            <span class="note" role="note">After you save, the certificate is regenerated: browsers warn once more, and the fingerprint changes.</span>
+          {/if}
+        </label>
+        <label class="lbl">
+          <span>Trusted host names</span>
+          <textarea
+            class="field min-h-[72px] font-mono"
+            bind:value={form.trustedHosts}
+            placeholder="One per line: a host or host:port, such as logs.example.net:443"
+            aria-invalid={!!err('ui.trusted_hosts')}
+            aria-describedby="err-ui.trusted_hosts hint-trusted"
+            spellcheck="false"
+          ></textarea>
+          {@render fieldError('ui.trusted_hosts')}
+          <span class="hint" id="hint-trusted">
+            For a reverse proxy in front of the UI: the names it forwards as the Host header. Exact names only; other names are refused.
+          </span>
+        </label>
+      </div>
+
       <details class="adv mt-4" open={!!(form.certFile || form.keyFile || err('ui.cert_file') || err('ui.key_file'))}>
         <summary class="cursor-pointer text-[14px] font-semibold">Advanced: use your own certificate</summary>
         <p class="hint mt-2">
@@ -793,6 +951,27 @@
     border: 1px solid var(--border);
     -webkit-backdrop-filter: blur(16px);
     backdrop-filter: blur(16px);
+  }
+  .conflict {
+    padding: 16px 18px;
+    border-radius: 22px;
+    border: 1px solid var(--warn-border);
+    background: var(--warn-bg);
+  }
+  .conflict .edits {
+    margin: 8px 0 0;
+    padding-left: 20px;
+    font-size: 14px;
+  }
+  .conflict code {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    overflow-wrap: anywhere;
+  }
+  .note {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--warn-fg);
   }
   .moved {
     padding: 16px 18px;

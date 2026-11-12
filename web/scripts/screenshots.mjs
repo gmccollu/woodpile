@@ -575,6 +575,144 @@ const SHOTS = [
     after: 1500,
     check: `__field('Blocklist').value === '203.0.113.0/24' + String.fromCharCode(10) + '10.1.0.2'`,
   },
+  // ---- rc5: settings ETag (If-Match, 409), the new UI-access lists, the restarting flag ----
+  {
+    name: 'settings-saves-send-if-match',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/settings',
+    act: `__set(__field('Keep logs for'), '14'); await __tick(); __btn('Save').click();
+      await new Promise((r) => setTimeout(r, 700));
+      window.__first = __woodshedMock.lastIfMatch;
+      __set(__field('Keep logs for'), '15'); await __tick(); __btn('Save').click();`,
+    after: 700,
+    check: `document.body.innerText.includes('Saved.') && !document.querySelector('.conflict') && /^"s\\d+"$/.test(window.__first)
+      && /^"s\\d+"$/.test(__woodshedMock.lastIfMatch) && window.__first !== __woodshedMock.lastIfMatch`,
+  },
+  {
+    name: 'settings-saves-without-put-etag',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0&mock_put_no_etag=1#/settings',
+    act: `__set(__field('Keep logs for'), '14'); await __tick(); __btn('Save').click();
+      await new Promise((r) => setTimeout(r, 900));
+      __set(__field('Keep logs for'), '15'); await __tick(); __btn('Save').click();`,
+    after: 900,
+    check: `document.body.innerText.includes('Saved.') && !document.querySelector('.conflict') && __field('Keep logs for').value === '15'`,
+  },
+  {
+    name: 'settings-conflict-light',
+    mode: 'light',
+    url: '/?mock_panel=0#/settings',
+    act: `__set(__field('Keep logs for'), '21'); __set(__field('Trusted host names'), 'logs.example.net:443'); await __tick();
+      window.__stale = __woodshedMock.lastIfMatch;
+      __woodshedMock.changeSettingsElsewhere(); __btn('Save').click();`,
+    after: 700,
+    check: `(() => { const c = document.querySelector('.conflict[role=alert]');
+      return !!c && c.textContent.includes('Settings changed elsewhere since you opened this page') && !!__btn('Reload')
+        && __field('Keep logs for').value === '21' && __field('Trusted host names').value === 'logs.example.net:443'
+        && c.textContent.includes('Keep logs for (days): yours 21') && c.textContent.includes('Trusted host names: yours logs.example.net:443')
+        && !document.body.innerText.includes('Saved.'); })()`,
+  },
+  {
+    name: 'settings-conflict-reloaded-light',
+    mode: 'light',
+    url: '/?mock_panel=0#/settings',
+    act: `__set(__field('Keep logs for'), '21'); await __tick();
+      __woodshedMock.changeSettingsElsewhere(); __btn('Save').click();
+      await new Promise((r) => setTimeout(r, 700)); __btn('Reload').click();`,
+    after: 700,
+    check: `(() => { const c = document.querySelector('.conflict');
+      return !!c && __field('Keep logs for').value === '45' && c.textContent.includes('yours 21, now 45') && !__btn('Reload') && !!__btn('Done'); })()`,
+  },
+  {
+    name: 'settings-conflict-redo-saves',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/settings',
+    act: `__set(__field('Keep logs for'), '21'); await __tick();
+      __woodshedMock.changeSettingsElsewhere(); __btn('Save').click();
+      await new Promise((r) => setTimeout(r, 700)); __btn('Reload').click();
+      await new Promise((r) => setTimeout(r, 700));
+      __set(__field('Keep logs for'), '21'); await __tick(); __btn('Save').click();`,
+    after: 800,
+    check: `document.body.innerText.includes('Saved.') && !document.querySelector('.conflict') && __field('Keep logs for').value === '21'`,
+  },
+  {
+    name: 'block-then-stale-settings-save',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/settings',
+    // Blocking a device (from another tab) changes the blocklist, so this page's ETag is stale.
+    act: `window.__blockStatus = await __woodshedMock.request('PATCH', '/api/devices/10.1.0.2', { blocked: true });
+      __set(__field('Keep logs for'), '22'); await __tick(); __btn('Save').click();`,
+    after: 700,
+    check: `window.__blockStatus === 200 && !!document.querySelector('.conflict') && __field('Keep logs for').value === '22'`,
+  },
+  {
+    name: 'settings-hostnames-errors-light',
+    mode: 'light',
+    url: '/?mock_panel=0#/settings',
+    act: `const nl = String.fromCharCode(10);
+      __set(__field('Extra certificate names'), 'logs.example.net' + nl + 'https://syslog.example.net');
+      __set(__field('Trusted host names'), 'proxy.example.net:443' + nl + 'proxy.example.net:99999');
+      await __tick(); __btn('Save').click();`,
+    after: 800,
+    check: `document.getElementById('err-ui.extra_hostnames')?.textContent.includes('Entry 2 (https://syslog.example.net)')
+      && document.getElementById('err-ui.trusted_hosts')?.textContent.includes('Entry 2 (proxy.example.net:99999)')
+      && document.querySelectorAll('textarea[aria-invalid=true]').length === 2`,
+  },
+  {
+    name: 'settings-hostnames-round-trip',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/settings',
+    act: `const nl = String.fromCharCode(10);
+      __set(__field('Extra certificate names'), 'logs.example.net' + nl + '10.1.0.50');
+      __set(__field('Trusted host names'), 'proxy.example.net:443, [fd00::50]:8514');
+      await __tick(); __btn('Save').click();
+      await new Promise((r) => setTimeout(r, 800));
+      location.hash = '#/about'; await new Promise((r) => setTimeout(r, 500)); location.hash = '#/settings';`,
+    after: 1500,
+    check: `__field('Extra certificate names').value === 'logs.example.net' + String.fromCharCode(10) + '10.1.0.50'
+      && __field('Trusted host names').value === 'proxy.example.net:443' + String.fromCharCode(10) + '[fd00::50]:8514'`,
+  },
+  {
+    name: 'settings-new-cert-name-note-lan',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0&mock_auth=1&mock_loggedin=1#/settings',
+    act: `__set(__field('Extra certificate names'), 'logs.example.net');`,
+    after: 300,
+    check: `document.body.innerText.includes('the certificate is regenerated: browsers warn once more, and the fingerprint changes')`,
+  },
+  {
+    name: 'settings-restarting-flag-shows-new-address',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/settings',
+    act: `__set(__field('UI port'), '8600'); await __tick(); __btn('Save').click();`,
+    after: 800,
+    check: `document.body.innerText.includes('restarting its web UI at a new address') && document.body.innerText.includes('http://localhost:8600/')`,
+  },
+  {
+    name: 'settings-no-restart-no-notice',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/settings',
+    act: `__set(__field('Trusted host names'), 'logs.example.net'); await __tick(); __btn('Save').click();`,
+    after: 800,
+    check: `document.body.innerText.includes('Saved.') && !document.querySelector('.moved')`,
+  },
+  {
+    name: 'banner-udp-buffer-small-light',
+    mode: 'light',
+    url: '/?mock_panel=0&mock_os=linux&mock_small_buffer=1#/dashboard',
+    wait: 1500,
+    check: `(() => { const b = [...document.querySelectorAll('.banner.warn')].find((x) => x.textContent.includes('208 KiB receive buffer'));
+      const a = b?.querySelector('a[href="https://github.com/gmccollu/woodshed/blob/main/docs/install.md#containers"]');
+      return !!a && a.target === '_blank' && a.rel.includes('noopener') && a.textContent.includes('Containers') && !!b.querySelector('[aria-label="Hide this alert"]'); })()`,
+  },
   {
     name: 'refused-blocked-sender-unblock',
     noshot: true,

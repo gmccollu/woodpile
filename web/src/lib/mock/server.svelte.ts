@@ -118,6 +118,17 @@ const probe = {
   },
   /** Simulates a request that has the cookie but not the header (e.g. another app on this host). */
   cookieOnly: false,
+  /** A request from elsewhere (another tab, a script): returns the status. */
+  async request(method: string, path: string, body?: unknown): Promise<number> {
+    return (await mockTransport.fetch(path, { method, headers: {}, body: body === undefined ? undefined : JSON.stringify(body) })).status;
+  },
+  /** If-Match on the last PUT /api/settings (null: none sent). */
+  lastIfMatch: '' as string | null,
+  /** Another tab or a script saves settings: the page's ETag goes stale (409 on its next save). */
+  changeSettingsElsewhere() {
+    settings.storage.retention_days = 45;
+    settingsRev++;
+  },
 };
 (window as unknown as { __woodshedMock: typeof probe }).__woodshedMock = probe;
 
@@ -136,6 +147,7 @@ if (mock.loggedIn && (mock.lan || P.get('mock_require_local') === '1')) {
 export function setLanAuth(on: boolean) {
   mock.lan = on;
   settings.ui.lan_mode = on;
+  settingsRev++;
   if (on && !authState.password) authState.password = MOCK_PASSWORD;
   mock.loggedIn = false;
   authState.secret = '';
@@ -356,7 +368,15 @@ let settings: Settings = {
     retention_bytes: 20 * GiB,
     part_bytes: 100 * MiB,
   },
-  ui: { lan_mode: P.get('mock_auth') === '1', port: 8514, cert_file: '', key_file: '', require_login_local: P.get('mock_require_local') === '1' },
+  ui: {
+    lan_mode: P.get('mock_auth') === '1',
+    port: 8514,
+    cert_file: '',
+    key_file: '',
+    require_login_local: P.get('mock_require_local') === '1',
+    extra_hostnames: [],
+    trusted_hosts: [],
+  },
   quiet: { quiet_after_seconds: 300, offline_after_seconds: 3600 },
 };
 
@@ -365,6 +385,23 @@ const isIPv4 = (s: string) =>
 const isIPv6 = (s: string) => s.includes(':') && /^[0-9a-f:.]+$/i.test(s) && (s.match(/::/g)?.length ?? 0) <= 1;
 const isIP = (s: string) => isIPv4(s) || isIPv6(s);
 const WILDCARD = ['0.0.0.0', '::'];
+// mock_small_buffer=1: the OS granted a small UDP receive buffer (the udp_buffer_small banner, Linux).
+const smallBuffer = P.get('mock_small_buffer') === '1';
+// A DNS name (letters, digits, hyphens; labels up to 63, no leading or trailing hyphen).
+const isHostname = (s: string) =>
+  s.length <= 253 && s.split('.').every((l) => /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/i.test(l)) && !/^\d+(\.\d+)*$/.test(s);
+/** A Host header value: host, host:port, [v6] or [v6]:port. */
+function isHostPort(s: string): boolean {
+  const m = /^\[([^\]]+)\](?::(\d+))?$/.exec(s) ?? /^([^:]+)(?::(\d+))?$/.exec(s);
+  if (!m) return false;
+  const [, host, port] = m;
+  const okHost = s.startsWith('[') ? isIPv6(host) : isIPv4(host) || isHostname(host);
+  return okHost && (port === undefined || (Number(port) >= 1 && Number(port) <= 65535));
+}
+
+// The settings ETag: bumped on every change (a save here, Block on a device, another tab).
+let settingsRev = 1;
+const settingsETag = () => `"s${settingsRev}"`;
 
 function validate(s: Settings): Record<string, string> {
   const e: Record<string, string> = {};
@@ -423,6 +460,12 @@ function validate(s: Settings): Record<string, string> {
   const abs = (f: string) => f.startsWith('/') || /^[A-Za-z]:\\/.test(f);
   if (cert && !abs(cert)) e['ui.cert_file'] = 'Use the full path to the certificate file.';
   if (key && !abs(key)) e['ui.key_file'] = 'Use the full path to the key file.';
+  (s.ui.extra_hostnames ?? []).forEach((h, i) => {
+    if (!(isHostname(h) || isIP(h))) e[`ui.extra_hostnames[${i}]`] = 'Not a host name or IP address. Leave out https:// and any port.';
+  });
+  (s.ui.trusted_hosts ?? []).forEach((h, i) => {
+    if (!isHostPort(h)) e[`ui.trusted_hosts[${i}]`] = 'Not a host or host:port, such as logs.example.net:443.';
+  });
   if (cert && !key && !e['ui.cert_file']) e['ui.key_file'] = 'Set the key file too, or clear both to use the generated certificate.';
   if (key && !cert && !e['ui.key_file']) e['ui.cert_file'] = 'Set the certificate file too, or clear both to use the generated certificate.';
   const q = s.quiet;
@@ -822,6 +865,13 @@ function statusJSON(): Status {
       level: 'warn',
       text: `New senders are being refused: ${activeDevices(Date.now()).toLocaleString()} devices sent in the last 10 minutes and the limit is ${settings.listeners.max_devices.toLocaleString()}. Their messages count as dropped.${probe.bannerNote}`,
     });
+  if (smallBuffer)
+    banners.push({
+      kind: 'udp_buffer_small',
+      action: '',
+      level: 'warn',
+      text: 'The OS gave the UDP listener a 208 KiB receive buffer; Woodshed asked for 32 MiB. Bursts of messages may be dropped before Woodshed sees them. In a container, raise net.core.rmem_max on the host; otherwise check /etc/sysctl.d/60-woodshed.conf is applied.',
+    });
   if (mock.paused)
     banners.push({
       kind: 'writes_paused',
@@ -836,7 +886,7 @@ function statusJSON(): Status {
     data_dir: settings.storage.data_dir,
     started_at: new Date(START - 3 * 3600_000 - 17 * MIN).toISOString(),
     first_message_at: firstMessageAt ? new Date(firstMessageAt).toISOString() : null,
-    udp_rcvbuf_bytes: OS.startsWith('darwin') ? 7_454_720 : 33_554_432,
+    udp_rcvbuf_bytes: smallBuffer ? 212_992 : OS.startsWith('darwin') ? 7_454_720 : 33_554_432,
     udp_rcvbuf_requested_bytes: 32 * MiB,
     releases_url: P.get('mock_releases') ?? '',
     kernel_drops_visible: OS.startsWith('linux'),
@@ -1045,8 +1095,8 @@ function history(): StorageHistoryEntry[] {
   return out;
 }
 
-const json = (body: unknown, status = 200) =>
-  new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+const json = (body: unknown, status = 200, headers: Record<string, string> = {}) =>
+  new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json', ...headers } });
 const err = (status: number, error: string) => json({ error }, status);
 
 // ---------- Search ----------
@@ -1128,7 +1178,7 @@ function searchRoute(u: URLSearchParams, now: number): Response {
   });
 }
 
-async function route(method: string, url: URL, body: unknown, header: string | null, signal?: AbortSignal): Promise<Response> {
+async function route(method: string, url: URL, body: unknown, header: string | null, signal?: AbortSignal, ifMatch: string | null = null): Promise<Response> {
   const p = url.pathname;
   const now = Date.now();
   const changing = !['GET', 'HEAD', 'OPTIONS'].includes(method);
@@ -1228,19 +1278,25 @@ async function route(method: string, url: URL, body: unknown, header: string | n
       const list = settings.listeners.blocklist;
       if (b.blocked && !list.some(own)) list.push(`${ip}/${ip.includes(':') ? 128 : 32}`);
       if (!b.blocked) settings.listeners.blocklist = list.filter((c) => !own(c));
+      settingsRev++;
       const dev = deviceJSON(d, now);
       const by = blockedBy(ip);
       return json(!b.blocked && by ? { ...dev, blocked_by: by } : dev);
     }
     return json(deviceJSON(d, now));
   }
-  if (method === 'GET' && p === '/api/settings') return json(settings);
+  if (method === 'GET' && p === '/api/settings') return json(settings, 200, { ETag: settingsETag() });
   if (method === 'PUT' && p === '/api/settings') {
+    probe.lastIfMatch = ifMatch;
+    // A PUT without If-Match is accepted (scripts); a stale one is refused.
+    if (ifMatch !== null && ifMatch !== settingsETag()) return err(409, 'settings changed since you loaded them');
     const s = body as Settings;
     const errors = validate(s);
     if (Object.keys(errors).length) return json({ errors }, 400);
     const wasLan = settings.ui.lan_mode;
+    const restarting = wasLan !== s.ui.lan_mode || settings.ui.port !== s.ui.port;
     settings = structuredClone(s);
+    settingsRev++;
     if (wasLan !== s.ui.lan_mode) {
       // The real server restarts at the new address; the mock just switches modes and keeps
       // this browser logged in, as if it had already logged in there.
@@ -1248,7 +1304,8 @@ async function route(method: string, url: URL, body: unknown, header: string | n
       // The real server restarts at a new origin, where this browser has no secret yet. The
       // mock keeps the origin, so it keeps the current session (if any) rather than invent one.
     }
-    return json(settings);
+    // mock_put_no_etag=1: a server that sends no ETag with the save (the UI reads it again).
+    return json(restarting ? { ...settings, restarting: true } : settings, 200, P.get('mock_put_no_etag') === '1' ? {} : { ETag: settingsETag() });
   }
   if (method === 'GET' && p === '/api/storage/history') return json(history());
   if (method === 'GET' && p === '/api/storage/estimate') {
@@ -1366,7 +1423,7 @@ export const mockTransport: Transport = {
     await sleep(mock.latency * (0.5 + Math.random()));
     if (mock.slowScan && url.pathname === '/api/search') await sleep(700);
     const header = probe.cookieOnly ? null : new Headers(init?.headers).get('X-Woodshed-Session');
-    return route(method, url, body, header, init?.signal ?? undefined);
+    return route(method, url, body, header, init?.signal ?? undefined, new Headers(init?.headers).get('If-Match'));
   },
   async download(path) {
     // Like a browser download: the cookie goes along, the X-Woodshed-Session header can't.

@@ -5,6 +5,9 @@
   import { undo, undoLastSave } from '../lib/undo.svelte';
   import Icon from './Icon.svelte';
 
+  // The install guide's container notes (raising net.core.rmem_max on the host).
+  const CONTAINERS_DOC = 'https://github.com/gmccollu/woodshed/blob/main/docs/install.md#containers';
+
   let retrying = $state(false);
   let retryError = $state('');
 
@@ -77,6 +80,12 @@
         <div class="detail-text">
           Older logs are deleted to stay under the size cap. To keep more, raise the cap in
           <a class="text-link underline" href="#/settings?section=storage">Settings → Storage</a>.
+        </div>
+      {/if}
+      {#if b.kind === 'udp_buffer_small'}
+        <div class="detail-text">
+          How to raise it, on the host or in a container:
+          <a class="text-link underline" href={CONTAINERS_DOC} target="_blank" rel="noopener noreferrer">Install guide → Containers</a>.
         </div>
       {/if}
       {#if b.kind === 'listener_bind'}

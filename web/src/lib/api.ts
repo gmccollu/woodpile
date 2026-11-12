@@ -29,7 +29,7 @@ export interface Listener {
 
 export type BannerLevel = 'error' | 'warn' | 'info';
 
-export type BannerKind = 'listener_bind' | 'writes_paused' | 'low_disk';
+export type BannerKind = 'listener_bind' | 'writes_paused' | 'low_disk' | 'ui_port_busy' | 'udp_buffer_small';
 export type BannerAction = '' | 'retry_listeners';
 
 export interface Banner {
@@ -264,8 +264,20 @@ export interface Settings {
     new_devices_per_minute: number;
   };
   storage: { data_dir: string; retention_days: number; retention_bytes: number; part_bytes: number };
-  /** cert_file/key_file: paths to a user certificate for LAN mode; empty = self-signed. */
-  ui: { lan_mode: boolean; port: number; cert_file: string; key_file: string; require_login_local: boolean };
+  /**
+   * cert_file/key_file: paths to a user certificate for LAN mode; empty = self-signed.
+   * extra_hostnames: more names for the self-signed certificate; trusted_hosts: more Host
+   * names to accept (host or host:port, for a reverse proxy). Older servers omit both.
+   */
+  ui: {
+    lan_mode: boolean;
+    port: number;
+    cert_file: string;
+    key_file: string;
+    require_login_local: boolean;
+    extra_hostnames: string[];
+    trusted_hosts: string[];
+  };
   quiet: { quiet_after_seconds: number; offline_after_seconds: number };
 }
 
@@ -389,7 +401,18 @@ export function setTransport(t: Transport): void {
 }
 
 async function request<T>(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
-  const headers: Record<string, string> = { Accept: 'application/json', ...authHeaders() };
+  return (await requestFull<T>(method, path, body, undefined, signal)).data;
+}
+
+/** request(), with extra request headers and the response's headers. */
+async function requestFull<T>(
+  method: string,
+  path: string,
+  body?: unknown,
+  extra?: Record<string, string>,
+  signal?: AbortSignal,
+): Promise<{ data: T; headers: Headers }> {
+  const headers: Record<string, string> = { Accept: 'application/json', ...authHeaders(), ...extra };
   const init: RequestInit = { method, headers, signal };
   if (body !== undefined) {
     init.body = JSON.stringify(body);
@@ -402,7 +425,7 @@ async function request<T>(method: string, path: string, body?: unknown, signal?:
     if ((e as Error).name === 'AbortError') throw e;
     throw new ApiError(0, `no connection: ${(e as Error).message}`);
   }
-  if (res.status === 204) return undefined as T;
+  if (res.status === 204) return { data: undefined as T, headers: res.headers };
   const text = await res.text();
   let data: unknown = undefined;
   if (text) {
@@ -419,7 +442,7 @@ async function request<T>(method: string, path: string, body?: unknown, signal?:
     if (res.status === 401 && !SESSION_ROUTES.includes(path.split('?')[0])) unauthorized();
     throw new ApiError(res.status, msg, fields, retryAfterSeconds(res.headers.get('Retry-After')));
   }
-  return data as T;
+  return { data: data as T, headers: res.headers };
 }
 
 function query(params: Record<string, string | number | boolean | string[] | undefined>): string {
@@ -535,8 +558,29 @@ export const exportDownloadUrl = (id: string) => `/api/exports/${encodeURICompon
 export const exportTicket = (id: string) =>
   request<{ url: string }>('POST', `/api/exports/${encodeURIComponent(id)}/ticket`);
 
-export const getSettings = () => request<Settings>('GET', '/api/settings');
-export const putSettings = (s: Settings) => request<Settings>('PUT', '/api/settings', s);
+/** Settings with the ETag they were read or saved at ("" if the server sent none). */
+export interface VersionedSettings {
+  settings: Settings;
+  etag: string;
+}
+
+export async function getSettings(): Promise<VersionedSettings> {
+  const { data, headers } = await requestFull<Settings>('GET', '/api/settings');
+  return { settings: data, etag: headers.get('ETag') ?? '' };
+}
+
+/**
+ * Saves the whole object with If-Match: the ETag it was read at. A stale ETag gets a 409
+ * (isConflict). `restarting`: the UI server restarts at a new address just after this reply.
+ */
+export async function putSettings(s: Settings, etag: string): Promise<VersionedSettings & { restarting: boolean }> {
+  const { data, headers } = await requestFull<Settings & { restarting?: boolean }>('PUT', '/api/settings', s, etag ? { 'If-Match': etag } : undefined);
+  const { restarting, ...settings } = data;
+  return { settings, etag: headers.get('ETag') ?? '', restarting: restarting === true };
+}
+
+/** A save refused because the settings changed since they were read (409). */
+export const isConflict = (e: unknown) => e instanceof ApiError && e.status === 409;
 export const getStorageHistory = () => request<StorageHistoryEntry[]>('GET', '/api/storage/history');
 
 export interface StorageEstimate {
