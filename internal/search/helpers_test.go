@@ -226,6 +226,43 @@ func (f *fixture) expect(q Query) []rec {
 		}
 		re = regexp.MustCompile(expr)
 	}
+	// textMatch is q's rule for any needle, for Q and for Exclude.
+	textMatch := func(needle, raw string) bool {
+		switch {
+		case q.Regex:
+			expr := needle
+			if !q.Case {
+				expr = "(?i)" + expr
+			}
+			return regexp.MustCompile(expr).MatchString(raw)
+		case q.Case:
+			return strings.Contains(raw, needle)
+		default:
+			return strings.Contains(strings.ToLower(raw), strings.ToLower(needle))
+		}
+	}
+	// fieldsMatch is the app and host filters' rule, written out plainly.
+	fieldsMatch := func(raw string) bool {
+		var m model.Message
+		syslog.Parse([]byte(raw), &m)
+		if len(q.Hosts) > 0 && !slices.ContainsFunc(q.Hosts, func(h string) bool { return strings.EqualFold(h, m.Hostname) }) {
+			return false
+		}
+		if len(q.Apps) == 0 {
+			return true
+		}
+		app := strings.ToLower(strings.TrimPrefix(m.App, "%"))
+		return app != "" && slices.ContainsFunc(q.Apps, func(a string) bool {
+			if a = strings.TrimSpace(a); a == "" {
+				return false
+			}
+			a = strings.ToLower(strings.TrimPrefix(a, "%"))
+			if p, ok := strings.CutSuffix(a, "*"); ok {
+				return strings.HasPrefix(app, p)
+			}
+			return app == a
+		})
+	}
 	var out []rec
 	for _, r := range f.recs {
 		if !devs[r.dev] || r.ms < fromMs || r.ms >= toMs {
@@ -252,6 +289,12 @@ func (f *fixture) expect(q Query) []rec {
 			if !strings.Contains(strings.ToLower(r.raw), strings.ToLower(q.Q)) {
 				continue
 			}
+		}
+		if q.Exclude != "" && textMatch(q.Exclude, r.raw) {
+			continue
+		}
+		if !fieldsMatch(r.raw) {
+			continue
 		}
 		out = append(out, r)
 	}
@@ -325,6 +368,10 @@ func same(t *testing.T, what string, got []Line, want []rec) {
 		syslog.Parse(g.Raw, &m)
 		if g.Severity != m.Severity {
 			t.Errorf("%s: result %d severity %d, want %d", what, i, g.Severity, m.Severity)
+			return
+		}
+		if g.App != m.App || g.Host != m.Hostname {
+			t.Errorf("%s: result %d app/host %q/%q, want %q/%q", what, i, g.App, g.Host, m.App, m.Hostname)
 			return
 		}
 	}

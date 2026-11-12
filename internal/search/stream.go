@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/gmccollu/woodshed/internal/hub"
+	"github.com/gmccollu/woodshed/internal/model"
 	"github.com/gmccollu/woodshed/internal/store/logfile"
 )
 
@@ -23,6 +24,8 @@ type run struct {
 	fromMs, toMs int64 // lines with fromMs <= received < toMs
 	desc         bool
 	m            *matcher
+	ex           *matcher        // nil: no exclude
+	fields       *fieldMatcher   // nil: no app or host filter
 	sevs         hub.SeveritySet // 0: all
 
 	need int // results still wanted (bounds the compressed-file ring)
@@ -47,6 +50,7 @@ type run struct {
 	err             error // a context error
 
 	unesc []byte
+	msg   model.Message // fields' scratch parse
 }
 
 // expired reports whether the budget or the request is over.
@@ -77,13 +81,15 @@ type hit struct {
 	file     *fileInfo
 }
 
-// check applies the time range, severity and q to one stored line.
+// check applies the time range, severity, q, exclude and then the app and
+// host filters to one stored line: the cheap checks first, so the header is
+// parsed only for lines that passed them.
 func (r *run) check(line []byte) (int64, []byte, bool) {
 	ms, esc, ok := splitLine(line)
 	if !ok || ms < r.fromMs || ms >= r.toMs {
 		return 0, nil, false
 	}
-	if r.sevs != 0 || r.m.kind != matchAll {
+	if r.sevs != 0 || r.m.kind != matchAll || r.ex != nil || r.fields != nil {
 		raw := esc
 		if bytes.IndexByte(esc, '\\') >= 0 {
 			r.unesc = logfile.Unescape(r.unesc[:0], esc)
@@ -93,6 +99,12 @@ func (r *run) check(line []byte) (int64, []byte, bool) {
 			return 0, nil, false
 		}
 		if !r.m.match(raw) {
+			return 0, nil, false
+		}
+		if r.ex != nil && r.ex.match(raw) {
+			return 0, nil, false
+		}
+		if r.fields != nil && !r.fields.match(raw, &r.msg) {
 			return 0, nil, false
 		}
 	}
@@ -613,7 +625,7 @@ func (r *run) prefetch() bool {
 			defer wg.Done()
 			for j := range work {
 				c := &run{e: r.e, ctx: r.ctx, deadline: r.deadline, now: r.now, fromMs: r.fromMs, toMs: r.toMs, desc: true,
-					m: r.m, sevs: r.sevs, need: r.need, cacheKey: r.cacheKey, ringBytes: r.ringBytes}
+					m: r.m, ex: r.ex, fields: r.fields, sevs: r.sevs, need: r.need, cacheKey: r.cacheKey, ringBytes: r.ringBytes}
 				fi := &j.fi
 				o, err := r.e.open(r.ctx, fi)
 				if err != nil {

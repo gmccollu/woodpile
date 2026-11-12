@@ -152,7 +152,31 @@ func testSearchFilters(t *testing.T, f *fixture) {
 		"time range":            with(func(q *Query) { q.From = f.day0.Add(30 * time.Hour); q.To = f.day0.Add(31*time.Hour + 7*time.Minute) }),
 		"time range within day": with(func(q *Query) { q.From = f.day0.Add(20 * time.Hour); q.To = f.day0.Add(20*time.Hour + 30*time.Minute) }),
 		"combined":              with(func(q *Query) { q.Q = "seq=0"; q.Group = "HQ"; q.Severities = sevs(1, 2, 6) }),
-		"default range":         {Filter: Filter{}, Limit: MaxLimit},
+		"app exact":             with(func(q *Query) { q.Apps = []string{"SSHD"} }),
+		"app list":              with(func(q *Query) { q.Apps = []string{"kernel", " app ", ""} }),
+		"app pct tag":           with(func(q *Query) { q.Apps = []string{"%fw-6-302013"} }),
+		"app pct tag no pct":    with(func(q *Query) { q.Apps = []string{"FW-6-302013"} }),
+		"app prefix":            with(func(q *Query) { q.Apps = []string{"%FW-*"} }),
+		"app prefix no pct":     with(func(q *Query) { q.Apps = []string{"fw-4-*"} }),
+		"app prefix plain":      with(func(q *Query) { q.Apps = []string{"ss*"} }),
+		"app any":               with(func(q *Query) { q.Apps = []string{"*"} }),
+		"app none":              with(func(q *Query) { q.Apps = []string{"no-such-app"} }),
+		"host":                  with(func(q *Query) { q.Hosts = []string{"EDGE-fw-01"} }),
+		"host list":             with(func(q *Query) { q.Hosts = []string{"edge-fw-02", "web-01", "web-0"} }),
+		"host and app":          with(func(q *Query) { q.Hosts = []string{"host"}; q.Apps = []string{"app"} }),
+		"exclude":               with(func(q *Query) { q.Exclude = "CONN opened" }),
+		"exclude case":          with(func(q *Query) { q.Exclude = "Link DOWN"; q.Case = true }),
+		"exclude regex":         with(func(q *Query) { q.Exclude = `seq=\d+[13579]$`; q.Regex = true }),
+		"exclude with q":        with(func(q *Query) { q.Q = "seq=00"; q.Exclude = "fw-"; q.Severities = sevs(4, 5, 6) }),
+		"exclude across escape": with(func(q *Query) { q.Exclude = "multi\nline" }),
+		"all new filters": with(func(q *Query) {
+			q.Q = "seq"
+			q.Apps = []string{"%FW-*", "sshd"}
+			q.Hosts = []string{"edge-fw-01", "web-01"}
+			q.Exclude = "5$"
+			q.Regex = true
+		}),
+		"default range": {Filter: Filter{}, Limit: MaxLimit},
 	}
 	f.clock.Set(f.day0.Add(40 * time.Hour)) // "now" for the default range
 	// The checkpointed fixture must really seek: a 1 h range reads far less than
@@ -175,7 +199,7 @@ func testSearchFilters(t *testing.T, f *fixture) {
 			got, _ := f.all(q)
 			label := name + map[bool]string{true: " asc", false: " desc"}[asc]
 			want := f.expect(q)
-			if len(want) == 0 && name != "severities none" && name != "q not in prefix" {
+			if len(want) == 0 && name != "severities none" && name != "q not in prefix" && name != "app none" {
 				t.Errorf("%s: the fixture has no matches; the case tests nothing", label)
 			}
 			same(t, label, got, want)
@@ -342,6 +366,9 @@ func TestCursorTamperAndBinding(t *testing.T) {
 		func(q *Query) { q.To = q.To.Add(time.Second) },
 		func(q *Query) { q.Severities = sevs(3) },
 		func(q *Query) { q.Regex = true },
+		func(q *Query) { q.Exclude = "x" },
+		func(q *Query) { q.Apps = []string{"app"} },
+		func(q *Query) { q.Hosts = []string{"host"} },
 	} {
 		q2 := q
 		q2.Cursor = p.NextCursor
@@ -359,6 +386,23 @@ func TestCursorTamperAndBinding(t *testing.T) {
 	// Regex errors and bad ranges are QueryErrors too.
 	if _, err := f.eng.Search(bg, Query{Filter: Filter{Q: "a(", Regex: true}}); !errors.As(err, &qe) {
 		t.Errorf("regex: %v", err)
+	}
+	if _, err := f.eng.Search(bg, Query{Filter: Filter{Exclude: "a(", Regex: true}}); !errors.As(err, &qe) ||
+		!strings.HasPrefix(qe.Msg, "exclude: error parsing regexp") {
+		t.Errorf("exclude regex: %v", err)
+	}
+	if err := f.eng.CheckFilter(Filter{Exclude: "[", Regex: true}); !errors.As(err, &qe) {
+		t.Errorf("CheckFilter exclude regex: %v", err)
+	}
+	// The same list in another order, or repeated, is the same search.
+	qa := Query{Filter: Filter{From: f.day0, To: f.day0.Add(24 * time.Hour), Apps: []string{"app", "sshd"}, Hosts: []string{"host", "web-01"}}, Limit: 10}
+	pa, err := f.eng.Search(bg, qa)
+	if err != nil || pa.NextCursor == "" {
+		t.Fatal(err, pa.NextCursor)
+	}
+	qa.Apps, qa.Hosts, qa.Cursor = []string{"sshd", "app", "app"}, []string{"web-01", "host"}, pa.NextCursor
+	if _, err := f.eng.Search(bg, qa); err != nil {
+		t.Errorf("reordered lists: %v", err)
 	}
 	if _, err := f.eng.Search(bg, Query{Filter: Filter{From: f.day0, To: f.day0}}); !errors.As(err, &qe) {
 		t.Errorf("empty range: %v", err)
@@ -611,5 +655,70 @@ func TestDeepPaginationSmallRing(t *testing.T) {
 	}
 	if f.eng.passes.hits.Load() == 0 {
 		t.Error("no cached pass served")
+	}
+}
+
+// TestFieldFiltersReadCompressedFiles checks the app, host and exclude filters
+// reach lines in .gz files as well as plain ones, in both orders.
+func TestFieldFiltersReadCompressedFiles(t *testing.T) {
+	f := newFixture(t, 3, 400)
+	files, err := f.idx.Files(bg, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gz := map[int64]bool{}
+	for _, fl := range files {
+		gz[fl.ID] = fl.Compressed
+	}
+	for _, asc := range []bool{false, true} {
+		q := Query{Filter: Filter{From: f.day0, To: f.day0.Add(72 * time.Hour), Apps: []string{"%FW-*"}, Hosts: []string{"edge-fw-01", "edge-fw-02"},
+			Exclude: "deny"}, Asc: asc, Limit: 100}
+		got, _ := f.all(q)
+		same(t, "gz fields", got, f.expect(q))
+		var inGz, inPlain int
+		for _, l := range got {
+			id, _, _, _ := decodeRef(l.Ref)
+			if gz[id] {
+				inGz++
+			} else {
+				inPlain++
+			}
+			if l.App != "%FW-6-302013" || l.Host != "edge-fw-01" {
+				t.Fatalf("result app/host %q/%q", l.App, l.Host)
+			}
+		}
+		if inGz == 0 || inPlain == 0 {
+			t.Errorf("asc=%v: %d results from .gz files and %d from plain ones; want both", asc, inGz, inPlain)
+		}
+	}
+}
+
+func TestFields(t *testing.T) {
+	for _, c := range []struct{ raw, app, host string }{
+		{"<166>Nov 10 20:41:07 edge-fw-01 %FW-6-302013: Built conn", "%FW-6-302013", "edge-fw-01"},
+		{"<86>Nov 10 20:41:07 web-01 sshd[4721]: Accepted publickey", "sshd", "web-01"},
+		{"<13>1 2026-11-10T20:41:07Z web-02 kernel - - - eth0 up", "kernel", "web-02"},
+		{"no header at all", "", ""},
+	} {
+		if app, host := Fields([]byte(c.raw)); app != c.app || host != c.host {
+			t.Errorf("%q: %q/%q, want %q/%q", c.raw, app, host, c.app, c.host)
+		}
+	}
+	fm := newFieldMatcher([]string{"FW-6-*", "SSHD", "%kernel"}, nil)
+	var m model.Message
+	for raw, want := range map[string]bool{
+		"<166>Nov 10 20:41:07 h %FW-6-302013: x": true,
+		"<166>Nov 10 20:41:07 h %FW-4-106023: x": false,
+		"<86>Nov 10 20:41:07 h sshd[1]: x":       true,
+		"<86>Nov 10 20:41:07 h sshd2[1]: x":      false,
+		"<6>Nov 10 20:41:07 h kernel: x":         true,
+		"<6>Nov 10 20:41:07 x":                   false,
+	} {
+		if got := fm.match([]byte(raw), &m); got != want {
+			t.Errorf("%q: %v", raw, got)
+		}
+	}
+	if newFieldMatcher([]string{" ", ""}, []string{""}) != nil {
+		t.Error("blank values make a filter")
 	}
 }

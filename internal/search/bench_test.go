@@ -28,6 +28,10 @@ func BenchmarkSearch(b *testing.B) {
 		{"text_rare", with(func(q *Query) { q.Q = "seq=0012" }), true},
 		{"regex_all", with(func(q *Query) { q.Q = `seq=\d+5$`; q.Regex = true }), true},
 		{"severity_all", with(func(q *Query) { q.Severities = sevs(3, 4) }), true},
+		{"app_all", with(func(q *Query) { q.Apps = []string{"%FW-*"} }), true},
+		{"host_all", with(func(q *Query) { q.Hosts = []string{"web-01"} }), true},
+		{"exclude_all", with(func(q *Query) { q.Exclude = "conn opened" }), true},
+		{"text_app_all", with(func(q *Query) { q.Q = "seq=00"; q.Apps = []string{"sshd"} }), true},
 	}
 	for _, c := range cases {
 		b.Run(c.name, func(b *testing.B) {
