@@ -72,7 +72,8 @@ for k in "${list[@]}"; do [ "$k" -lt "$nall" ] || { echo "wl-send: namespace $k 
 n=${#list[@]}
 [ "$count" -ge "$n" ] || { echo "wl-send: --count $count is smaller than the $n senders" >&2; exit 2; }
 
-[ -n "$out" ] || out=/var/tmp/woodpile-lab/send-$run-$(date -u +%Y%m%dT%H%M%SZ)
+# one directory per invocation: two sends of the same run started in the same second must not share a plan/summary
+[ -n "$out" ] || out=/var/tmp/woodpile-lab/send-$run-$(date -u +%Y%m%dT%H%M%SZ)-$$
 mkdir -p "$out"
 
 if [ -n "$detach" ]; then
