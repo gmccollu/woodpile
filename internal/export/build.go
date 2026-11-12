@@ -63,6 +63,9 @@ type ManifestFilters struct {
 	Q          string   `json:"q"`
 	Regex      bool     `json:"regex"`
 	Case       bool     `json:"case"`
+	App        []string `json:"app"`     // program/tag values; [] = all
+	Host       []string `json:"host"`    // header hostnames; [] = all
+	Exclude    string   `json:"exclude"` // "" = nothing excluded
 }
 
 // ManifestFile is one log file in the zip.
@@ -271,7 +274,8 @@ func (m *Manager) build(ctx context.Context, e *entry) (buildResult, error) {
 		Format: "woodshed-export/1", WoodshedVersion: m.opts.Version, ExportedAt: exportedAt, ID: info.ID,
 		Request: ManifestReq{From: info.From, To: info.To, Devices: devs, Filters: ManifestFilters{
 			Devices: nonNil(info.Named), Group: info.Filters.Group, Ungrouped: info.Filters.Ungrouped, Severities: SeverityList(info.Filters.Severities),
-			Q: info.Filters.Q, Regex: info.Filters.Regex, Case: info.Filters.Case}},
+			Q: info.Filters.Q, Regex: info.Filters.Regex, Case: info.Filters.Case,
+			App: nonNil(info.Filters.Apps), Host: nonNil(info.Filters.Hosts), Exclude: info.Filters.Exclude}},
 		Files: nonNil(files), Lines: res.lines, Gaps: nonNil(gaps), GapsNote: GapsNote,
 		EventsFile: "woodshed-events.log", Events: len(inRange),
 	}
@@ -319,8 +323,17 @@ func nonNil[T any](s []T) []T {
 func readme(info Info) string {
 	var b bytes.Buffer
 	fmt.Fprintf(&b, "Woodshed export %s\n", info.ID)
-	fmt.Fprintf(&b, "Range: %s to %s (UTC, received time; the end is exclusive)\n\n",
+	fmt.Fprintf(&b, "Range: %s to %s (UTC, received time; the end is exclusive)\n",
 		info.From.Format(time.RFC3339), info.To.Format(time.RFC3339))
+	if fl := filterLines(info.Filters); len(fl) > 0 {
+		b.WriteString("Filters (only lines that pass every one are included):\n")
+		for _, l := range fl {
+			b.WriteString("    " + l + "\n")
+		}
+	} else {
+		b.WriteString("Filters: none (every line in the range)\n")
+	}
+	b.WriteString("\n")
 	b.WriteString(strings.TrimLeft(`
 logs/<device>/<YYYY-MM-DD>.log
     The messages Woodshed received from each device on that day (UTC), oldest
@@ -347,4 +360,42 @@ To check a file: sha256sum logs/<device>/<day>.log (or on Windows:
 certutil -hashfile <file> SHA256) and compare with manifest.json.
 `, "\n"))
 	return b.String()
+}
+
+// filterLines describes an export's line filters for README.txt, one per line
+// (the device selection is in manifest.json).
+func filterLines(f Filters) []string {
+	var out []string
+	how := func() string {
+		var bits []string
+		if f.Regex {
+			bits = append(bits, "regular expression")
+		}
+		if f.Case {
+			bits = append(bits, "case-sensitive")
+		} else {
+			bits = append(bits, "any case")
+		}
+		return " (" + strings.Join(bits, ", ") + ")"
+	}
+	if f.Severities != 0 {
+		var sev []string
+		for _, v := range SeverityList(f.Severities) {
+			sev = append(sev, fmt.Sprint(v))
+		}
+		out = append(out, "Severities: "+strings.Join(sev, ", "))
+	}
+	if f.Q != "" {
+		out = append(out, fmt.Sprintf("Text: %q%s", f.Q, how()))
+	}
+	if len(f.Apps) > 0 {
+		out = append(out, "Program/tag: "+strings.Join(f.Apps, ", "))
+	}
+	if len(f.Hosts) > 0 {
+		out = append(out, "Host: "+strings.Join(f.Hosts, ", "))
+	}
+	if f.Exclude != "" {
+		out = append(out, fmt.Sprintf("Exclude: %q%s", f.Exclude, how()))
+	}
+	return out
 }
