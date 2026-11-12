@@ -324,6 +324,18 @@ func checkStatus(t *testing.T, st map[string]any) {
 	}
 }
 
+// hostBanners is asSlice of a banner list without udp_buffer_small, which the
+// test machine's sysctl decides (a Linux runner's default rmem_max is small).
+func hostBanners(v any) []any {
+	var out []any
+	for _, b := range asSlice(v) {
+		if m, ok := b.(map[string]any); !ok || m["kind"] != "udp_buffer_small" {
+			out = append(out, b)
+		}
+	}
+	return out
+}
+
 func asSlice(v any) []any {
 	s, _ := v.([]any)
 	return s
@@ -588,7 +600,7 @@ func TestEndToEnd(t *testing.T) {
 			t.Errorf("listener %v", l)
 		}
 	}
-	if len(asSlice(st["banners"])) != 0 {
+	if len(hostBanners(st["banners"])) != 0 {
 		t.Errorf("banners on a clean start: %v", st["banners"])
 	}
 
@@ -898,7 +910,7 @@ func TestPortClash(t *testing.T) {
 		p.do("POST", "/api/listeners/retry", nil)
 		st = nil
 		p.getJSON("/api/status", &st)
-		return asSlice(st["listeners"])[0].(map[string]any)["ok"] == true && len(asSlice(st["banners"])) == 0
+		return asSlice(st["listeners"])[0].(map[string]any)["ok"] == true && len(hostBanners(st["banners"])) == 0
 	})
 	t.Logf("UDP up after %d retries", tries)
 

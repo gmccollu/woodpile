@@ -105,6 +105,10 @@ type UI struct {
 	// RequireLoginLocal makes localhost mode use the password and sessions too
 	// (once a password is set), so other users of this machine can't use the UI.
 	RequireLoginLocal bool `toml:"require_login_local" json:"require_login_local" comment:"true: the UI asks for the password on localhost too (needs a password)."`
+	// ExtraHostnames are added to the self-signed certificate (DNS names or IPs).
+	ExtraHostnames []string `toml:"extra_hostnames" json:"extra_hostnames" comment:"Extra names or IP addresses for the self-signed LAN mode certificate (e.g. a DNS alias)."`
+	// TrustedHosts are extra Host header values the UI accepts (reverse proxies).
+	TrustedHosts []string `toml:"trusted_hosts" json:"trusted_hosts" comment:"Extra Host values the UI accepts, host or host:port (e.g. a reverse proxy's public name)."`
 }
 
 // Quiet sets the device status thresholds (online, quiet, offline).
@@ -138,7 +142,7 @@ func Default() Config {
 			RetentionBytes: DefaultRetentionBytes,
 			PartBytes:      DefaultPartBytes,
 		},
-		UI:    UI{Port: DefaultUIPort},
+		UI:    UI{Port: DefaultUIPort, ExtraHostnames: []string{}, TrustedHosts: []string{}},
 		Quiet: Quiet{QuietAfterSeconds: DefaultQuietAfterSeconds, OfflineAfterSeconds: DefaultOfflineAfterSeconds},
 	}
 }
@@ -147,6 +151,8 @@ func Default() Config {
 func (c Config) Clone() Config {
 	c.Listeners.Allowlist = append([]string{}, c.Listeners.Allowlist...)
 	c.Listeners.Blocklist = append([]string{}, c.Listeners.Blocklist...)
+	c.UI.ExtraHostnames = append([]string{}, c.UI.ExtraHostnames...)
+	c.UI.TrustedHosts = append([]string{}, c.UI.TrustedHosts...)
 	return c
 }
 
@@ -161,6 +167,8 @@ func (c *Config) Normalize() {
 	}
 	c.Listeners.Allowlist = al
 	c.Listeners.Blocklist = trimList(c.Listeners.Blocklist)
+	c.UI.ExtraHostnames = normalizeHosts(c.UI.ExtraHostnames)
+	c.UI.TrustedHosts = normalizeHosts(c.UI.TrustedHosts)
 	if c.Listeners.UDPRcvbufBytes == 0 {
 		c.Listeners.UDPRcvbufBytes = DefaultUDPRcvbufBytes
 	}

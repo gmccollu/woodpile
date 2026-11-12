@@ -18,6 +18,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"sync"
 	"time"
@@ -264,7 +265,8 @@ func equalFold(a, b string) bool {
 }
 
 func uiConfig(u config.UI) api.UIConfig {
-	return api.UIConfig{LANMode: u.LANMode, Port: u.Port, CertFile: u.CertFile, KeyFile: u.KeyFile, RequireLoginLocal: u.RequireLoginLocal}
+	return api.UIConfig{LANMode: u.LANMode, Port: u.Port, CertFile: u.CertFile, KeyFile: u.KeyFile, RequireLoginLocal: u.RequireLoginLocal,
+		ExtraHostnames: u.ExtraHostnames, TrustedHosts: u.TrustedHosts}
 }
 
 // ConfigPath returns the absolute config path.
@@ -304,8 +306,14 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 	s.be.setListeners(ln)
 	s.exports.Start()
-	// The listeners log what they bound and the UDP buffer the OS granted.
-	for _, l := range ln.Status().Listeners {
+	// The listeners log what they bound and the UDP buffer the OS granted; a
+	// buffer too small for bursts is a warning (and a banner).
+	lst := ln.Status()
+	if udpBufferBanner(runtime.GOOS, lst.UDPRcvbufBytes, lst.UDPRcvbufRequestedBytes) != nil {
+		log.Warn("UDP receive buffer is smaller than requested: "+udpBufferText(lst.UDPRcvbufBytes, lst.UDPRcvbufRequestedBytes),
+			"rcvbuf_granted", lst.UDPRcvbufBytes, "rcvbuf_requested", lst.UDPRcvbufRequestedBytes)
+	}
+	for _, l := range lst.Listeners {
 		if !l.OK {
 			log.Error("listener didn't start; the UI shows a banner with Retry", "proto", l.Proto, "addr", l.Addr,
 				"port", l.Port, "err", l.Error, "holder", l.Holder)
@@ -472,7 +480,8 @@ func (s *Server) watchState(started time.Time, stop <-chan struct{}) {
 		if ui.Err != nil {
 			rs.UI.Error = ui.Err.Error()
 		}
-		if first || rs != last {
+		s.be.fillRunState(&rs)
+		if first || !reflect.DeepEqual(rs, last) {
 			if err := writeState(dataDir, rs); err != nil {
 				// Try again on the next tick (on Windows a reader or a virus scanner
 				// holding the file makes the rename fail): last stays as it was.

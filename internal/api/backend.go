@@ -4,15 +4,21 @@
 //
 // The handlers talk to the rest of the service only through the Backend
 // interface, so this package doesn't depend on the listeners, the live hub or
-// the config. All JSON shapes below follow docs/api.md field for field.
+// the config file (it uses the config package only for the host-name syntax of
+// ui.extra_hostnames and ui.trusted_hosts). All JSON shapes below follow
+// docs/api.md field for field.
 package api
 
 import (
 	"cmp"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -58,8 +64,10 @@ type Backend interface {
 	// isn't, it returns a *ValidationError (and saves nothing); its Fields go
 	// to the client unchanged as {"errors": {...}}. A change to UI is applied by
 	// this package, not the backend: it restarts the HTTP server after the
-	// response is sent.
-	SaveSettings(ctx context.Context, s Settings) (Settings, error)
+	// response is sent. A non-empty ifMatch is the ETag (SettingsETag) the
+	// client loaded: if the settings in effect have another one, it saves nothing
+	// and returns ErrSettingsChanged (checked under the same lock as the save).
+	SaveSettings(ctx context.Context, s Settings, ifMatch string) (Settings, error)
 
 	// RetryListeners serves POST /api/listeners/retry: rebind any syslog
 	// listener that failed to bind. The client re-reads /api/status afterwards,
@@ -184,7 +192,7 @@ type Listener struct {
 
 // Banner is a message the UI shows at the top of every page.
 type Banner struct {
-	Kind   string `json:"kind"`   // listener_bind, writes_paused, low_disk
+	Kind   string `json:"kind"`   // listener_bind, writes_paused, low_disk, … (docs/api.md)
 	Level  string `json:"level"`  // error, warn, info
 	Text   string `json:"text"`   //
 	Action string `json:"action"` // "" or "retry_listeners"
@@ -311,11 +319,13 @@ type StorageSettings struct {
 
 // UISettings holds the web UI settings.
 type UISettings struct {
-	LANMode           bool   `json:"lan_mode"`
-	Port              int    `json:"port"`
-	CertFile          string `json:"cert_file"` // empty: use the self-signed certificate
-	KeyFile           string `json:"key_file"`
-	RequireLoginLocal bool   `json:"require_login_local"` // localhost mode asks for the password too
+	LANMode           bool     `json:"lan_mode"`
+	Port              int      `json:"port"`
+	CertFile          string   `json:"cert_file"` // empty: use the self-signed certificate
+	KeyFile           string   `json:"key_file"`
+	RequireLoginLocal bool     `json:"require_login_local"` // localhost mode asks for the password too
+	ExtraHostnames    []string `json:"extra_hostnames"`     // added to the self-signed certificate
+	TrustedHosts      []string `json:"trusted_hosts"`       // extra Host values accepted (reverse proxies)
 }
 
 // QuietSettings holds the device status thresholds.
@@ -346,8 +356,13 @@ func (s *Status) normalize() {
 	s.Listeners = nonNil(s.Listeners)
 	s.HostIPs = nonNil(s.HostIPs)
 	s.Banners = nonNil(s.Banners)
-	// Priority order: errors, then warnings, then anything else; stable within a level.
-	slices.SortStableFunc(s.Banners, func(a, b Banner) int { return bannerRank(a.Level) - bannerRank(b.Level) })
+	SortBanners(s.Banners)
+}
+
+// SortBanners puts banners in priority order: errors, then warnings, then
+// anything else; stable within a level.
+func SortBanners(bs []Banner) {
+	slices.SortStableFunc(bs, func(a, b Banner) int { return bannerRank(a.Level) - bannerRank(b.Level) })
 }
 
 func bannerRank(level string) int {
@@ -392,6 +407,35 @@ func (d *Device) normalize() {
 func (s *Settings) normalize() {
 	s.Listeners.Allowlist = nonNil(s.Listeners.Allowlist)
 	s.Listeners.Blocklist = nonNil(s.Listeners.Blocklist)
+	s.UI.ExtraHostnames = nonNil(s.UI.ExtraHostnames)
+	s.UI.TrustedHosts = nonNil(s.UI.TrustedHosts)
+}
+
+// ErrSettingsChanged is SaveSettings's answer to a stale If-Match.
+var ErrSettingsChanged = errors.New("settings changed since you loaded them")
+
+// SettingsETag is the strong ETag of a settings object as GET /api/settings
+// sends it: a hash of its normalized JSON.
+func SettingsETag(st Settings) string {
+	st.normalize()
+	b, err := json.Marshal(st)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(b)
+	return `"` + hex.EncodeToString(sum[:16]) + `"`
+}
+
+// etagMatches reports whether an If-Match header value names etag ("*", or one
+// of a comma-separated list; a weak W/ tag compares by its value).
+func etagMatches(header, etag string) bool {
+	for _, t := range strings.Split(header, ",") {
+		t = strings.TrimPrefix(strings.TrimSpace(t), "W/")
+		if t == "*" || t == etag {
+			return true
+		}
+	}
+	return false
 }
 
 func nonNil[T any](s []T) []T {

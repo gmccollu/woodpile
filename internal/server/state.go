@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/gmccollu/woodshed/internal/api"
 )
 
 // StateFileName is the run-state file a running server keeps in its data dir
@@ -13,7 +15,8 @@ import (
 // the UI port is taken by another program: status then reads the UI error here.
 const StateFileName = "woodshed.state.json"
 
-// RunState is the content of the run-state file.
+// RunState is the content of the run-state file (docs/api.md, "Run-state
+// file"). The server rewrites it within a second of any change.
 type RunState struct {
 	PID       int        `json:"pid"`
 	Version   string     `json:"version"`
@@ -21,6 +24,15 @@ type RunState struct {
 	Config    string     `json:"config"`
 	DataDir   string     `json:"data_dir"`
 	UI        RunStateUI `json:"ui"`
+
+	// The syslog listeners and the banners, exactly as /api/status has them
+	// (so `woodshed status` can show them when the API needs a login).
+	// Listeners is empty before the listeners start; Banners is sorted errors
+	// first, like /api/status.
+	Listeners               []api.Listener `json:"listeners"`
+	UDPRcvbufBytes          int64          `json:"udp_rcvbuf_bytes"`
+	UDPRcvbufRequestedBytes int64          `json:"udp_rcvbuf_requested_bytes"`
+	Banners                 []api.Banner   `json:"banners"`
 }
 
 // RunStateUI is the UI server's state.

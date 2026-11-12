@@ -178,6 +178,7 @@ func (s *Server) apiRoutes() *http.ServeMux {
 				return
 			}
 			st.normalize()
+			w.Header().Set("ETag", SettingsETag(st))
 			writeJSON(w, http.StatusOK, st)
 		},
 		http.MethodPut: s.putSettings,
@@ -289,7 +290,29 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	saved, err := s.backend.SaveSettings(r.Context(), in)
+	// If-Match: the ETag from GET. The backend compares it under its save lock,
+	// so a concurrent change (another tab, a device blocked) can't slip between.
+	// "*" or no header saves whatever is in effect (scripts).
+	ifMatch := ""
+	if h := r.Header.Get("If-Match"); h != "" {
+		cur, err := s.backend.Settings(r.Context())
+		if err != nil {
+			s.backendError(w, r, err)
+			return
+		}
+		cur.normalize()
+		etag := SettingsETag(cur)
+		if !etagMatches(h, etag) {
+			writeError(w, http.StatusConflict, ErrSettingsChanged.Error())
+			return
+		}
+		ifMatch = etag
+	}
+	saved, err := s.backend.SaveSettings(r.Context(), in, ifMatch)
+	if errors.Is(err, ErrSettingsChanged) {
+		writeError(w, http.StatusConflict, ErrSettingsChanged.Error())
+		return
+	}
 	var ve *ValidationError
 	if errors.As(err, &ve) {
 		writeJSON(w, http.StatusBadRequest, errorBody{Error: "Some settings need fixing.", Errors: nonNilMap(ve.Fields)})
@@ -300,25 +323,37 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	saved.normalize()
-	writeJSON(w, http.StatusOK, saved)
 
-	// require_login_local applies at once, without a restart.
+	// require_login_local and the host lists apply at once, without a restart.
 	s.mu.Lock()
 	s.want.RequireLoginLocal = saved.UI.RequireLoginLocal
+	s.want.ExtraHostnames, s.want.TrustedHosts = saved.UI.ExtraHostnames, saved.UI.TrustedHosts
 	s.mu.Unlock()
 	s.requireLocal.Store(saved.UI.RequireLoginLocal)
+	s.setHosts(saved.UI.ExtraHostnames, saved.UI.TrustedHosts)
 
-	// Apply a UI change after this response: the restart waits for this
-	// request to finish before it closes the listener.
+	// A mode, port or certificate change restarts the UI server after this
+	// response (the restart waits for this request to finish before it closes
+	// the listener); the response says so.
 	cur := s.currentUI()
-	if saved.UI.LANMode != cur.LANMode || saved.UI.Port != cur.Port ||
-		saved.UI.CertFile != cur.CertFile || saved.UI.KeyFile != cur.KeyFile {
+	restart := saved.UI.LANMode != cur.LANMode || saved.UI.Port != cur.Port ||
+		saved.UI.CertFile != cur.CertFile || saved.UI.KeyFile != cur.KeyFile
+	w.Header().Set("ETag", SettingsETag(saved))
+	writeJSON(w, http.StatusOK, settingsResponse{Settings: saved, Restarting: restart})
+	if restart {
 		next := cur
 		next.LANMode, next.Port = saved.UI.LANMode, saved.UI.Port
 		next.CertFile, next.KeyFile = saved.UI.CertFile, saved.UI.KeyFile
 		s.log.Info("api: UI settings changed; restarting the UI server", "lan_mode", next.LANMode, "port", next.Port)
 		s.Reconfigure(next)
 	}
+}
+
+// settingsResponse is the PUT /api/settings body: the saved settings, plus
+// "restarting": true when the UI server restarts after the response.
+type settingsResponse struct {
+	Settings
+	Restarting bool `json:"restarting,omitempty"`
 }
 
 func nonNilMap(m map[string]string) map[string]string {

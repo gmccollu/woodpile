@@ -307,6 +307,21 @@ instead of `EventSource` (which can't send headers); the stream format is unchan
 
 `GET /healthz` → `{"ok": true}` (no login in either mode).
 
+## Run-state file
+
+Not HTTP: a running server keeps `woodshed.state.json` in its data folder (mode 0640, rewritten within a second of
+any change, deleted at a clean stop) for `woodshed status`, which reads it when the API needs a login or can't
+answer. It only means something while the data folder's lock is held (a crash leaves it behind).
+```json
+{"pid": 4242, "version": "0.9.0", "started_at": "...", "config": "/etc/woodshed/woodshed.toml", "data_dir": "/var/lib/woodshed",
+ "ui": {"listening": true, "url": "https://host:8514/", "lan_mode": true, "cert_fingerprint": "AB:CD:…"},
+ "listeners": [{"proto": "udp", "addr": "0.0.0.0", "port": 514, "ok": true, "error": ""}],
+ "udp_rcvbuf_bytes": 4194304, "udp_rcvbuf_requested_bytes": 33554432,
+ "banners": [{"kind": "udp_buffer_small", "level": "warn", "text": "The UDP receive buffer is 4 MiB; …", "action": ""}]}
+```
+`listeners` and `banners` are exactly `/api/status`'s (banners sorted errors first); `listeners` is `[]` before the
+listeners start. `ui.error` and `ui.cert_fingerprint` are omitted when empty.
+
 ## Errors
 
 Any non-2xx returns `{"error": "human-readable message"}`.

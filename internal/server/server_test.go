@@ -13,6 +13,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -155,7 +156,7 @@ func TestServerEndToEndInProcess(t *testing.T) {
 	if code := r.do(t, "GET", "/api/status", nil, &st); code != 200 {
 		t.Fatalf("status %d", code)
 	}
-	if st.Version != "1.2.3" || st.Build != "abc1234" || st.FirstMessageAt != nil || len(st.Listeners) != 2 || len(st.Banners) != 0 {
+	if st.Version != "1.2.3" || st.Build != "abc1234" || st.FirstMessageAt != nil || len(st.Listeners) != 2 || len(hostBanners(st.Banners)) != 0 {
 		t.Fatalf("status = %+v", st)
 	}
 	for _, l := range st.Listeners {
@@ -345,7 +346,7 @@ func TestPortClashDoesNotStopStartup(t *testing.T) {
 		r.do(t, "POST", "/api/listeners/retry", nil, nil)
 		st = api.Status{}
 		r.do(t, "GET", "/api/status", nil, &st)
-		return st.Listeners[0].OK && len(st.Banners) == 0
+		return st.Listeners[0].OK && len(hostBanners(st.Banners)) == 0
 	})
 }
 
@@ -358,6 +359,12 @@ func waitFor(t *testing.T, what string, ok func() bool) {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
+}
+
+// hostBanners drops udp_buffer_small, which the test machine's sysctl decides
+// (a Linux runner's default rmem_max grants about 208 KiB).
+func hostBanners(bs []api.Banner) []api.Banner {
+	return slices.DeleteFunc(slices.Clone(bs), func(b api.Banner) bool { return b.Kind == "udp_buffer_small" })
 }
 
 func TestBanners(t *testing.T) {

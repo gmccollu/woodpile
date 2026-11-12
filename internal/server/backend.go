@@ -234,42 +234,92 @@ func (b *backend) Status(ctx context.Context) (api.Status, error) {
 	}
 	st.FirstMessageAt = first
 
-	var ls listen.Status
-	if ln := b.ln.Load(); ln != nil {
-		ls = ln.Status()
-	}
+	ls, listeners, banners := b.listenerState(ctx, cfg)
 	st.UDPRcvbufBytes = int64(ls.UDPRcvbufBytes)
 	st.UDPRcvbufRequestedBytes = int64(ls.UDPRcvbufRequestedBytes)
 	if st.UDPRcvbufRequestedBytes == 0 && cfg.Listeners.UDP.Enabled {
 		st.UDPRcvbufRequestedBytes = int64(cfg.Listeners.UDPRcvbufBytes)
 	}
 	st.KernelDropsVisible = ls.KernelDropsVisible
+	st.Listeners, st.Banners = listeners, banners
+	return st, nil
+}
+
+// listenerState is the listeners' status, the listeners as /api/status shows
+// them (holders annotated) and every banner (unsorted), for /api/status and the
+// run-state file.
+func (b *backend) listenerState(ctx context.Context, cfg config.Config) (listen.Status, []api.Listener, []api.Banner) {
+	var ls listen.Status
+	if ln := b.ln.Load(); ln != nil {
+		ls = ln.Status()
+	}
+	var listeners []api.Listener
 	for _, l := range ls.Listeners {
-		st.Listeners = append(st.Listeners, api.Listener{
+		listeners = append(listeners, api.Listener{
 			Proto: l.Proto, Addr: l.Addr, Port: l.Port, OK: l.OK, Error: l.Error, Holder: l.Holder,
 		})
 	}
 	u := b.store.Usage()
-	st.Banners = append(buildBanners(ls.Listeners, u, cfg.Storage.DataDir), b.startupBanners...)
+	banners := append(buildBanners(ls.Listeners, u, cfg.Storage.DataDir), b.startupBanners...)
+	if ban := udpBufferBanner(runtime.GOOS, ls.UDPRcvbufBytes, ls.UDPRcvbufRequestedBytes); ban != nil {
+		banners = append(banners, *ban)
+	}
 	// The estimate is a hint: an index error leaves the banner out, not the status.
 	if ban, err := b.retentionBanner(ctx, u.CapBytes, cfg.Storage.RetentionDays); err != nil {
 		b.log.Warn("retention estimate failed", "err", err)
 	} else if ban != nil {
-		st.Banners = append(st.Banners, *ban)
+		banners = append(banners, *ban)
 	}
 	// Another Woodshed on this machine (usually the installed service): name it
 	// as the holder and say what to do.
 	if !b.isService {
 		p, ok := b.peer(ctx)
-		annotateHolders(st.Listeners, p, ok)
-		if pb := peerBanners(st.Listeners, p, ok, cfg.UI.Port, b.uiListening()); len(pb) > 0 {
+		annotateHolders(listeners, p, ok)
+		if pb := peerBanners(listeners, p, ok, cfg.UI.Port, b.uiListening()); len(pb) > 0 {
 			if pb[0].Kind == "listener_bind" {
-				st.Banners = slices.DeleteFunc(st.Banners, func(x api.Banner) bool { return x.Kind == "listener_bind" })
+				banners = slices.DeleteFunc(banners, func(x api.Banner) bool { return x.Kind == "listener_bind" })
 			}
-			st.Banners = append(st.Banners, pb...)
+			banners = append(banners, pb...)
 		}
 	}
-	return st, nil
+	return ls, listeners, banners
+}
+
+// fillRunState adds the listeners and banners to the run-state file's content.
+func (b *backend) fillRunState(rs *RunState) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cfg := b.config()
+	ls, listeners, banners := b.listenerState(ctx, cfg)
+	rs.Listeners = append([]api.Listener{}, listeners...)
+	rs.UDPRcvbufBytes = int64(ls.UDPRcvbufBytes)
+	rs.UDPRcvbufRequestedBytes = int64(ls.UDPRcvbufRequestedBytes)
+	if rs.UDPRcvbufRequestedBytes == 0 && cfg.Listeners.UDP.Enabled {
+		rs.UDPRcvbufRequestedBytes = int64(cfg.Listeners.UDPRcvbufBytes)
+	}
+	rs.Banners = append([]api.Banner{}, banners...)
+	api.SortBanners(rs.Banners)
+}
+
+// udpBufferMin is the UDP receive buffer below which a burst is likely to
+// overflow it (docs/api.md, udp_buffer_small).
+const udpBufferMin = 8 << 20
+
+// udpBufferBanner is the udp_buffer_small warn banner (Linux only): the OS
+// granted less than udpBufferMin and less than requested. Nil otherwise.
+func udpBufferBanner(goos string, granted, requested int) *api.Banner {
+	if goos != "linux" || granted <= 0 || granted >= udpBufferMin || granted >= requested {
+		return nil
+	}
+	return &api.Banner{Kind: "udp_buffer_small", Level: api.LevelWarn, Text: udpBufferText(granted, requested)}
+}
+
+func udpBufferText(granted, requested int) string {
+	return fmt.Sprintf("The UDP receive buffer is %s; Woodshed asked for %s. Bursts of UDP messages may be dropped "+
+		"before Woodshed sees them. In a container, raise net.core.rmem_max on the host (it can't be set from inside); "+
+		"otherwise raise it here (the Linux packages install /etc/sysctl.d/60-woodshed.conf: apply it with sudo sysctl --system). "+
+		"Then restart Woodshed.",
+		shortBytes(int64(granted)), shortBytes(int64(requested)))
 }
 
 // firstMessageAt is the earliest device first_seen in the index, or the first
@@ -609,10 +659,19 @@ func toAPISettings(c config.Config) (api.Settings, error) {
 // it, and applies it live: listeners through Reconfigure, retention through
 // SetLimits, quiet thresholds on the next read. The api package applies UI
 // changes itself.
-func (b *backend) SaveSettings(ctx context.Context, in api.Settings) (api.Settings, error) {
+func (b *backend) SaveSettings(ctx context.Context, in api.Settings, ifMatch string) (api.Settings, error) {
 	b.saveMu.Lock()
 	defer b.saveMu.Unlock()
 	cur := b.config()
+	if ifMatch != "" {
+		st, err := toAPISettings(cur)
+		if err != nil {
+			return api.Settings{}, err
+		}
+		if api.SettingsETag(st) != ifMatch {
+			return api.Settings{}, api.ErrSettingsChanged
+		}
+	}
 	next := cur.Clone()
 	raw, err := json.Marshal(in)
 	if err != nil {

@@ -91,6 +91,7 @@ func (c Config) validate(goos string, prev *Config) Errors {
 	}
 
 	checkCertPair(e, c.UI)
+	checkUIHosts(e, c.UI)
 
 	q := c.Quiet
 	if q.QuietAfterSeconds < 1 {

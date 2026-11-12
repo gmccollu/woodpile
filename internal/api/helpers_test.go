@@ -196,11 +196,14 @@ func (b *fakeBackend) Settings(ctx context.Context) (Settings, error) {
 	defer b.mu.Unlock()
 	return b.settings, nil
 }
-func (b *fakeBackend) SaveSettings(ctx context.Context, s Settings) (Settings, error) {
+func (b *fakeBackend) SaveSettings(ctx context.Context, s Settings, ifMatch string) (Settings, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.saveErr != nil {
 		return Settings{}, b.saveErr
+	}
+	if ifMatch != "" && ifMatch != SettingsETag(b.settings) {
+		return Settings{}, ErrSettingsChanged
 	}
 	b.settings = s
 	return s, nil

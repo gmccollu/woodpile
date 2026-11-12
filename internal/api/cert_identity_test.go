@@ -38,7 +38,7 @@ func TestIdentityKeepsOnlyStableAddresses(t *testing.T) {
 		return out
 	}
 	// Without the OS's flags (macOS, Windows): only EUI-64 IPv6.
-	id := identityFrom("Box", addrs, nil)
+	id := identityFrom("Box", nil, addrs, nil)
 	if got := strings.Join(ips(id), " "); got != "127.0.0.1 192.0.2.10 ::1 2001:db8::211:22ff:fe33:4455" {
 		t.Errorf("no flags: %s", got)
 	}
@@ -56,7 +56,7 @@ func TestIdentityKeepsOnlyStableAddresses(t *testing.T) {
 	flags[temp.ip] = ifaTemporary
 	depr := a("eth0", "2001:db8::aaaa:1")
 	flags[depr.ip] = ifaDeprecated
-	id = identityFrom("box", append(slices.Clone(addrs), temp, depr), flags)
+	id = identityFrom("box", nil, append(slices.Clone(addrs), temp, depr), flags)
 	if got := strings.Join(ips(id), " "); got != "127.0.0.1 192.0.2.10 ::1 2001:db8::211:22ff:fe33:4455 2001:db8::8d3c:a1f2:7e01:9b44" {
 		t.Errorf("with flags: %s", got)
 	}

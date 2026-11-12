@@ -7,6 +7,7 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -626,13 +627,23 @@ func (s *Server) requireSession(next http.Handler) http.Handler {
 
 // setRequireLocal saves ui.require_login_local through the backend and applies it.
 func (s *Server) setRequireLocal(ctx context.Context, on bool) error {
-	st, err := s.backend.Settings(ctx)
-	if err != nil {
-		return err
-	}
-	if st.UI.RequireLoginLocal != on {
+	// Read-modify-write under the ETag, so a concurrent save isn't undone;
+	// on a collision, read again.
+	for attempt := 0; ; attempt++ {
+		st, err := s.backend.Settings(ctx)
+		if err != nil {
+			return err
+		}
+		if st.UI.RequireLoginLocal == on {
+			break
+		}
+		etag := SettingsETag(st)
 		st.UI.RequireLoginLocal = on
-		if _, err := s.backend.SaveSettings(ctx, st); err != nil {
+		_, err = s.backend.SaveSettings(ctx, st, etag)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, ErrSettingsChanged) || attempt == 4 {
 			return err
 		}
 	}

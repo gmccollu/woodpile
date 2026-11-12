@@ -18,6 +18,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/gmccollu/woodshed/internal/config"
 	"github.com/gmccollu/woodshed/web"
 )
 
@@ -37,6 +38,11 @@ type UIConfig struct {
 	// RequireLoginLocal makes localhost mode require the password too (once
 	// one is set). It applies without a restart.
 	RequireLoginLocal bool
+	// ExtraHostnames (DNS names or IPs) are added to the self-signed
+	// certificate; TrustedHosts are extra Host values accepted in localhost mode
+	// (and as redirect targets in LAN mode). Both validated by config, and both
+	// apply without a restart.
+	ExtraHostnames, TrustedHosts []string
 }
 
 // Options configure a Server.
@@ -99,6 +105,10 @@ type Server struct {
 	requireLocal atomic.Bool                // ui.require_login_local
 	certSrc      atomic.Pointer[certSource] // the LAN-mode certificate in use (nil in localhost mode)
 	port         atomic.Int64               // the running server's port
+	extraHosts   atomic.Pointer[[]string]   // ui.extra_hostnames
+	trustedHosts atomic.Pointer[[]config.TrustedHost]
+	// settingsMu serializes PUT /api/settings (the If-Match check and the save).
+	settingsMu sync.Mutex
 }
 
 // New prepares a Server. It reads the password hash and the UI files but doesn't
@@ -148,12 +158,43 @@ func New(opts Options) (*Server, error) {
 		want:    opts.UI,
 	}
 	s.requireLocal.Store(opts.UI.RequireLoginLocal)
+	s.setHosts(opts.UI.ExtraHostnames, opts.UI.TrustedHosts)
 	s.auth, err = newAuth(opts.DataDir, opts.argon, opts.now, func(e Event) { s.event(e.Level, e.Kind, e.Text) })
 	if err != nil {
 		return nil, fmt.Errorf("api: %w", err)
 	}
 	s.handler = s.buildHandler()
 	return s, nil
+}
+
+// setHosts applies ui.extra_hostnames and ui.trusted_hosts. A new extra name
+// makes the running LAN-mode certificate source re-check at once (it regenerates,
+// keeping the key, if the name isn't covered).
+func (s *Server) setHosts(extra, trusted []string) {
+	extra = slices.Clone(extra)
+	old := s.extraHosts.Swap(&extra)
+	th := config.UI{TrustedHosts: trusted}.TrustedHostList()
+	s.trustedHosts.Store(&th)
+	if old != nil && !slices.Equal(*old, extra) {
+		if cs := s.certSrc.Load(); cs != nil {
+			cs.recheck()
+			if _, err := cs.load(); err != nil {
+				s.log.Warn("api: couldn't regenerate the UI certificate", "err", err)
+			}
+		}
+	}
+}
+
+// identity is the host identity plus ui.extra_hostnames.
+func (s *Server) identity() (hostIdentity, error) {
+	id, err := s.opts.identity()
+	if err != nil {
+		return id, err
+	}
+	if p := s.extraHosts.Load(); p != nil {
+		id = id.withExtras(*p)
+	}
+	return id, nil
 }
 
 // Handler is the full handler chain (headers, guards, auth, routes, UI), for
@@ -221,6 +262,7 @@ func (s *Server) Reconfigure(cfg UIConfig) {
 	s.mu.Lock()
 	s.want = cfg
 	s.mu.Unlock()
+	s.setHosts(cfg.ExtraHostnames, cfg.TrustedHosts)
 	select {
 	case s.reconf <- struct{}{}:
 	default:
@@ -379,7 +421,7 @@ func (s *Server) start(cfg UIConfig) (*instance, error) {
 			userCert: cfg.CertFile,
 			userKey:  cfg.KeyFile,
 			now:      s.now,
-			identity: s.opts.identity,
+			identity: s.identity,
 			onGenerate: func(reason string) {
 				s.event(LevelInfo, EventKindUI, "Generated a self-signed UI certificate ("+reason+").")
 				s.signalChanged() // the fingerprint in State changed
@@ -435,7 +477,7 @@ func (s *Server) start(cfg UIConfig) (*instance, error) {
 	// LAN mode: TLS and plain HTTP share the port. TLS connections get the UI;
 	// plain HTTP ones get a redirect to https, so an open http:// tab finds its
 	// way after the switch.
-	inst.url = fmt.Sprintf("https://%s/", net.JoinHostPort(displayHost(s.opts.identity), strconv.Itoa(port)))
+	inst.url = fmt.Sprintf("https://%s/", net.JoinHostPort(displayHost(s.identity), strconv.Itoa(port)))
 	sp := newSplitListener(ln)
 	serve(newServer(s.handler), tls.NewListener(sp.tls, tlsCfg))
 	serve(newServer(securityHeaders(http.HandlerFunc(s.redirectToHTTPS))), sp.plain)
@@ -445,6 +487,9 @@ func (s *Server) start(cfg UIConfig) (*instance, error) {
 // displayHost is the host name for the UI URL in LAN mode.
 func displayHost(identity func() (hostIdentity, error)) string {
 	if id, err := identity(); err == nil {
+		if id.Host != "" {
+			return id.Host
+		}
 		for _, n := range id.Names {
 			if n != "localhost" {
 				return n
@@ -491,17 +536,20 @@ func (s *Server) redirectToHTTPS(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "This server uses HTTPS in LAN mode.")
 		return
 	}
-	host := displayHost(s.opts.identity)
+	host := displayHost(s.identity)
 	h := r.Host
 	if hh, _, err := net.SplitHostPort(h); err == nil {
 		h = hh
 	}
 	h = strings.ToLower(strings.TrimSuffix(strings.Trim(h, "[]"), "."))
-	if id, err := s.opts.identity(); err == nil && h != "" {
+	if id, err := s.identity(); err == nil && h != "" {
 		ip, ipErr := netip.ParseAddr(h)
 		if slices.Contains(id.Names, h) || (ipErr == nil && slices.Contains(id.IPs, ip.Unmap().WithZone(""))) {
 			host = h
 		}
+	}
+	if s.trustedHost(r.Host) {
+		host = h
 	}
 	target := "https://" + net.JoinHostPort(host, strconv.Itoa(s.boundPort())) + r.URL.EscapedPath()
 	http.Redirect(w, r, target, http.StatusMovedPermanently)

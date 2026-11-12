@@ -23,6 +23,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/gmccollu/woodshed/internal/config"
 )
 
 // Self-signed certificate files in the data dir (mode 0600).
@@ -41,8 +43,29 @@ const (
 
 // hostIdentity is what a self-signed certificate must cover.
 type hostIdentity struct {
-	Names []string     // DNS SANs: the hostname and "localhost"
-	IPs   []netip.Addr // IP SANs: every local interface address
+	Host  string       // the lower-cased hostname ("" if unknown), for the UI URL
+	Names []string     // DNS SANs: localhost, the hostname and its qualified names
+	IPs   []netip.Addr // IP SANs: every stable local interface address
+}
+
+// withExtras adds ui.extra_hostnames entries (already validated) to id.
+func (id hostIdentity) withExtras(extras []string) hostIdentity {
+	if len(extras) == 0 {
+		return id
+	}
+	names, ips := slices.Clone(id.Names), slices.Clone(id.IPs)
+	for _, e := range extras {
+		if n, ip, ok := config.ParseExtraHostname(e); ok && n != "" {
+			names = append(names, n)
+		} else if ok {
+			ips = append(ips, ip)
+		}
+	}
+	slices.Sort(names)
+	id.Names = slices.Compact(names)
+	slices.SortFunc(ips, func(a, b netip.Addr) int { return a.Compare(b) })
+	id.IPs = slices.Compact(ips)
+	return id
 }
 
 // localIdentity reads the hostname and the machine's stable interface
@@ -76,7 +99,7 @@ func localIdentity() (hostIdentity, error) {
 			}
 		}
 	}
-	return identityFrom(host, addrs, ipv6Flags()), nil
+	return identityFrom(host, searchDomains(), addrs, ipv6Flags()), nil
 }
 
 // ifaceAddr is one address of one interface.
@@ -106,21 +129,32 @@ func virtualIface(name string) bool {
 
 // identityFrom builds the certificate identity (security review L6: the
 // certificate used to be regenerated whenever any address changed):
-//   - the hostname, its ".local" mDNS name and localhost;
+//   - the hostname, its ".local" mDNS name, the hostname qualified with each DNS
+//     search domain (domains; at most maxSearchDomains), and localhost;
 //   - loopback, and the IPv4 and IPv6 addresses of real interfaces that are
 //     stable: not link-local, not on a virtual or tunnel interface, and for
 //     IPv6 not temporary, deprecated or tentative. Where the OS's flags aren't
 //     available (flags nil: macOS, Windows), only IPv6 addresses with an EUI-64
 //     interface ID count, since privacy and temporary addresses look random.
-func identityFrom(host string, addrs []ifaceAddr, flags map[netip.Addr]uint32) hostIdentity {
+func identityFrom(host string, domains []string, addrs []ifaceAddr, flags map[netip.Addr]uint32) hostIdentity {
 	var id hostIdentity
 	names := []string{"localhost"}
 	if host != "" {
 		h := strings.ToLower(strings.TrimSuffix(host, "."))
+		id.Host = h
 		names = append(names, h)
-		// A ".local" mDNS name is how other machines often reach this one.
+		// A ".local" mDNS name is how other machines often reach this one, and a
+		// DNS record in the search domain how they reach it by name.
 		if !strings.Contains(h, ".") {
 			names = append(names, h+".local")
+			for i, d := range domains {
+				if i == maxSearchDomains {
+					break
+				}
+				if n := h + "." + d; config.ValidDNSName(n) {
+					names = append(names, n)
+				}
+			}
 		}
 	}
 	ips := []netip.Addr{netip.MustParseAddr("127.0.0.1"), netip.IPv6Loopback()}
@@ -308,6 +342,13 @@ func (c *certSource) load() (*tls.Certificate, error) {
 		c.onGenerate(reason)
 	}
 	return c.cert, nil
+}
+
+// recheck makes the next load re-read the identity.
+func (c *certSource) recheck() {
+	c.mu.Lock()
+	c.checked = time.Time{}
+	c.mu.Unlock()
 }
 
 // readKey returns the self-signed certificate's existing ECDSA key, or nil.
