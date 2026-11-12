@@ -233,22 +233,24 @@ const SHOTS = [
     name: 'tail-embedded-break-one-row',
     noshot: true,
     mode: 'light',
-    url: '/?mock_panel=0&mock_rate=400#/dashboard',
-    act: `__set(document.querySelector('input[type=search]'), 'future version');`,
-    after: 4000,
+    url: '/?mock_panel=0#/dashboard',
+    // The message is rare in the random traffic: the mock sends a few on demand.
+    act: `__set(document.querySelector('input[type=search]'), 'future version'); await __tick();
+      if (__woodshedMock.emit('leading-break', 3) !== 3) throw new Error('mock sent no leading-break lines');`,
+    after: 1500,
     check: `(() => { const l = [...document.querySelectorAll('[role=log] .logline')];
-      return l.length > 0 && l.every((x) => x.offsetHeight <= 24 && x.querySelector('.m').textContent.includes('↵') && !x.querySelector('.m').textContent.includes('\\n')); })()`,
+      return l.length >= 3 && l.every((x) => x.offsetHeight <= 24 && x.querySelector('.m').textContent.includes('↵') && !x.querySelector('.m').textContent.includes('\\n')); })()`,
   },
   {
     name: 'tail-embedded-break-raw-light',
     mode: 'light',
-    url: '/?mock_panel=0&mock_rate=400#/dashboard',
+    url: '/?mock_panel=0#/dashboard',
+    // The message is rare in the random traffic: the mock sends a few on demand.
     act: `__set(document.querySelector('input[type=search]'), 'job finished'); await __tick(); __btn('Raw').click();
-      // These messages are rare in the mock traffic: wait (up to 20 s) for some to arrive before judging.
-      for (let k = 0; k < 40 && !document.querySelector('[role=log] .logline'); k++) await new Promise((r) => setTimeout(r, 500));`,
+      if (__woodshedMock.emit('embedded-break', 3) !== 3) throw new Error('mock sent no embedded-break lines');`,
     after: 1500,
     check: `(() => { const l = [...document.querySelectorAll('[role=log] .logline')];
-      return l.length > 0 && l.every((x) => x.offsetHeight <= 24 && x.textContent.includes('\\\\r\\\\n')); })()`,
+      return l.length >= 3 && l.every((x) => x.offsetHeight <= 24 && x.textContent.includes('\\\\r\\\\n')); })()`,
     report: `JSON.stringify([...document.querySelectorAll('[role=log] .logline')].slice(0, 6).map((x) => [x.offsetHeight, x.textContent.slice(0, 140)]))`,
   },
   {
@@ -710,7 +712,7 @@ const SHOTS = [
     url: '/?mock_panel=0&mock_os=linux&mock_small_buffer=1#/dashboard',
     wait: 1500,
     check: `(() => { const b = [...document.querySelectorAll('.banner.warn')].find((x) => x.textContent.includes('208 KiB receive buffer'));
-      const a = b?.querySelector('a[href="https://github.com/gmccollu/woodshed/blob/main/docs/install.md#containers"]');
+      const a = b?.querySelector('a[href="https://github.com/gmccollu/woodshed/blob/main/docs/install.md#containers-lxc-docker-kubernetes"]');
       return !!a && a.target === '_blank' && a.rel.includes('noopener') && a.textContent.includes('Containers') && !!b.querySelector('[aria-label="Hide this alert"]'); })()`,
   },
   {

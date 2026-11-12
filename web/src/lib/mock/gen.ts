@@ -39,6 +39,18 @@ const mac = () =>
 
 type Template = [severity: number, weight: number, app: string, text: () => string];
 
+// Messages the smoke checks need on demand (probe.emit), not by chance: they're rare in the
+// random traffic. The same templates are part of that traffic too.
+/** A literal line break right after the tag (seen on real hardware). */
+const LEADING_BREAK: Template = [5, 2, 'scand', () => { const v = int(900, 999); return `\nscanner: future version ${v + 1}, current version ${v}`; }];
+/** Multi-line output (CR/LF). */
+const EMBEDDED_BREAK: Template = [6, 2, 'backup', () => `job finished\r\nfiles ${int(100, 9000)}\r\nexit status 0\r\n`];
+export const SPECIAL = {
+  'leading-break': { kind: 'fw', t: LEADING_BREAK },
+  'embedded-break': { kind: 'srv', t: EMBEDDED_BREAK },
+} as const satisfies Record<string, { kind: Kind; t: Template }>;
+export type Special = keyof typeof SPECIAL;
+
 const TEMPLATES: Record<Kind, Template[]> = {
   fw: [
     [6, 40, 'fwd', () => `conn opened tcp ${inside()}:${int(49152, 65535)} -> ${outside()}:${pick([443, 443, 80, 22, 8443])}`],
@@ -50,7 +62,7 @@ const TEMPLATES: Record<Kind, Template[]> = {
     [3, 0.6, 'ha', () => 'failover: peer heartbeat missed on link1'],
     [2, 0.1, 'sysmon', () => `cpu usage ${int(95, 99)}% for 60 s`],
     // Some devices put a literal line break after the tag (seen on real hardware).
-    [5, 2, 'scand', () => { const v = int(900, 999); return `\nscanner: future version ${v + 1}, current version ${v}`; }],
+    LEADING_BREAK,
   ],
   sw: [
     [5, 20, 'portd', () => `port 1/${int(1, 48)} up 1000 full`],
@@ -74,7 +86,7 @@ const TEMPLATES: Record<Kind, Template[]> = {
     [4, 6, 'kernel', () => 'conntrack table 90% full'],
     [3, 2, 'app', () => `upstream 10.2.0.${int(20, 30)}:8080 timed out after 30 s`],
     // Multi-line output (CR/LF) and a stray control character.
-    [6, 2, 'backup', () => `job finished\r\nfiles ${int(100, 9000)}\r\nexit status 0\r\n`],
+    EMBEDDED_BREAK,
     [4, 0.5, 'app', () => `disk check \x07 attention: ${int(85, 95)}% used`],
     // A huge single message (exercises the 8 KiB row cap) and spoofing characters (bidi
     // override, zero-width space) that the UI must show rather than apply.
@@ -119,7 +131,16 @@ export function line(dev: MockDeviceDef, at: Date): GenLine {
   if (Math.random() < 0.01) {
     return { received: at.toISOString(), device_id: dev.ip, severity: null, raw: `${host} -- MARK --` };
   }
-  const [sev, , app, text] = weighted(TEMPLATES[dev.kind], (t) => t[1]);
+  return format(dev, at, weighted(TEMPLATES[dev.kind], (t) => t[1]));
+}
+
+/** One of the SPECIAL messages from the given device (of that message's kind). */
+export function specialLine(name: Special, dev: MockDeviceDef, at: Date): GenLine {
+  return format(dev, at, SPECIAL[name].t);
+}
+
+function format(dev: MockDeviceDef, at: Date, [sev, , app, text]: Template): GenLine {
+  const host = dev.name || `host-${dev.ip.split('.').pop()}`;
   const facility = dev.kind === 'srv' ? (app.startsWith('sshd') ? 4 : 1) : 23; // auth, user, local7
   const pri = facility * 8 + sev;
   const raw =

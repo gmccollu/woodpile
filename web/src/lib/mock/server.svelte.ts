@@ -42,7 +42,7 @@ import type {
 } from '../api';
 import { isKnown } from '../severity';
 import { setSessionSecret } from '../api';
-import { FLEET, line, testLine, weighted, type GenLine, type MockDeviceDef } from './gen';
+import { FLEET, line, SPECIAL, specialLine, testLine, weighted, type GenLine, type MockDeviceDef, type Special } from './gen';
 import { STEP, deviceAt, lineAt, shareOf } from './history';
 
 const P = new URLSearchParams(location.search);
@@ -118,6 +118,21 @@ const probe = {
   },
   /** Simulates a request that has the cookie but not the header (e.g. another app on this host). */
   cookieOnly: false,
+  /**
+   * Sends `n` of a named message (gen.ts SPECIAL) now, from the first sending device of its
+   * kind, so a check needn't wait for a rare message by chance. Returns how many were sent.
+   */
+  emit(name: Special, n = 1): number {
+    const d = [...devs.values()].find((x) => x.sending && x.def.kind === SPECIAL[name].kind && !blockedBy(x.def.ip));
+    if (!d) return 0;
+    const now = Date.now();
+    for (let i = 0; i < n; i++) {
+      d.lastHeard = now;
+      d.total++;
+      emit(specialLine(name, d.def, new Date(now - n + i)));
+    }
+    return n;
+  },
   /** A request from elsewhere (another tab, a script): returns the status. */
   async request(method: string, path: string, body?: unknown): Promise<number> {
     return (await mockTransport.fetch(path, { method, headers: {}, body: body === undefined ? undefined : JSON.stringify(body) })).status;
@@ -969,6 +984,9 @@ function blockedBy(ip: string): string {
 
 /** Messages refused per blocked sender (mock counters). */
 const blockedCounts = new Map<string, { n: number; last: number }>();
+// Senders blocked from the start (mock_blocked) have refusals already counted, as if blocked a
+// while ago, so the refused list shows them on the first poll instead of only after the next.
+for (const d of FLEET) if (blockedBy(d.ip)) blockedCounts.set(d.ip, { n: 40 + Math.round(d.weight * 20), last: START - 20_000 });
 
 function allowed(ip: string): boolean {
   const n = v4(ip);
