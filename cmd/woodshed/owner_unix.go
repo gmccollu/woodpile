@@ -172,3 +172,48 @@ func tightenPortableDir(dir string) (string, error) {
 	}
 	return fmt.Sprintf("%s could be written by other users (mode %04o); it's now 0700, private to you.", dir, fi.Mode().Perm()), nil
 }
+
+// writeOwnedLikeDir atomically writes dir/name with perm, owned by dir's owner
+// and group (the UI password hash, written by set-password as root, must stay
+// the service account's). The file is a fresh temp file given its owner and
+// mode through its descriptor, then renamed into place.
+func writeOwnedLikeDir(dir, name string, data []byte, perm os.FileMode) error {
+	var st unix.Stat_t
+	if err := unix.Stat(dir, &st); err != nil {
+		return &os.PathError{Op: "stat", Path: dir, Err: err}
+	}
+	f, err := os.CreateTemp(dir, "."+name+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	ok := false
+	defer func() {
+		if !ok {
+			f.Close()
+			os.Remove(tmp)
+		}
+	}()
+	if os.Geteuid() == 0 {
+		if err := f.Chown(int(st.Uid), int(st.Gid)); err != nil {
+			return err
+		}
+	}
+	if err := f.Chmod(perm); err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, filepath.Join(dir, name)); err != nil {
+		return err
+	}
+	ok = true
+	return nil
+}

@@ -43,6 +43,10 @@ func noService() {
 	serviceUninstall = func(service.UninstallOptions) (service.Result, error) { return service.Result{}, errNoServiceManager }
 	serviceLegacy = func() (service.Legacy, error) { return service.Legacy{}, nil }
 	findPeer = func(context.Context, peer.Options) (peer.Info, bool) { return peer.Info{}, false }
+	// No terminal and no run-state waits either.
+	stdin = strings.NewReader("")
+	readSecret = func(string, io.Writer) (string, error) { return "", errors.New("test: no terminal") }
+	waitForRestart = func(string, server.RunState, time.Duration) (server.RunState, bool) { return server.RunState{}, false }
 }
 
 func runCLI(args ...string) (code int, stdout, stderr string) {

@@ -466,22 +466,17 @@ way to do this over the network, by design.`, stderr)
 		fmt.Fprintf(stdout, "The UI is at %s\n", url)
 		return 0
 	}
-	inUse, _ := server.DataDirInUse(dataDir)
-	if !inUse {
-		fmt.Fprintf(stdout, "The UI will be at %s when Woodshed starts.\n", url)
-		return 0
-	}
 	// The running server still has the old password and mode in memory.
-	if st, _ := serviceStatus(); st == service.StateRunning {
-		if err := serviceRestart(); err != nil {
-			fmt.Fprintf(stderr, "woodshed reset-password: couldn't restart the service: %v\nRestart it yourself to apply the change.\n", err)
-			return 1
-		}
+	switch a := applyToRunning("reset-password", dataDir, stderr); a {
+	case restarted:
 		fmt.Fprintf(stdout, "Restarted the service. The UI is back on %s\n", url)
 		return 0
+	case notRunning:
+		fmt.Fprintf(stdout, "The UI will be at %s when Woodshed starts.\n", url)
+		return 0
+	default:
+		return applyHint(stdout, a, "the UI will be on "+url)
 	}
-	fmt.Fprintf(stdout, "Woodshed is running in the foreground: stop it (Ctrl-C) and start it again, and the UI will be on %s\n", url)
-	return 0
 }
 
 // checkWritable reports whether a file can be created in dir.

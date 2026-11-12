@@ -8,6 +8,12 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+// The termios get/set requests (secret_unix.go).
+const (
+	ioctlGetTermios = unix.TIOCGETA
+	ioctlSetTermios = unix.TIOCSETA
+)
+
 // stdinIsTerminal reports whether stdin is a terminal (/dev/null, a pipe or a
 // file manager's launch is not).
 func stdinIsTerminal() bool {

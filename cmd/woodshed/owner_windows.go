@@ -5,6 +5,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/gmccollu/woodshed/internal/config"
 	"github.com/gmccollu/woodshed/internal/winacl"
@@ -48,3 +49,27 @@ func runAsOwnerHint(string) string {
 
 // tightenPortableDir is Unix only: on Windows the server checks the folder's ACL.
 func tightenPortableDir(string) (string, error) { return "", nil }
+
+// writeOwnedLikeDir atomically writes dir/name; on Windows the file inherits the
+// data folder's ACL (perm is ignored).
+func writeOwnedLikeDir(dir, name string, data []byte, _ os.FileMode) error {
+	f, err := os.CreateTemp(dir, "."+name+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	_, err = f.Write(data)
+	if err == nil {
+		err = f.Sync()
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Rename(tmp, filepath.Join(dir, name))
+	}
+	if err != nil {
+		os.Remove(tmp)
+	}
+	return err
+}
