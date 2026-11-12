@@ -1,0 +1,69 @@
+name: Bug report
+description: Something broke, a device's messages look wrong, or messages went missing.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Security problem? Don't file it here. Use private reporting instead (see SECURITY.md).
+
+        Before pasting anything, swap real IPs, hostnames and usernames for placeholders (10.0.0.1, fw01, user1).
+  - type: input
+    id: version
+    attributes:
+      label: Woodshed version
+      description: Output of `woodshed version`, or the About page in the UI.
+      placeholder: woodshed 1.0.0
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How it's installed
+      options:
+        - MSI (Windows)
+        - pkg (macOS)
+        - deb
+        - rpm
+        - Portable zip / tarball
+        - woodshed install
+        - Built from source
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS running Woodshed
+      description: Name, version and CPU, e.g. Windows Server 2022 x64, macOS 15 on Apple silicon, Ubuntu 24.04 arm64.
+    validations:
+      required: true
+  - type: input
+    id: sender
+    attributes:
+      label: Sending device
+      description: Device type and its OS/firmware version, and UDP or TCP. Leave blank if it isn't device specific.
+      placeholder: firewall, firmware X.Y, UDP
+  - type: textarea
+    id: sample
+    attributes:
+      label: Sample raw syslog line
+      description: |
+        One or two lines as the device sends them (from the log file or a capture). Redact IPs and hostnames first.
+        For a parsing problem this is the most useful part.
+      render: text
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what you expected
+      description: Include the steps if you can reproduce it.
+    validations:
+      required: true
+  - type: textarea
+    id: ownlog
+    attributes:
+      label: Woodshed's own log
+      description: |
+        The relevant lines only, redacted. Where to find it:
+        Linux `journalctl -u woodshed`. macOS `/Library/Logs/Woodshed/woodshed.log`.
+        Windows Event Viewer > Windows Logs > Application, source Woodshed. Portable mode prints to its window.
+      render: text

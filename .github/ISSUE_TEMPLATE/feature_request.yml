@@ -1,0 +1,25 @@
+name: Feature request
+description: Something Woodshed should do that it doesn't.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: The problem or the situation, not the solution yet. "During an outage I need to..." is a good start.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would help
+      description: How you'd like it to work. Rough is fine.
+  - type: textarea
+    id: today
+    attributes:
+      label: What you do today instead
+      description: Workaround, other tool, or nothing.
+  - type: markdown
+    attributes:
+      value: |
+        Already planned after 1.0: TLS syslog, alerts and forwarding. Out of scope: SIEM-style correlation and analytics.
