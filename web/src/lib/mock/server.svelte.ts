@@ -1303,7 +1303,7 @@ async function route(method: string, url: URL, body: unknown, header: string | n
     if (p === '/api/exports/estimate') return json(est);
     const e: MockExport = {
       id: `exp_${Math.random().toString(36).slice(2, 6)}`, created: new Date(now).toISOString(),
-      devices: b.devices?.length ? b.devices : [], from: b.from, to: b.to,
+      devices: b.all_devices ? ids : b.devices?.length ? b.devices : [], from: b.from, to: b.to,
       state: 'queued', progress: 0, lines: 0, size_bytes: 0, error: '', estimate: est.lines, ready_at: null, expires_at: null,
       filters: {
         group: b.group ?? '', ungrouped: !!b.ungrouped, severities: (b.severities ?? []) as ExportInfo['filters']['severities'],

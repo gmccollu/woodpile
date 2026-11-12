@@ -35,6 +35,6 @@ limits): that isn't a vulnerability, but a way to bypass the disk limits is.
 
 ## Verifying downloads
 
-Every release lists SHA-256 checksums for all its files in `checksums.txt`, and, from 1.0.0, GitHub build provenance
-attestations: `gh attestation verify FILE --repo gmccollu/woodshed` shows that a file was built by this repository's
+Every release lists SHA-256 checksums for all its files in `checksums.txt`, and, since the repository went public
+(0.9.0-rc2 onwards), GitHub build provenance attestations: `gh attestation verify FILE --repo gmccollu/woodshed` shows that a file was built by this repository's
 release workflow from the tagged source.
