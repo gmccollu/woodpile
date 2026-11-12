@@ -24,7 +24,7 @@ Change this file first if the contract changes.
   "host_ips": ["10.1.0.50", "fd00::50"],
   "ui_cert_fingerprint": "",                  // LAN mode: SHA-256 of the UI's certificate, "AB:CD:…" (64 hex pairs); "" on localhost
   "banners": [{"kind": "listener_bind", "level": "error", "text": "TCP 514 is in use by syslogd (pid 312).",
-               "action": "retry_listeners"}]   // action: "" | "retry_listeners"; kinds: listener_bind, writes_paused, low_disk, ui_port_busy
+               "action": "retry_listeners"}]   // action: "" | "retry_listeners"; kinds: listener_bind, writes_paused, low_disk, ui_port_busy, udp_buffer_small
 }
 ```
 A listener that failed to bind may also carry, when known, `holder_kind` (`"woodshed_service"`: the installed Woodshed
@@ -51,6 +51,10 @@ because this copy holds the UI port.
   "rejected_24h": 0                           // refused messages and TCP connections (allowlist, per-source limit)
 }
 ```
+Banner `udp_buffer_small` (warn, Linux): the OS granted a UDP receive buffer below 8 MiB (`udp_rcvbuf_bytes` <
+`udp_rcvbuf_requested_bytes`). Text names both sizes, says bursts may be dropped before Woodshed sees them, and gives
+the fix (`net.core.rmem_max` on the host for containers; the package's sysctl file otherwise). Logged at WARN at start.
+
 `days_kept` is the number of distinct UTC days that still have data on disk (today counts).
 `bytes_per_day` is the on-disk (compressed-equivalent) bytes written over the last 24 h: raw bytes divided by
 `compression_ratio`, the ratio measured on files this server has closed and gzipped (a default of 8 until it has
@@ -202,6 +206,8 @@ them first), but not against the log retention cap.
 
 ## Settings
 
+`GET /api/settings` returns an `ETag`. `PUT /api/settings` should send it as `If-Match`; a stale one gets `409
+{"error": "settings changed since you loaded them"}` (a PUT without `If-Match` is accepted, for scripts).
 `GET /api/settings` / `PUT /api/settings` (whole object; the server validates and returns the saved object, or `400` with
 `{"errors": {"listeners.udp.port": "message", "listeners.allowlist[2]": "message"}}`). Error keys are dotted JSON paths,
 with `[i]` for list items. `[i]` indexes the list exactly as the client sent it: the server validates before any
@@ -213,7 +219,8 @@ normalising (dedupe, sort). `listeners.allowlist` entries may be a bare IP or a 
                 "allowlist": [], "blocklist": [],
                 "max_devices": 10000, "new_device_burst": 5000, "new_devices_per_minute": 200},
   "storage": {"data_dir": "...", "retention_days": 30, "retention_bytes": 21474836480, "part_bytes": 104857600},
-  "ui": {"lan_mode": false, "port": 8514, "cert_file": "", "key_file": "", "require_login_local": false},
+  "ui": {"lan_mode": false, "port": 8514, "cert_file": "", "key_file": "", "require_login_local": false,
+         "extra_hostnames": [], "trusted_hosts": []},
   "quiet": {"quiet_after_seconds": 300, "offline_after_seconds": 3600}
 }
 ```
@@ -225,13 +232,18 @@ normalising (dedupe, sort). `listeners.allowlist` entries may be a bare IP or a 
 Two modes, set by `ui.lan_mode` in `/api/settings`:
 - **Localhost (default):** plain HTTP on `127.0.0.1:<ui.port>`, no login. The server still refuses a `Host` header
   other than `localhost`, `127.0.0.1` or `[::1]` with the UI port (`403`), so a web page can't reach it by
-  rebinding its own name to 127.0.0.1.
+  rebinding its own name to 127.0.0.1. Names in `ui.trusted_hosts` (exact host or host:port, e.g. a reverse proxy's
+  public name) are also accepted. The `403` body names the rejected Host and points at `ui.trusted_hosts`.
 - **LAN:** HTTPS on every interface, with a password. Turning it on needs a password first: a `PUT /api/settings`
   with `"lan_mode": true` and no password set gets `400 {"errors": {"ui.lan_mode": "..."}}`. The certificate is
   self-signed and generated on the machine (or one the user configured). Plain `http://` on the same port gets a
   `301` to `https://`. Changing `lan_mode` or `port` restarts the UI server just after the PUT's response, which
   also closes open live tails; the UI has to reload at the new address (`https://` after turning LAN mode on,
-  `http://localhost:<port>/` after turning it off).
+  `http://localhost:<port>/` after turning it off). The PUT response then carries `"restarting": true`.
+- **Certificate names:** the self-signed certificate covers localhost, the hostname, `<hostname>.local`, the
+  hostname qualified with each DNS search domain (`/etc/resolv.conf` on Linux and macOS, the primary DNS suffix on
+  Windows), every stable address, and every name in `ui.extra_hostnames`. It's regenerated (same key) when that set
+  gains a name or address.
 
 In both modes, a state-changing request (anything but GET/HEAD/OPTIONS) from another origin is refused with `403`
 (`Sec-Fetch-Site` or `Origin` vs `Host`). In LAN mode every `/api/` route needs a session (`401 {"error": ...}`
