@@ -24,8 +24,12 @@ What it isn't: a SIEM. No correlation, alerting or forwarding (TLS syslog, alert
 
 ## Download
 
-[Releases page](https://github.com/gmccollu/woodshed/releases/latest): MSI for Windows (x64, ARM64), a universal pkg
+[Releases page](https://github.com/gmccollu/woodshed/releases): MSI for Windows (x64, ARM64), a universal pkg
 for macOS, deb and rpm for Linux (amd64, arm64), or a portable zip/tarball that runs with nothing installed.
+
+Until 1.0 every release is a prerelease, so GitHub's `releases/latest` links return 404. Use the releases page or a
+tagged URL, `https://github.com/gmccollu/woodshed/releases/download/v<version>/<file>` (for example
+`.../download/v0.9.0-rc4/woodshed_0.9.0-rc4_amd64.deb`). From 1.0, `releases/latest` works.
 
 The installers and binaries aren't code-signed yet, so Windows SmartScreen and macOS Gatekeeper will ask once
 before running them ("Windows protected your PC" → More info → Run anyway; on macOS, System Settings → Privacy &

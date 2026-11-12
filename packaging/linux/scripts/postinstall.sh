@@ -61,9 +61,19 @@ if [ "$action" = install ]; then
 fi
 
 # Raise net.core.rmem_max now; the drop-in keeps it across reboots.
+WANT_RMEM=33554432
 if [ -f "$SYSCTL_FILE" ] && command -v sysctl >/dev/null 2>&1; then
-	sysctl -q -p "$SYSCTL_FILE" >/dev/null 2>&1 ||
-		echo "woodshed: could not apply $SYSCTL_FILE now (read-only /proc/sys?); it applies at next boot." >&2
+	sysctl -q -p "$SYSCTL_FILE" >/dev/null 2>&1 || true
+fi
+# Inside an unprivileged container (LXC, Docker) this is the host's setting and can't be
+# raised from here: say so in one line, it isn't an error. Woodshed's UI also shows it.
+have=$(cat /proc/sys/net/core/rmem_max 2>/dev/null || echo 0)
+if [ "${have:-0}" -lt "$WANT_RMEM" ] 2>/dev/null; then
+	if { command -v systemd-detect-virt >/dev/null 2>&1 && systemd-detect-virt --container >/dev/null 2>&1; } || [ -f /.dockerenv ]; then
+		echo "woodshed: note: net.core.rmem_max is $have in this container; for bursty senders set it to $WANT_RMEM on the host (see \"Containers\" in docs/install.md)."
+	else
+		echo "woodshed: note: net.core.rmem_max is still $have; $SYSCTL_FILE sets it to $WANT_RMEM at the next boot (or now: sudo sysctl --system)."
+	fi
 fi
 
 if [ ! -d /run/systemd/system ]; then

@@ -43,6 +43,17 @@ window. Ctrl-C, closing the window, logging off or shutting down all save everyt
 
 Download the installer for your system from the project's releases page. Replace `X.Y.Z` below with the version.
 
+**Download links before 1.0:** every release so far is a prerelease, and GitHub's "latest" URLs
+(`/releases/latest`, `/releases/latest/download/<file>` and the API's `/releases/latest`) skip prereleases, so they
+return 404. Use the [releases page](https://github.com/gmccollu/woodshed/releases), or a tagged URL in scripts:
+
+```sh
+curl -fLO https://github.com/gmccollu/woodshed/releases/download/v0.9.0-rc4/woodshed_0.9.0-rc4_amd64.deb
+# pattern: https://github.com/gmccollu/woodshed/releases/download/v<version>/<file>
+```
+
+From 1.0.0, `https://github.com/gmccollu/woodshed/releases/latest` works as usual.
+
 | System | File |
 |---|---|
 | Windows 10/11, Server 2016+ (x64, ARM64) | `woodshed_X.Y.Z_windows_amd64.msi` / `..._arm64.msi` |
@@ -206,7 +217,96 @@ in effect until the next reboot. The `woodshed` user is left in place, as distri
 it with `sudo userdel woodshed` if you want.
 
 **Tarball (no package manager):** unpack it and either run `./woodshed run` in a terminal, or install it as a
-service with `sudo ./woodshed install` (next section).
+service with `sudo ./woodshed install` (see [Without a package](#without-a-package-woodshed-install)).
+
+**Known-good platforms** (reported by users, beyond what CI tests): Debian 13 unprivileged LXC on Proxmox VE 9.2:
+works with the deb.
+
+## Containers (LXC, Docker, Kubernetes)
+
+**LXC (Proxmox and others):** the deb and rpm work in an unprivileged system container. The service runs under the
+container's systemd as `woodshed` with only `CAP_NET_BIND_SERVICE`, and binding port 514 works. On a headless
+container, set the UI password and turn on LAN mode from the shell: see
+[Headless setup](#headless-setup-no-browser-on-the-machine) (`woodshed set-password`, `woodshed lan-mode on`).
+
+**The UDP receive buffer is the host's setting.** `net.core.rmem_max` isn't per-container: from inside an
+unprivileged container it can't be raised, so the package's `/etc/sysctl.d/60-woodshed.conf` has no effect there
+(the install prints a one-line note saying so). Woodshed then gets a smaller UDP buffer than it asks for (32 MiB),
+logs a warning at start, and the UI shows a warning banner with both sizes and this fix: bursts of messages may be
+dropped by the kernel before Woodshed sees them. Fix it **on the host** (the Proxmox node, the Docker host, the
+Kubernetes node), as root:
+
+```sh
+sysctl -w net.core.rmem_max=33554432
+echo 'net.core.rmem_max = 33554432' > /etc/sysctl.d/60-woodshed.conf   # keeps it across reboots
+```
+
+Then restart Woodshed in the container (`systemctl restart woodshed`) so it asks again; the banner goes away.
+
+**Docker:** there's no official image yet. If you build one, mind three things:
+- the device's address is its identity, so senders must reach Woodshed with their own source IP: publish 514
+  with Docker's default NAT (`-p 514:514/udp -p 514:514/tcp`, which keeps it) or use `--network host`, not a
+  proxy that rewrites the source;
+- the UI listens on `127.0.0.1` inside the container until LAN mode is on, so a published 8514 can't reach it: use
+  `--network host`, or turn on LAN mode (HTTPS with a password) and publish 8514;
+- keep the data folder on a volume, and run one container per data folder (a second Woodshed on the same folder
+  refuses to start). Without systemd, run `woodshed run --config /etc/woodshed/woodshed.toml` as the command.
+
+**Kubernetes:** the same, plus: a `LoadBalancer` or `NodePort` Service for UDP 514 needs
+`externalTrafficPolicy: Local`, or every device shows up under the node's address (the default policy rewrites the
+source IP); `hostNetwork: true` avoids that too. One replica per volume, and `rmem_max` set on the nodes.
+
+## Behind a reverse proxy (nginx, Caddy)
+
+You can put Woodshed's UI behind a reverse proxy (for your own certificate and name, or single sign-on in front).
+Syslog (514) doesn't go through it. Two ways:
+
+**1. Proxy on the same machine, to the localhost UI** (LAN mode off). First set a password
+(`woodshed set-password`): with a password, the UI asks for it on localhost too (`ui.require_login_local`), so the
+proxy isn't an open door. Then add the proxy's public name to `ui.trusted_hosts`: in localhost mode Woodshed refuses
+any `Host` header but `localhost`, `127.0.0.1` and `[::1]` (a `403` that names the rejected host), as a defence
+against DNS rebinding.
+
+```toml
+# /etc/woodshed/woodshed.toml, then: sudo systemctl restart woodshed
+[ui]
+trusted_hosts = ["logs.example.com"]
+```
+
+nginx (pass the `Host` header through, and don't buffer the live tail, which streams):
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name logs.example.com;
+    ssl_certificate     /etc/ssl/logs.example.com.crt;
+    ssl_certificate_key /etc/ssl/logs.example.com.key;
+    location / {
+        proxy_pass http://127.0.0.1:8514;
+        proxy_set_header Host $host;
+        proxy_buffering off;
+        proxy_read_timeout 1h;
+    }
+}
+```
+
+Caddy (passes `Host` through by default):
+
+```
+logs.example.com {
+    reverse_proxy 127.0.0.1:8514 {
+        flush_interval -1
+    }
+}
+```
+
+**2. Proxy on another machine, to LAN mode.** Turn on LAN mode (`woodshed lan-mode on`) and proxy to
+`https://<woodshed host>:8514`. Woodshed's certificate is self-signed: have the proxy trust that certificate
+(its SHA-256 fingerprint is in `woodshed status`) rather than turning verification off, and pass `Host` through as
+above. To give the certificate your own names instead, list them in `ui.extra_hostnames`; it's regenerated with
+them (and with the machine's DNS search domain) when they change.
+
+Either way, keep 8514 closed to everything but the proxy.
 
 ## Without a package: `woodshed install`
 

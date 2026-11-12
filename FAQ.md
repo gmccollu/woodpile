@@ -13,6 +13,9 @@ New to Woodshed? Start with the [user guide](docs/user-guide.md). Installer deta
 - [I forgot the UI password](#i-forgot-the-ui-password)
 - [How do I uninstall it?](#how-do-i-uninstall-it)
 - [Does Woodshed connect to the internet?](#does-woodshed-connect-to-the-internet)
+- [The "latest release" link gives a 404](#the-latest-release-link-gives-a-404)
+- [Can I run it in a container (LXC, Docker, Kubernetes)?](#can-i-run-it-in-a-container-lxc-docker-kubernetes)
+- [Can I put the UI behind a reverse proxy?](#can-i-put-the-ui-behind-a-reverse-proxy)
 
 ## Why port 514, and why UDP?
 
@@ -141,3 +144,35 @@ deleted.
 
 No. It makes no outbound connections at all: no telemetry, no update checks. The version is on the **About** page,
 with a link to the releases page if you want to check for a newer one yourself.
+
+## The "latest release" link gives a 404
+
+Until 1.0 every release is a prerelease, and GitHub's `releases/latest` (the page, `releases/latest/download/...`
+and the API) skips prereleases. Use the [releases page](https://github.com/gmccollu/woodshed/releases) or a tagged
+URL: `https://github.com/gmccollu/woodshed/releases/download/v<version>/<file>`, for example
+`.../download/v0.9.0-rc4/woodshed_0.9.0-rc4_amd64.deb`. From 1.0, `releases/latest` works.
+
+## Can I run it in a container (LXC, Docker, Kubernetes)?
+
+Yes. The deb and rpm work in an unprivileged LXC system container (users report Debian 13 on Proxmox VE 9.2
+working), and binding port 514 there works. One thing to do **on the host**: raise `net.core.rmem_max`, which a
+container can't change for itself:
+
+```sh
+sysctl -w net.core.rmem_max=33554432
+echo 'net.core.rmem_max = 33554432' > /etc/sysctl.d/60-woodshed.conf
+```
+
+Until then the UI shows a warning that the UDP receive buffer is small, and bursts of messages can be dropped. For
+Docker and Kubernetes, keep the senders' source addresses intact (they're how Woodshed tells devices apart) and mind
+that the UI is localhost-only until LAN mode is on. Details: [Containers](docs/install.md#containers-lxc-docker-kubernetes).
+On a machine without a browser, set the password and turn on LAN mode from the shell:
+[Headless setup](docs/install.md#headless-setup-no-browser-on-the-machine).
+
+## Can I put the UI behind a reverse proxy?
+
+Yes, nginx or Caddy in front of the UI (not of port 514). Set a password first, so the UI asks for it even on
+localhost, and add the proxy's public name to `ui.trusted_hosts`: otherwise Woodshed refuses the request with a
+`403` naming the unexpected host. Or proxy to LAN mode from another machine. Examples:
+[Behind a reverse proxy](docs/install.md#behind-a-reverse-proxy-nginx-caddy).
+

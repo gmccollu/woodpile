@@ -4,7 +4,8 @@ Woodshed collects the log messages (syslog) that your devices send, keeps them a
 shows them in a web page where you can watch, search and export them. This page gets you from download to a support
 zip. For details, see the [install guide](install.md) and the [FAQ](../FAQ.md).
 
-Downloads are on the [releases page](https://github.com/gmccollu/woodshed/releases/latest).
+Downloads are on the [releases page](https://github.com/gmccollu/woodshed/releases). (Until 1.0 every release is a
+prerelease, so GitHub's "latest release" link gives a 404; pick the newest from the list. From 1.0 it works.)
 
 ## 1. Start Woodshed
 
