@@ -115,7 +115,7 @@ switch ($Action) {
   }
   "portable" {
     $op = Arg 0; $port = Arg 1 15514; $allow = (Arg 2 "") -eq "allow"
-    $P = "C:\woodshed-portable"   # outside C:\woodpile-lab (the folder excluded from endpoint protection (EDR) for the test scripts), so this copy of the product stays monitored
+    $P = "C:\woodshed-portable"   # its own folder, apart from the test scripts in C:\woodpile-lab; nothing here is excluded from endpoint protection (EDR)
     switch ($op) {
       "start" {
         New-Item -ItemType Directory -Force (Join-Path $P "data") | Out-Null
