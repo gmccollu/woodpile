@@ -11,10 +11,27 @@ svg="$repo/web/public/favicon.svg"
 work=$(mktemp -d "${TMPDIR:-/tmp}/woodshed-icons.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 
-# QuickLook renders SVG; sips and iconutil take it from there.
-qlmanage -t -s 1024 -o "$work" "$svg" >/dev/null
-png="$work/favicon.svg.png"
-[ -f "$png" ] || { echo "make-icons.sh: QuickLook didn't render $svg" >&2; exit 1; }
+# sips renders the SVG on its transparent background (a QuickLook thumbnail, used before,
+# is opaque white: a white square on a dark Dock or taskbar); iconutil takes it from there.
+png="$work/logo.png"
+sips -s format png -z 1024 1024 "$svg" --out "$png" >/dev/null
+[ -f "$png" ] || { echo "make-icons.sh: sips didn't render $svg" >&2; exit 1; }
+# The top-left pixel must be transparent. Its bytes are stored unfiltered whatever the first
+# row's filter, so they're bytes 1-4 of the decompressed image data (8-bit RGBA).
+python3 -I - "$png" <<'EOF'
+import struct, sys, zlib
+data = open(sys.argv[1], "rb").read()
+depth, ctype = data[24], data[25]
+idat, i = b"", 8
+while i < len(data):
+    n, kind = struct.unpack(">I4s", data[i:i + 8])
+    if kind == b"IDAT":
+        idat += data[i + 8:i + 8 + n]
+    i += 12 + n
+alpha = zlib.decompress(idat)[4]
+if depth != 8 or ctype != 6 or alpha != 0:
+    sys.exit(f"make-icons.sh: {sys.argv[1]} isn't transparent (depth {depth}, color type {ctype}, corner alpha {alpha})")
+EOF
 
 set_dir="$work/woodshed.iconset"
 mkdir "$set_dir"
