@@ -15,12 +15,13 @@
 #                                every sender IP reaches UDP and TCP 514 and shows up as its own device
 #   wl correctness TARGET        LAB_CORRECT_N messages (UDP, TCP-LF, TCP-octet) on disk exactly once
 #   wl stress TARGET [--resume]  UDP and TCP rate steps: loss, CPU, RSS per step, and the knee (--resume: skip recorded steps)
+#   wl integrity TARGET LABEL    endpoint protection vs the product: binary present + unchanged since after-install, service, 514; stop (3) if not
 #   wl export TARGET             search the correctness run; export one device-day; zip vs manifest; the reboot in gaps
 #   wl reboot TARGET             reboot with a stream running: the service returns, data intact, sending resumes
 #   wl portable TARGET           the tarball/zip binary run by hand, reached from the senders
 #   wl soak TARGET start|status|stop|verify   LAB_SOAK_HOURS at LAB_SOAK_RATE from all senders, sampled on the VM
 #   wl collect TARGET            pull back the VM's logs and samples
-#   wl all TARGET                install check correctness stress reboot export portable collect
+#   wl all TARGET                install, integrity, check, correctness, integrity, stress, integrity, reboot, integrity, export, portable, collect
 #
 # Results: LAB_RESULTS/<target>/<UTC time>-<step>/ (log, JSON, CSV) and a PASS/FAIL line per check in
 # LAB_RESULTS/<target>/results.log. Exit status 0 when the step's checks all pass.
@@ -201,13 +202,13 @@ cmd_stage() {
 	pkg=$(pkg_for)
 	t=$LAB_ASSETS/tools
 	if [ "$(tv OS)" = windows ]; then
-		"${SSH[@]}" "$(tv SSH)" 'powershell -NoProfile -Command "New-Item -ItemType Directory -Force C:\woodpile-lab, C:\woodpile-lab\portable | Out-Null"'
+		"${SSH[@]}" "$(tv SSH)" 'powershell -NoProfile -Command "New-Item -ItemType Directory -Force C:\woodpile-lab, C:\woodshed-portable | Out-Null"'
 		vm_put "$here/remote/win-lab.ps1" C:/woodpile-lab/win-lab.ps1
 		vm_put "$t/verifyseq-windows-amd64.exe" C:/woodpile-lab/verifyseq.exe
 		vm_put "$pkg" "C:/woodpile-lab/$(basename "$pkg")"
 		tmp=$(mktemp -d)
 		python3 -c "import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])" "$(asset 'woodshed_*_windows_amd64.zip')" "$tmp"
-		vm_put "$(find "$tmp" -name woodshed.exe | head -1)" C:/woodpile-lab/portable/woodshed.exe
+		vm_put "$(find "$tmp" -name woodshed.exe | head -1)" C:/woodshed-portable/woodshed.exe
 		rm -rf "$tmp"
 	else
 		"${SSH[@]}" "$(tv SSH)" 'sudo -n install -d -o "$(id -un)" /opt/woodpile-lab /var/tmp/woodpile-lab ~/woodshed-portable'
@@ -484,7 +485,7 @@ cmd_portable() {
 	new_step portable
 	local port=$LAB_PORTABLE_PORT r n=10000 v d
 	if [ "$(tv OS)" = windows ]; then
-		d=C:/woodpile-lab/portable/data
+		d=C:/woodshed-portable/data
 		vm portable start "$port" | tee -a "$step_dir/log"
 		r=$(runid)
 		send --ns 0 --proto tcp --count 200 --rate 200 --run "$r" --port "$port" --timeout 20 >/dev/null || true
@@ -573,6 +574,63 @@ PY
 	esac
 }
 
+release_exe_sha() { # sha256 of the product binary inside the release's portable archive (the release has no exe checksum)
+	local tmp f
+	tmp=$(mktemp -d)
+	if [ "$(tv OS)" = windows ]; then
+		python3 -c "import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])" "$(asset 'woodshed_*_windows_amd64.zip')" "$tmp"
+		f=$(find "$tmp" -name woodshed.exe | head -1)
+	else
+		tar -C "$tmp" -xzf "$(asset 'woodshed_*_linux_amd64.tar.gz')"
+		f=$(find "$tmp" -type f -name woodshed | head -1)
+	fi
+	python3 -c "import hashlib, sys; print(hashlib.sha256(open(sys.argv[1], 'rb').read()).hexdigest())" "$f"
+	rm -rf "$tmp"
+}
+
+cmd_integrity() { # integrity TARGET LABEL: did endpoint protection quarantine, change or block the product? Exit 3 = stop the run.
+	local label=${1:?label, e.g. after-install}
+	[[ "$label" =~ ^[a-z0-9-]+$ ]] || die "integrity label must be [a-z0-9-]"
+	new_step "integrity-$label"
+	local j rel f=$LAB_RESULTS/$target/integrity.jsonl
+	j=$({ vm integrity 48 || true; } | tr -d '\r' | { grep '^{' || echo '{}'; } | tail -1)
+	rel=$(release_exe_sha 2>/dev/null || echo "")
+	printf '{"label": "%s", "at": "%s", "release_archive_exe_sha256": "%s", "state": %s}\n' "$label" "$(date -u +%FT%TZ)" "$rel" "$j" >>"$f"
+	python3 - "$f" "$label" <<'PY' | tee -a "$step_dir/log"
+import json, sys
+recs = [json.loads(l) for l in open(sys.argv[1]) if l.strip()]
+cur = recs[-1]; st = cur["state"]
+base = next((r for r in recs if r["label"] == "after-install"), cur)["state"]
+problems = []
+if not st.get("exe_present"):
+    problems.append(f"{st.get('exe')} is MISSING")
+elif base.get("exe_sha256") and st.get("exe_sha256") != base.get("exe_sha256"):
+    problems.append(f"{st.get('exe')} CHANGED: {base.get('exe_sha256')} -> {st.get('exe_sha256')}")
+if str(st.get("service_state", "")).lower() not in ("running", "active"):
+    problems.append(f"service state {st.get('service_state')!r}")
+if not st.get("udp514") or not st.get("tcp514"):
+    problems.append(f"514 not held by the service (udp {st.get('udp514')}, tcp {st.get('tcp514')})")
+if st.get("defender_detections"):
+    problems.append(f"Defender detections: {st['defender_detections']}")
+rel = cur.get("release_archive_exe_sha256")
+print(f"integrity {cur['label']} at {cur['at']}: exe {st.get('exe_sha256', '')[:16]}… size {st.get('exe_size')} mtime {st.get('exe_mtime_utc')} "
+      f"signature {st.get('signature', 'n/a')}; service {st.get('service_state')} ({st.get('account')}); udp514 {st.get('udp514')} tcp514 {st.get('tcp514')}; "
+      f"endpoint {st.get('secure_endpoint')}")
+print("release archive binary " + ("matches the installed binary" if rel and rel == st.get("exe_sha256") else
+      f"differs from the installed binary (archive {rel[:16]}…; the packaged build may differ, so 'unchanged' is judged against after-install)"))
+for e in st.get("cisco_app_events") or []:
+    print("  Cisco/AMP event: " + e)
+print("INTEGRITY_OK" if not problems else "INTEGRITY_PROBLEM: " + "; ".join(problems))
+PY
+	if grep -q "INTEGRITY_PROBLEM" "$step_dir/log"; then
+		check "endpoint protection left the product alone ($label)" false
+		log "STOP: integrity problem at $label; see $step_dir/log and $f. Not working around it."
+		return 3
+	fi
+	check "endpoint protection left the product alone ($label): binary present and unchanged, service running, 514 held" true
+	end_step
+}
+
 cmd_export() { # search the correctness run, export one device-day, check the zip against its manifest
 	new_step export
 	local dev range from to r q j body id st zip
@@ -645,16 +703,23 @@ setup-sender) cmd_setup_sender ;;
 senders) cmd_senders "$@" ;;
 stage) set_target "$1"; cmd_stage ;;
 install | check | correctness | reboot | export | portable | collect) set_target "$1"; "cmd_$c" ;;
+integrity) set_target "$1"; shift; cmd_integrity "$@" ;;
 stress) set_target "$1"; shift; cmd_stress "$@" ;;
 soak) set_target "$1"; shift; cmd_soak "$@" ;;
 all)
 	set_target "$1"
 	rc=0
-	for s in install check correctness stress reboot export; do fails=0; "cmd_$s" || rc=1; done
+	for s in install integrity:after-install check correctness integrity:after-traffic stress integrity:after-stress reboot integrity:after-reboot export; do
+		fails=0
+		case "$s" in
+		integrity:*) cmd_integrity "${s#integrity:}" || { echo "wl all: stopped by the integrity check (${s#integrity:})"; exit 3; } ;;
+		*) "cmd_$s" || rc=1 ;;
+		esac
+	done
 	case "$(tv KIND)" in deb | msi) fails=0; cmd_portable || rc=1 ;; esac
 	fails=0; cmd_collect || true
 	exit "$rc"
 	;;
-help | -h | --help) sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//' ;;
+help | -h | --help) sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//' ;;
 *) die "unknown command $c (wl help)" ;;
 esac
