@@ -91,6 +91,45 @@ func TestSearchContextExportInProcess(t *testing.T) {
 		t.Errorf("bad regex: %d", code)
 	}
 
+	// Program/tag, host and exclude, and the fields on each result.
+	var fp struct {
+		Results []struct {
+			App  string `json:"app"`
+			Host string `json:"host"`
+			Raw  string `json:"raw"`
+		} `json:"results"`
+		NextCursor string `json:"next_cursor"`
+	}
+	fq := "/api/search?limit=5000&q=" + url.QueryEscape(tag) + "&app=WOODSHED,other*&host=" + url.QueryEscape(loadgen.DefaultHostname)
+	if code := r.do(t, "GET", fq, nil, &fp); code != 200 || len(fp.Results) != 300 || fp.Results[0].App != "woodshed" ||
+		fp.Results[0].Host != loadgen.DefaultHostname {
+		t.Fatalf("app+host: %d, %d results, first %+v", code, len(fp.Results), fp.Results[:min(1, len(fp.Results))])
+	}
+	fp.Results = nil
+	r.do(t, "GET", "/api/search?limit=5000&q="+url.QueryEscape(tag)+"&app=woodsh*&exclude="+url.QueryEscape(tag+"1"), nil, &fp)
+	if len(fp.Results) != 300-111 { // 1, 10-19, 100-199
+		t.Errorf("exclude: %d results", len(fp.Results))
+	}
+	for _, bad := range []string{"app=nothing-sends-this", "host=elsewhere"} {
+		fp.Results = nil
+		if code := r.do(t, "GET", "/api/search?q="+url.QueryEscape(tag)+"&"+bad, nil, &fp); code != 200 || len(fp.Results) != 0 {
+			t.Errorf("%s: %d, %d results", bad, code, len(fp.Results))
+		}
+	}
+	if code := r.do(t, "GET", "/api/search?regex=true&q=a&exclude=(", nil, nil); code != 400 {
+		t.Errorf("bad exclude regex: %d", code)
+	}
+	fp.NextCursor = ""
+	r.do(t, "GET", "/api/search?limit=5&app=woodshed&q="+url.QueryEscape(tag), nil, &fp)
+	if fp.NextCursor == "" {
+		t.Fatal("no cursor")
+	}
+	for _, changed := range []string{"app=woodshed*", "app=woodshed&host=x", "app=woodshed&exclude=x"} {
+		if code := r.do(t, "GET", "/api/search?limit=5&"+changed+"&q="+url.QueryEscape(tag)+"&cursor="+fp.NextCursor, nil, nil); code != 400 {
+			t.Errorf("cursor with %s: %d", changed, code)
+		}
+	}
+
 	var mid struct {
 		Results []struct {
 			Ref string `json:"ref"`
@@ -151,6 +190,19 @@ func TestSearchContextExportInProcess(t *testing.T) {
 	}
 	if len(man.Files) != 1 || man.Files[0].Lines != 300 {
 		t.Fatalf("manifest %+v", man)
+	}
+	// The same export narrowed by program/tag and exclude: the zip holds what the search showed.
+	body["app"], body["exclude"] = []string{"WOODSHED"}, tag+"1"
+	if code := r.do(t, "POST", "/api/exports", body, &created); code != 202 {
+		t.Fatalf("create filtered %d", code)
+	}
+	var finfo api.ExportInfo
+	waitFor(t, "filtered export ready", func() bool {
+		r.do(t, "GET", "/api/exports/"+created["id"], nil, &finfo)
+		return finfo.State == "ready"
+	})
+	if finfo.Lines != 300-111 || finfo.Filters.Exclude != tag+"1" || len(finfo.Filters.App) != 1 || finfo.Filters.Host == nil {
+		t.Errorf("filtered export %+v", finfo)
 	}
 	evs, _ := r.srv.idx.Events(context.Background(), time.Time{}, time.Time{}, 0)
 	n := 0

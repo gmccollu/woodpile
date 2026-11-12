@@ -131,9 +131,10 @@ An invalid value (not 0–7 or `unknown`) is a `400 {"error": ...}`.
 
 ## Search
 
-`GET /api/search?q=text&regex=false&case=false&devices=a,b&group=HQ&ungrouped=true&from=...&to=...&severities=...&order=desc&limit=500&cursor=...`
+`GET /api/search?q=text&regex=false&case=false&devices=a,b&group=HQ&ungrouped=true&from=...&to=...&severities=...&app=sshd,%25FW-6-*&host=web-01&exclude=text&order=desc&limit=500&cursor=...`
 ```json
-{"results": [{"received": "...", "device_id": "10.1.0.1", "severity": 6, "raw": "...", "ref": "opaque"}],
+{"results": [{"received": "...", "device_id": "10.1.0.1", "severity": 6, "raw": "...", "ref": "opaque",
+              "app": "sshd", "host": "web-01"}],
  "next_cursor": "opaque-or-empty", "scanned_bytes": 123456, "scanned_files": 12, "elapsed_ms": 840,
  "partial": false}
 ```
@@ -141,13 +142,28 @@ An invalid value (not 0–7 or `unknown`) is a `400 {"error": ...}`.
   an invalid one is a `400` with the parse error. `case` applies to both. Empty `q` matches every line, so it's a
   filtered browse.
 - `q` is matched against the raw message as received (unescaped), not the stored line prefix.
+- `exclude`: lines whose raw message matches it are left out. It's matched like `q`: a substring by default, an RE2
+  regular expression with `regex=true`, and `case` applies. An invalid one is a `400` (the message starts
+  `exclude: `). Empty means nothing is excluded.
+- `app`: comma-separated programs/tags. Only lines whose header has one of them are returned, ignoring case. A value
+  ending in `*` is a prefix (`ssh*`, `%FW-6-*`). A leading `%` is ignored on both sides, so `FW-6-302013` and
+  `%FW-6-302013` both match the tag `%FW-6-302013` (in a URL, `%` is written `%25`). `*` alone matches any
+  line that has a program/tag.
+- `host`: comma-separated hostnames from the message header (not the sender's IP; use `devices` for that), exact
+  match ignoring case.
+- `app` and `host` read the header the same way the server parses messages (RFC 5424, RFC 3164 and common variants).
+  A line whose header has no program/tag or hostname has `""` there and never matches an `app` or `host` filter. The
+  header is parsed only for lines that passed the other filters.
+- Each result's `app` and `host` are the parsed program/tag (with a `%` tag's `%`) and header hostname, or `""` when
+  the header has none. Context lines carry them too.
 - `from` / `to`: RFC 3339, on the received time: `from` ≤ received < `to`. Default `to` = now and `from` = to − 24 h.
   `from` must be before `to`.
 - `devices`, `group` / `ungrouped`: as for `/api/live`. Hidden devices are searched only when named in `devices`.
 - `order`: `desc` (newest first, the default) or `asc`.
 - `limit`: default 500, max 5,000.
-- `cursor`: from the previous page's `next_cursor`; the other parameters must be the same as on the first page, or
-  the server returns `400`. `limit` is the exception: it may change from page to page.
+- `cursor`: from the previous page's `next_cursor`; the other parameters (`app`, `host` and `exclude` included) must
+  be the same as on the first page, or the server returns `400`. The order of the values in `app`, `host` and `devices`
+  doesn't matter. `limit` is the exception: it may change from page to page.
 - Each request has a time budget of 10 s. If the budget runs out before `limit` results (or the page reaches 8 MiB of
   messages), the response has what it found, `partial: true` and a `next_cursor` that resumes where the scan stopped. The UI keeps asking while
   `partial` is true and the user hasn't cancelled.
@@ -157,6 +173,7 @@ An invalid value (not 0–7 or `unknown`) is a `400 {"error": ...}`.
 
 `GET /api/context?ref=opaque&before=50&after=50` → `{"lines": [...same shape as results...], "hit_index": 50,
 "at_start": false, "at_end": false}`
+- Context isn't filtered: it's every stored line around the hit, so it takes no filter parameters.
 - `at_start` / `at_end` are true when there are no older / newer stored lines for that device.
 - Lines come from the same device, in file order, and can cross into the neighbouring part or day file.
 - `before` / `after` max 500 each. A `ref` whose file is gone is a `404`.
@@ -164,10 +181,12 @@ An invalid value (not 0–7 or `unknown`) is a `400 {"error": ...}`.
 ## Exports
 
 `POST /api/exports` body `{"devices": ["10.1.0.1"], "group": "", "ungrouped": false, "from": "...", "to": "...",
-"severities": [0, 1, "unknown"], "q": "", "regex": false, "case": false}` → `202 {"id": "exp_..."}`
-- `from` and `to` are required. Pick devices with `devices`, `group`, `ungrouped`, or `"all_devices": true` (every non-hidden device); at least one must select a device. `severities`, `q`, `regex`
-  and `case` are optional filters with exactly the same meaning as search, so "Export these results" exports what
-  the search showed. Without them every line in range is exported.
+"severities": [0, 1, "unknown"], "q": "", "regex": false, "case": false, "app": ["sshd", "%FW-6-*"], "host": ["web-01"],
+"exclude": ""}` → `202 {"id": "exp_..."}`
+- `from` and `to` are required. Pick devices with `devices`, `group`, `ungrouped`, or `"all_devices": true` (every non-hidden device); at least one must select a device. `severities`, `q`, `regex`,
+  `case`, `app`, `host` and `exclude` are optional filters with exactly the same meaning as search, so "Export these
+  results" exports what the search showed. `app` and `host` are JSON lists here (search takes them comma-separated);
+  blank items are dropped. Without filters every line in range is exported.
 - One export builds at a time; a second `POST` while one is building is queued.
 
 `POST /api/exports/estimate` (same body) → `{"lines": 123456, "bytes": 45678901, "files": 12}`: an upper bound
@@ -175,7 +194,8 @@ from the index, without scanning, so the UI can show the size before building.
 
 `GET /api/exports` → `[{"id", "created", "devices", "from", "to", "state": "queued|building|ready|failed|expired",
 "progress": 0.42, "lines": 0, "size_bytes": 0, "error": "", "ready_at": null, "expires_at": null,
-"filters": {"group": "", "ungrouped": false, "severities": [], "q": "", "regex": false, "case": false}}]`, newest
+"filters": {"group": "", "ungrouped": false, "severities": [], "q": "", "regex": false, "case": false, "app": [], "host": [],
+"exclude": ""}}]`, newest
 first. `ready_at` / `expires_at` are set once the export is ready; `filters` echoes the request.
 
 `GET /api/exports/{id}` → one entry, same shape.
@@ -197,12 +217,13 @@ them first), but not against the log retention cap.
 - `logs/<device-id>/<YYYY-MM-DD>.log`: the matching lines as stored, one message per line, in received order: each
   line is `<received> <sender> <message>`, with CR, LF and backslash in the message escaped as `\r`, `\n` and `\\`
   (`README.txt` shows how to unescape). Search and context results still return the raw message unescaped.
-- `manifest.json`: Woodshed version, export time, the request (devices with names and groups, range, filters), and
-  per-file line count and SHA-256. Also `gaps`: periods inside the range when Woodshed wasn't running or a listener
+- `manifest.json`: Woodshed version, export time, the request (devices with names and groups, range, filters:
+  `severities`, `q`, `regex`, `case`, `app`, `host` and `exclude`), and per-file line count and SHA-256. Also `gaps`: periods inside the range when Woodshed wasn't running or a listener
   was down, from the event log.
 - `woodshed-events.log`: the service's own events in the range (start, stop, bind errors, rotations, deletions,
   drops, pauses).
-- `README.txt`: a short note on what each file is.
+- `README.txt`: a short note on what each file is, with the range and the filters in plain words ("Filters: none"
+  when there are none).
 
 ## Settings
 

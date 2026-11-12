@@ -67,14 +67,15 @@ func requestError(err error) error {
 func toAPILines(ls []search.Line) []api.SearchLine {
 	out := make([]api.SearchLine, len(ls))
 	for i, l := range ls {
-		out[i] = api.SearchLine{Received: l.Received, DeviceID: l.DeviceID, Severity: l.Severity, Raw: l.Raw, Ref: l.Ref}
+		out[i] = api.SearchLine{Received: l.Received, DeviceID: l.DeviceID, Severity: l.Severity, Raw: l.Raw, Ref: l.Ref, App: l.App, Host: l.Host}
 	}
 	return out
 }
 
 func (b *backend) Search(ctx context.Context, r api.SearchRequest) (api.SearchPage, error) {
 	p, err := b.search.Search(ctx, search.Query{
-		Filter:  search.Filter{Q: r.Q, Regex: r.Regex, Case: r.Case, Severities: toSeveritySet(r.Severities), From: r.From, To: r.To},
+		Filter: search.Filter{Q: r.Q, Regex: r.Regex, Case: r.Case, Severities: toSeveritySet(r.Severities), From: r.From, To: r.To,
+			Apps: r.App, Hosts: r.Host, Exclude: r.Exclude},
 		Devices: r.Devices, Group: r.Group, Ungrouped: r.Ungrouped, Asc: r.Asc, Limit: r.Limit, Cursor: r.Cursor,
 	})
 	if err != nil {
@@ -94,7 +95,8 @@ func (b *backend) Context(ctx context.Context, ref string, before, after int) (a
 
 func toExportRequest(r api.ExportRequest) export.Request {
 	return export.Request{AllDevices: r.AllDevices, Devices: r.Devices, From: r.From, To: r.To, Filters: export.Filters{
-		Group: r.Group, Ungrouped: r.Ungrouped, Severities: toSeveritySet(r.Severities), Q: r.Q, Regex: r.Regex, Case: r.Case}}
+		Group: r.Group, Ungrouped: r.Ungrouped, Severities: toSeveritySet(r.Severities), Q: r.Q, Regex: r.Regex, Case: r.Case,
+		Apps: r.App, Hosts: r.Host, Exclude: r.Exclude}}
 }
 
 func toAPIExport(e export.Info) api.ExportInfo {
@@ -102,7 +104,8 @@ func toAPIExport(e export.Info) api.ExportInfo {
 		ID: e.ID, Created: e.Created, Devices: e.Devices, From: e.From, To: e.To, State: string(e.State),
 		Progress: e.Progress, Lines: e.Lines, SizeBytes: e.SizeBytes, Error: e.Error, ReadyAt: e.ReadyAt, ExpiresAt: e.ExpiresAt,
 		Filters: api.ExportFilters{Group: e.Filters.Group, Ungrouped: e.Filters.Ungrouped,
-			Severities: fromSeveritySet(e.Filters.Severities), Q: e.Filters.Q, Regex: e.Filters.Regex, Case: e.Filters.Case},
+			Severities: fromSeveritySet(e.Filters.Severities), Q: e.Filters.Q, Regex: e.Filters.Regex, Case: e.Filters.Case,
+			App: e.Filters.Apps, Host: e.Filters.Hosts, Exclude: e.Filters.Exclude},
 	}
 }
 
