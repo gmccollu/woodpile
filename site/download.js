@@ -12,7 +12,9 @@
 export const REPO = { owner: 'gmccollu', name: 'woodshed' };
 
 export const repoUrl = (path = '') => `https://github.com/${REPO.owner}/${REPO.name}${path}`;
-export const releasesUrl = () => repoUrl('/releases/latest');
+// The release list, not /releases/latest: GitHub's "latest" skips prereleases, so it 404s while
+// every release is a release candidate. It can go back to /releases/latest after 1.0.
+export const releasesUrl = () => repoUrl('/releases');
 /** Written at deploy time by pages.yml (site/tools/releases.mjs); same origin, so no API call from the browser. */
 export const RELEASES_FILE = './releases.json';
 

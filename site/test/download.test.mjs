@@ -203,6 +203,6 @@ test('releases.json is built from the API: latest stable and latest prerelease, 
 });
 
 test('one constant names the repository', () => {
-  assert.equal(releasesUrl(), `https://github.com/${REPO.owner}/${REPO.name}/releases/latest`);
+  assert.equal(releasesUrl(), `https://github.com/${REPO.owner}/${REPO.name}/releases`);
   assert.equal(RELEASES_FILE, './releases.json');
 });
