@@ -94,8 +94,9 @@ As of 0.9.0-rc4 (details and workarounds in the [CHANGELOG](CHANGELOG.md)):
   deletion is recorded and shown in Settings.
 - Dropped, truncated and refused messages are counted and shown. Where the OS hides kernel UDP drops (Windows,
   macOS), the UI says so instead of showing 0.
-- Web UI: a dashboard with the message rate, device tiles and a live tail with server-side filters; a devices page to
-  rename, group or hide senders; settings that apply without a restart; light and dark modes.
+- Web UI: a dashboard with the message rate, device tiles and a live tail with server-side filters; an Events page to
+  browse and filter all stored history (text or regex, program/tag, host, exclude, devices, time, severity); a
+  devices page to rename, group or hide senders; settings that apply without a restart; light and dark modes.
 - The UI listens on `127.0.0.1:8514` only by default. LAN mode serves HTTPS with a password. No outbound connections,
   no telemetry, no update checks.
 - If port 514 is taken, the UI still starts and shows which program holds the port, with a Retry button.
