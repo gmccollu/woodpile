@@ -298,6 +298,10 @@ product or a SIEM. Each new data type has to fit that rule (decided 2026-11-11).
 - **SNMP trap receiver** (UDP 162; v1, v2c, and v3 with user-configured credentials stored like the UI password).
   Traps are stored decoded as text lines, with varbinds and the raw PDU, in the same per-device, per-day files. No
   MIB compiler in the first version; numeric OIDs, plus an optional folder of MIB files for names.
+- **Events viewer, next steps** (after the 1.0 Events page: program/tag, host and exclude filters, clickable columns):
+  a field panel with each field's top values (device, severity, host, program/tag, facility) where a click adds a filter;
+  a histogram of matches over time where dragging picks the range; AND / OR / NOT between terms; saved searches. All
+  over the same stored files, no new index type. A query language and dashboards stay out (see the scope rule).
 - TLS syslog (RFC 5425, port 6514).
 - Alerts: device quiet, error-rate spike, disk filling, drops (email and webhook). Simple thresholds only.
 - Device identity by hostname as an option, for relayed traffic.
