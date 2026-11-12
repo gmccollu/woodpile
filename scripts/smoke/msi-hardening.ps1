@@ -42,13 +42,33 @@ function Msiexec([string[]]$a, [string]$log) {
     $p = Start-Process msiexec.exe -Wait -PassThru -ArgumentList ($a + @("/qn", "/l*v", "`"$log`""))
     if ($p.ExitCode -ne 0) { Copy-Item $log $Logs -ErrorAction SilentlyContinue; Die "msiexec $($a -join ' ') exited $($p.ExitCode)" }
 }
+# The planted log's path and text: the .log, or the service's .log.gz of it if the UTC day
+# ended during the run (the .gz is the service's own file, so its ACL isn't checked).
+function Planted-Log {
+    if (Test-Path -LiteralPath $planted) { return @{ Path = $planted; Text = (Get-Content -LiteralPath $planted -Raw); Gz = $false } }
+    $gz = "$planted.gz"
+    if (-not (Test-Path -LiteralPath $gz)) { Die "the planted log $planted is gone (no .log or .log.gz)" }
+    $f = [IO.File]::OpenRead($gz)
+    try {
+        $r = New-Object IO.StreamReader (New-Object IO.Compression.GZipStream ($f, [IO.Compression.CompressionMode]::Decompress))
+        $text = $r.ReadToEnd()
+    } finally { $f.Dispose() }
+    Write-Host "the UTC day ended during the run: the service compressed $planted"
+    return @{ Path = $gz; Text = $text; Gz = $true }
+}
 function DaclOf([string]$path) { ("D:" + ((Get-Acl -LiteralPath $path).Sddl -split "D:", 2)[1]) -replace "^D:PAI\(", "D:P(" }
 
 if (Test-Path $Data) { Die "$Data exists before the test" }
 
 Write-Host "==> plant a hostile data folder"
+# The planted log is today's file (UTC, as the store names them), computed once. A file for
+# an earlier day is a closed one: the service gzips it as soon as it starts, so a fixed date
+# broke this check after midnight UTC. If midnight passes during the run, the service
+# compresses this one too; Planted-Log below then reads the .gz instead.
+$day = [DateTime]::UtcNow.ToString("yyyy-MM-dd")
+$planted = "$Data\logs\10.0.0.1\$day.log"
 New-Item -ItemType Directory -Force "$Data\logs\10.0.0.1", $Outside | Out-Null
-Set-Content "$Data\logs\10.0.0.1\2026-11-11.log" "kept"
+Set-Content $planted "kept"
 Set-Content (Join-Path $Outside "secret.txt") "outside"
 icacls $Data /grant "*S-1-1-0:(OI)(CI)F" | Out-Null
 icacls "$Data\logs" /grant "*S-1-1-0:F" | Out-Null
@@ -70,7 +90,10 @@ Ok "data folder: owner Administrators, exactly the protected DACL"
 # What was there before the install: reset to owner Administrators and inherited ACEs only.
 # (Files the service creates once it runs are owned by its own SID, which is fine.)
 $bad = @()
-foreach ($p in @("$Data\logs", "$Data\logs\10.0.0.1", "$Data\logs\10.0.0.1\2026-11-11.log")) {
+$plantedLog = Planted-Log
+$check = @("$Data\logs", "$Data\logs\10.0.0.1")
+if (-not $plantedLog.Gz) { $check += $plantedLog.Path }
+foreach ($p in $check) {
     $a = Get-Acl -LiteralPath $p
     if ($a.Owner -ne "BUILTIN\Administrators" -or @($a.Access | Where-Object { -not $_.IsInherited }).Count -ne 0 -or $a.AreAccessRulesProtected) {
         $bad += "${p}: $($a.Owner) $($a.Sddl)"
@@ -90,7 +113,7 @@ if (Test-Path "$Data\woodshed.toml") {
 if ((Get-Content (Join-Path $Outside "secret.txt") -Raw) -notmatch "outside") { Die "the hard link's target was changed" }
 if ((Get-Acl $Outside).Sddl -ne $outsideBefore) { Die "the junction's target ACL changed" }
 if ((Get-Acl (Join-Path $Outside "secret.txt")).Sddl -ne $secretBefore) { Die "the hard link's target ACL changed" }
-if ((Get-Content "$Data\logs\10.0.0.1\2026-11-11.log" -Raw) -notmatch "kept") { Die "existing logs were lost" }
+if ((Planted-Log).Text -notmatch "kept") { Die "existing logs were lost" }
 Ok "junction and hard link removed; their targets untouched; existing logs kept"
 
 $privs = (sc.exe qprivs Woodshed) -join "`n"
@@ -120,7 +143,7 @@ Ok "uninstall removed the data folder and nothing outside it"
 
 Write-Host "==> N6: a data folder an ordinary user created (owned by BUILTIN\Users)"
 New-Item -ItemType Directory -Force "$Data\logs\10.0.0.2" | Out-Null
-Set-Content "$Data\logs\10.0.0.2\2026-11-11.log" "from before"
+Set-Content "$Data\logs\10.0.0.2\$day.log" "from before"
 icacls $Data /setowner "*S-1-5-32-545" | Out-Null
 if ((Get-Acl $Data).Owner -ne "BUILTIN\Users") { Die "couldn't make BUILTIN\Users the owner" }
 Msiexec @("/i", "`"$Msi`"") (Join-Path $Logs "hardening-install-untrusted.log")
@@ -128,7 +151,7 @@ $aside = @(Get-ChildItem C:\ProgramData -Directory -Filter "Woodshed.untrusted-*
 if ($aside.Count -ne 1) { Die "expected one Woodshed.untrusted-* folder, found $($aside.Count)" }
 # W3: the name has a random part, so nobody can take it in advance to block the install.
 if ($aside[0].Name -notmatch '^Woodshed\.untrusted-\d{8}T\d{6}Z-[0-9a-f]{8}$') { Die "set-aside name $($aside[0].Name) has no random part" }
-if ((Get-Content (Join-Path $aside[0].FullName "logs\10.0.0.2\2026-11-11.log") -Raw) -notmatch "from before") { Die "the old folder's contents weren't kept" }
+if ((Get-Content (Join-Path $aside[0].FullName "logs\10.0.0.2\$day.log") -Raw) -notmatch "from before") { Die "the old folder's contents weren't kept" }
 if (Test-Path "$Data\logs\10.0.0.2") { Die "the new data folder still has the old contents" }
 $sd = Get-Acl $Data
 if ($sd.Owner -ne "BUILTIN\Administrators" -or (DaclOf $Data) -ne $WantDacl) { Die "new data folder: $($sd.Sddl)" }

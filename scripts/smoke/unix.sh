@@ -343,7 +343,9 @@ legacy)
 	}
 	echo "$install_out"
 	if [ "$os" = Darwin ]; then install_out=$($SUDO tail -n +"$((mark + 1))" /var/log/install.log); fi
-	echo "$install_out" | grep -q "old Woodpile data in $OLD_DATA isn't used by Woodshed" ||
+	# Match only the start of the hint: on Linux it names both folders ("in /var/lib/woodpile
+	# and /etc/woodpile isn't used..."), and dnf wraps scriptlet output into ">>> " lines.
+	echo "$install_out" | grep -q "old Woodpile data in $OLD_DATA" ||
 		die "the installer output doesn't name the old data folder"
 	ok "the installer output names the old data folder"
 	check_running
