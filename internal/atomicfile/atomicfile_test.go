@@ -2,6 +2,7 @@ package atomicfile
 
 import (
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -67,6 +68,10 @@ func TestWriteFileAndRead(t *testing.T) {
 	}
 	if err := WriteFile(p, []byte("two"), 0o600); err != nil {
 		t.Fatalf("replace under a reader: %v", err)
+	}
+	// The reader keeps the file it opened.
+	if b, err := io.ReadAll(f); err != nil || string(b) != "one" {
+		t.Errorf("old reader read %q %v", b, err)
 	}
 	f.Close()
 	if b, err := ReadFile(p); err != nil || string(b) != "two" {

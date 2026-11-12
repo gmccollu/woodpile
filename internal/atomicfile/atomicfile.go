@@ -1,12 +1,16 @@
 // Package atomicfile holds the file helpers every write-temp-then-rename in
 // Woodshed uses, and the matching shared-read open.
 //
-// On Windows a rename onto a file that another process briefly holds (endpoint
-// protection scanning it, a reader without FILE_SHARE_DELETE) fails with
-// ERROR_ACCESS_DENIED or ERROR_SHARING_VIOLATION; a moment later it works. Rename
-// retries those errors with a short backoff (about 1 s in all). Readers of these
-// files should open them with Open or ReadFile, which share delete on Windows, so
-// they never cause the failure themselves.
+// On Windows, Rename renames by handle with POSIX semantics
+// (FileRenameInfoEx, REPLACE_IF_EXISTS | POSIX_SEMANTICS; Windows 10 1709+ on
+// NTFS), which replaces a destination that readers hold open with
+// FILE_SHARE_DELETE (they keep reading the old file). It falls back to
+// MoveFileEx where that isn't supported. A rename onto a file that another
+// process holds without FILE_SHARE_DELETE (endpoint protection scanning it, a
+// plain reader) fails with ERROR_ACCESS_DENIED or ERROR_SHARING_VIOLATION, and
+// a moment later works: Rename retries those errors with a short backoff (about
+// 1 s in all). Readers of these files should open them with Open or ReadFile,
+// which share delete on Windows, so they never cause the failure themselves.
 package atomicfile
 
 import (
@@ -24,7 +28,7 @@ var backoff = []time.Duration{50 * time.Millisecond, 100 * time.Millisecond, 250
 // denied, sharing or lock violation). The error after the last try says how many
 // were made.
 func Rename(oldpath, newpath string) error {
-	return renameWith(os.Rename, isTransient, time.Sleep, oldpath, newpath)
+	return renameWith(platformRename, isTransient, time.Sleep, oldpath, newpath)
 }
 
 func renameWith(rename func(string, string) error, transient func(error) bool, sleep func(time.Duration), oldpath, newpath string) error {
