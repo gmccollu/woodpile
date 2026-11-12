@@ -6,7 +6,7 @@
   import Icon from './Icon.svelte';
 
   // The install guide's container notes (raising net.core.rmem_max on the host).
-  const CONTAINERS_DOC = 'https://github.com/gmccollu/woodshed/blob/main/docs/install.md#containers';
+  const CONTAINERS_DOC = 'https://github.com/gmccollu/woodshed/blob/main/docs/install.md#containers-lxc-docker-kubernetes';
 
   let retrying = $state(false);
   let retryError = $state('');
