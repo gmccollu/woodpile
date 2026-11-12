@@ -21,7 +21,7 @@
 # 00:00 UTC crosses it for real).
 #
 # At the end: every sequence number must be on disk exactly once, except the messages
-# the server counted as dropped (dropped_24h), which must match the missing count
+# the server counted as dropped (the peak dropped_24h seen), which must match the missing count
 # exactly. RSS and open file descriptors are sampled every 30 s (samples.csv).
 #
 # Exit status 0 when every check passes. Never needs sudo; binds only 127.0.0.1/::1.
@@ -274,6 +274,11 @@ done
 sleep 3
 stats=$(api "$BASE/api/stats")
 dropped=$(echo "$stats" | json 'd["dropped_24h"]')
+# dropped_24h is a rolling 24 h count, so on a 24 h run the low-disk drops from round 1
+# have aged out by now. Use the highest value the sampler saw (the only drops are the
+# low-disk phase's).
+peak=$(awk -F, 'NR > 1 && $7 ~ /^[0-9]+$/ && $7 > m { m = $7 } END { print m + 0 }' "$OUT/samples.csv")
+[ "$peak" -gt "$dropped" ] && dropped=$peak
 echo "$stats" >"$OUT/final-stats.json"
 api "$BASE/api/devices" >"$OUT/final-devices.json"
 kill "$sampler_pid" 2>/dev/null || true
