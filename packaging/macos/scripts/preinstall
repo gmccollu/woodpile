@@ -26,6 +26,14 @@ if launchctl print "system/$OLD_LABEL" >/dev/null 2>&1 || [ -e "$OLD_PLIST" ] ||
 	rm -rf /usr/local/share/woodpile /Applications/Woodpile.app
 	pkgutil --forget com.woodpile.pkg >/dev/null 2>&1 || true
 fi
+# The old launcher can outlive its daemon (seen on a Mac whose Woodpile was already
+# removed): delete it when it's really ours, by its bundle identifier.
+OLD_APP=/Applications/Woodpile.app
+if [ -d "$OLD_APP" ] &&
+	[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$OLD_APP/Contents/Info.plist" 2>/dev/null)" = com.woodpile.launcher ]; then
+	log "removing $OLD_APP, the old Woodpile launcher"
+	rm -rf "$OLD_APP"
+fi
 
 ensure_service_account
 
