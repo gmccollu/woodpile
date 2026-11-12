@@ -31,7 +31,8 @@ var (
 	serviceUninstall = service.Uninstall
 	serviceStatus    = service.Status
 	serviceRestart   = service.Restart
-	findPeer         = peer.Find // passed to server.Open: the server's own lookup of the service
+	serviceLegacy    = service.DetectLegacy // what Woodpile, the old name, left behind
+	findPeer         = peer.Find            // passed to server.Open: the server's own lookup of the service
 )
 
 // ---- install / uninstall ----
@@ -154,6 +155,13 @@ reached.`, stderr)
 		w.row("Config", fmt.Sprintf("%s: %v; assuming the defaults", *cfgPath, cfgErr))
 	} else {
 		w.row("Config", *cfgPath)
+	}
+	if old, err := serviceLegacy(); err == nil {
+		for _, n := range []string{old.ServiceNote(), old.DataNote()} {
+			if n != "" {
+				w.row("Woodpile", n)
+			}
+		}
 	}
 
 	status, apiErr := fetchStatus(cfg)

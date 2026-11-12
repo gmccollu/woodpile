@@ -15,7 +15,9 @@ The installers in `packaging/` depend on these. Change both sides together.
    - macOS: stdout/stderr go to `/Library/Logs/Woodshed/woodshed.log`, rotated by newsyslog.
    - Linux: journald.
 4. `woodshed install` / `uninstall` must use the same names, and must refuse when a package-installed service
-   already exists, so a machine never ends up with two services.
+   already exists, so a machine never ends up with two services. `install` also refuses while a service from
+   Woodpile (the release candidates' name) is installed; the packages replace Woodpile's themselves
+   (`internal/service/legacy.go`, docs/install.md "Moving from Woodpile").
 5. Windows LAN mode: the MSI opens only 514 UDP/TCP, and the virtual service account can't add firewall rules.
    When LAN mode is turned on, the UI shows the exact admin command that opens the UI port (decided: no extra
    installer feature in v1).

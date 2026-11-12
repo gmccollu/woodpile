@@ -61,4 +61,4 @@ func restartOS(r runner) error {
 	return fmt.Errorf("services aren't supported on %s", runtime.GOOS)
 }
 
-func windowsServiceState(string) (bool, bool, error) { return false, false, nil }
+func windowsServiceState(string, string) (bool, bool, error) { return false, false, nil }

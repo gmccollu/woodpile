@@ -12,7 +12,8 @@
 //
 // install and uninstall refuse when the package installed the service (the unit in
 // /usr/lib/systemd/system, the pkg receipt, the MSI's registry key), so a machine
-// never ends up with two services or a package whose service vanished.
+// never ends up with two services or a package whose service vanished. install also
+// refuses while a service from Woodpile, the old name, is still there (legacy.go).
 package service
 
 import (
@@ -164,9 +165,12 @@ type Installed struct {
 type prober interface {
 	exists(path string) bool
 	// windowsService reports whether the SCM has the service, and whether the
-	// MSI's registry key (HKLM\Software\Woodshed) exists.
-	windowsService(name string) (exists, msi bool, err error)
+	// MSI's registry key (HKLM\<msiKey>, Software\Woodshed) exists.
+	windowsService(name, msiKey string) (exists, msi bool, err error)
 }
+
+// windowsMSIKey is the MSI's registry key under HKLM (its Start-menu component).
+const windowsMSIKey = `Software\Woodshed`
 
 // Package and install paths (docs/install.md, packaging/).
 var (
@@ -179,7 +183,7 @@ var (
 func detect(goos string, p prober) (Installed, error) {
 	switch goos {
 	case "windows":
-		ok, msi, err := p.windowsService(WindowsName)
+		ok, msi, err := p.windowsService(WindowsName, windowsMSIKey)
 		if err != nil {
 			return Installed{}, fmt.Errorf("read the service list: %w", err)
 		}
@@ -191,7 +195,7 @@ func detect(goos string, p prober) (Installed, error) {
 			// The MSI's key without its service still means the package is installed.
 			in.Exists, in.Package = true, true
 			if in.Where == "" {
-				in.Where = `HKLM\Software\Woodshed`
+				in.Where = `HKLM\` + windowsMSIKey
 			}
 			in.Remove = "Settings > Apps > Woodshed > Uninstall (or msiexec /x with the MSI)"
 		}
@@ -260,7 +264,9 @@ func (osProber) exists(path string) bool {
 	return err == nil
 }
 
-func (osProber) windowsService(name string) (bool, bool, error) { return windowsServiceState(name) }
+func (osProber) windowsService(name, msiKey string) (bool, bool, error) {
+	return windowsServiceState(name, msiKey)
+}
 
 // ---- install and uninstall ----
 
@@ -304,6 +310,13 @@ func Install(o InstallOptions) (Result, error) {
 	if err := checkInstall(in); err != nil {
 		return Result{}, err
 	}
+	legacy, err := DetectLegacy()
+	if err != nil {
+		return Result{}, err
+	}
+	if err := checkLegacy(legacy); err != nil {
+		return Result{}, err
+	}
 	if o.ConfigPath == "" {
 		o.ConfigPath = config.DefaultConfigPath()
 	}
@@ -330,7 +343,11 @@ func Install(o InstallOptions) (Result, error) {
 	if err := requireAdmin(); err != nil {
 		return Result{}, err
 	}
-	return installOS(o)
+	res, err := installOS(o)
+	if err == nil && legacy.DataNote() != "" {
+		res.Notes = append(res.Notes, legacy.DataNote())
+	}
+	return res, err
 }
 
 // Uninstall stops and removes a service installed by Install. It keeps the

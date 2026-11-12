@@ -71,6 +71,23 @@ account and administrators, so open it as an administrator (Windows) or with `su
 
 Upgrades keep the config and data. Uninstalling keeps them too unless you ask for them to be deleted (below).
 
+## Moving from Woodpile
+
+The release candidates were called Woodpile. Install Woodshed the usual way and it replaces them: the MSI upgrades
+over the Woodpile MSI, the deb and rpm remove the `woodpile` package, and the pkg stops the Woodpile daemon and
+removes its program and app. `woodshed install` (no package) instead refuses while a Woodpile service is still there,
+and prints the command that removes it.
+
+The Woodpile data isn't moved: Woodshed starts with an empty data folder and default settings. The installer and
+`woodshed status` say where the old folder is. Keep it as long as you need the logs, then delete it, and the old
+service account with it:
+
+| | Delete the Woodpile data |
+|---|---|
+| Linux | `sudo rm -rf /var/lib/woodpile /etc/woodpile && sudo userdel woodpile` |
+| macOS | `sudo rm -rf "/Library/Application Support/Woodpile" /Library/Logs/Woodpile && sudo dscl . -delete /Users/_woodpile && sudo dscl . -delete /Groups/_woodpile` |
+| Windows | delete `C:\ProgramData\Woodpile` from an administrator prompt: `Remove-Item -Recurse -Force C:\ProgramData\Woodpile` |
+
 ## Windows
 
 **Install:** double-click the MSI and approve the administrator prompt. Or, silently from an elevated prompt:

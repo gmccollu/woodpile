@@ -1,7 +1,8 @@
 # Install smoke tests (SPEC §7): install every package for real on a fresh runner, check
 # the service (account, ports, UI, 10,000 messages on disk), restart, upgrade, uninstall
 # keeping the data and delete it on request; then the same with `woodshed install` (no
-# package). The checks live in scripts/smoke/.
+# package); then the rename: the last Woodpile release candidate's package, and this one
+# installed over it (OLD_RELEASE below). The checks live in scripts/smoke/.
 #
 # macOS and Windows minutes are expensive, so this runs only:
 #   - on a push to ci/install-smoke: the Linux jobs, plus Windows and macOS when the head
@@ -27,6 +28,9 @@ concurrency:
 
 env:
   GORELEASER_VERSION: v2.20.1
+  # The last release under the old name, Woodpile: the legacy steps install its packages
+  # (downloaded from this repo's releases) and then this build's over them.
+  OLD_RELEASE: v0.9.0-rc3
   NODE_VERSION: "24"
   WIX_VERSION: "5.0.2"
 
@@ -144,6 +148,15 @@ jobs:
           VERIFYSEQ: dist/verifyseq
           SMOKE_LOGS: ${{ runner.temp }}/smoke-logs
         run: scripts/smoke/unix.sh manual dist/woodshed
+      - name: Woodpile's deb, then this one over it
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERIFYSEQ: dist/verifyseq
+          SMOKE_LOGS: ${{ runner.temp }}/smoke-logs
+          WOODSHED_BIN: dist/woodshed
+        run: |
+          gh release download "$OLD_RELEASE" -R "$GITHUB_REPOSITORY" -p 'woodpile_*_amd64.deb' -D old
+          scripts/smoke/unix.sh legacy old/woodpile_*_amd64.deb dist/*_amd64.deb
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()
         with:
@@ -182,6 +195,13 @@ jobs:
         run: docker exec -e VERIFYSEQ=dist/verifyseq -e SMOKE_LOGS=/src/smoke-logs fedora scripts/smoke/unix.sh rpm "$(ls dist/*.x86_64.rpm)"
       - name: woodshed install / uninstall (no package)
         run: docker exec -e VERIFYSEQ=dist/verifyseq -e SMOKE_LOGS=/src/smoke-logs fedora scripts/smoke/unix.sh manual dist/woodshed
+      - name: Woodpile's rpm, then this one over it (Obsoletes)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "$OLD_RELEASE" -R "$GITHUB_REPOSITORY" -p 'woodpile-*.x86_64.rpm' -D old
+          docker exec -e VERIFYSEQ=dist/verifyseq -e SMOKE_LOGS=/src/smoke-logs -e WOODSHED_BIN=dist/woodshed fedora \
+            bash -c 'scripts/smoke/unix.sh legacy old/woodpile-*.x86_64.rpm dist/*.x86_64.rpm'
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()
         with:
@@ -209,6 +229,9 @@ jobs:
         run: |
           ./packaging/windows/build-msi.ps1 -Version 0.0.1 -Arch x64 -OutDir dist/v1
           ./packaging/windows/build-msi.ps1 -Version 0.0.2 -Arch x64 -OutDir dist/v2
+          # For the legacy step: the same base version as Woodpile's last MSI (0.9.0-rc3 is
+          # MSI version 0.9.0), so it needs AllowSameVersionUpgrades to replace it.
+          ./packaging/windows/build-msi.ps1 -Version 0.9.0-rc9 -Arch x64 -OutDir dist/v3
           go build -o dist/woodshed.exe ./cmd/woodshed
           go build -o dist/verifyseq.exe ./scripts/verifyseq
           Get-ChildItem -Recurse dist
@@ -218,6 +241,14 @@ jobs:
       - name: woodshed install / uninstall (no package)
         shell: pwsh
         run: ./scripts/smoke/windows.ps1 -Mode manual -Binary dist/woodshed.exe -Logs "$env:RUNNER_TEMP/smoke-logs"
+      - name: Woodpile's MSI, then this one over it (major upgrade)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download $env:OLD_RELEASE -R $env:GITHUB_REPOSITORY -p 'woodpile_*_windows_amd64.msi' -D old
+          if ($LASTEXITCODE -ne 0) { throw "gh release download exited $LASTEXITCODE" }
+          ./scripts/smoke/windows.ps1 -Mode legacy -OldMsi (Resolve-Path old/*.msi) -Msi (Resolve-Path dist/v3/*.msi) -Binary dist/woodshed.exe -Logs "$env:RUNNER_TEMP/smoke-logs"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()
         with:
@@ -252,6 +283,15 @@ jobs:
           VERIFYSEQ: dist/verifyseq
           SMOKE_LOGS: ${{ runner.temp }}/smoke-logs
         run: scripts/smoke/unix.sh manual dist/woodshed
+      - name: Woodpile's pkg, then this one over it (preinstall removes the old daemon)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERIFYSEQ: dist/verifyseq
+          SMOKE_LOGS: ${{ runner.temp }}/smoke-logs
+          WOODSHED_BIN: dist/woodshed
+        run: |
+          gh release download "$OLD_RELEASE" -R "$GITHUB_REPOSITORY" -p 'woodpile_*_macos_universal.pkg' -D old
+          scripts/smoke/unix.sh legacy old/woodpile_*_macos_universal.pkg dist/macos/*.pkg
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()
         with:

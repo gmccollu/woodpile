@@ -159,11 +159,19 @@ nfpms:
       postinstall: packaging/linux/scripts/postinstall.sh
       preremove: packaging/linux/scripts/preremove.sh
       postremove: packaging/linux/scripts/postremove.sh
+    # Woodpile, this package's old name (release candidates only): installing woodshed
+    # removes the woodpile package (its data folders stay; postinstall.sh says where).
+    # nfpm writes rpm's Obsoletes from "replaces". The rpm has no Provides: woodpile, which
+    # beside an unversioned Obsoletes of the same name is the self-obsoletion rpmlint flags.
     overrides:
       deb:
         dependencies: [passwd]
+        conflicts: [woodpile]
+        replaces: [woodpile]
+        provides: [woodpile]
       rpm:
         dependencies: [shadow-utils]
+        replaces: [woodpile]
 
 homebrew_casks:
   - name: woodshed

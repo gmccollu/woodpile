@@ -7,6 +7,26 @@ set -e
 # shellcheck source=packaging/macos/scripts/common.sh
 . "$(dirname "$0")/common.sh"
 
+# Woodpile, this package's old name (release candidates): stop its daemon, which
+# would hold port 514, and remove its program files the way its own uninstall.sh
+# does without --delete-logs. Its data, its log folder and the _woodpile account
+# are left alone; postinstall says where the data is.
+OLD_LABEL=com.woodpile.daemon
+OLD_PLIST=/Library/LaunchDaemons/$OLD_LABEL.plist
+if launchctl print "system/$OLD_LABEL" >/dev/null 2>&1 || [ -e "$OLD_PLIST" ] ||
+	pkgutil --pkg-info com.woodpile.pkg >/dev/null 2>&1; then
+	log "removing Woodpile, the old name: its daemon $OLD_LABEL and program files"
+	launchctl bootout "system/$OLD_LABEL" 2>/dev/null || true
+	i=0
+	while launchctl print "system/$OLD_LABEL" >/dev/null 2>&1 && [ "$i" -lt 20 ]; do
+		sleep 0.5
+		i=$((i + 1))
+	done
+	rm -f "$OLD_PLIST" /usr/local/bin/woodpile /etc/newsyslog.d/com.woodpile.daemon.conf
+	rm -rf /usr/local/share/woodpile /Applications/Woodpile.app
+	pkgutil --forget com.woodpile.pkg >/dev/null 2>&1 || true
+fi
+
 ensure_service_account
 
 if daemon_loaded; then

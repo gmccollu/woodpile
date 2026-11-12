@@ -8,6 +8,11 @@
   -Mode msi     installs -Msi (v1), checks it, upgrades to -UpgradeMsi (v2), uninstalls keeping
                 the data, reinstalls and uninstalls with DELETE_LOGS=1.
   -Mode manual  `woodshed install` / `uninstall` with -Binary (no package), the same checks.
+  -Mode legacy  the rename from Woodpile: installs -OldMsi (the last Woodpile release candidate),
+                checks that -Binary's `woodshed install` refuses beside it, installs -Msi over it
+                (a major upgrade; build it with a version at least the old one's), and checks
+                that the old product, service and firewall rules are gone, C:\ProgramData\Woodpile
+                is kept and named by `woodshed status`, and Woodshed runs.
 
   Checks: the service runs as NT SERVICE\Woodshed, C:\ProgramData\Woodshed has the MSI's
   protected ACL, the firewall rules exist, UDP and TCP 514 are held by the service, the UI
@@ -17,8 +22,9 @@
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet("msi", "manual")][string]$Mode,
+    [ValidateSet("msi", "manual", "legacy")][string]$Mode,
     [string]$Msi = "",
+    [string]$OldMsi = "",
     [string]$UpgradeMsi = "",
     [string]$Binary = "",
     [string]$VerifySeq = "dist\verifyseq.exe",
@@ -207,6 +213,43 @@ switch ($Mode) {
         Wait-Up | Out-Null
         Still-There $r1 "the reinstall"
         Uninstall-Msi $UpgradeMsi (Join-Path $Logs "uninstall-delete.log") @("DELETE_LOGS=1")
+        Check-Gone
+        Check-DataGone
+    }
+    "legacy" {
+        $oldData = Join-Path $env:ProgramData "Woodpile"
+        Say "the old Woodpile MSI: msiexec /i $OldMsi"
+        Install-Msi $OldMsi (Join-Path $Logs "install-woodpile.log")
+        Wait-Up | Out-Null
+        $old = Get-CimInstance Win32_Service -Filter "Name='Woodpile'"
+        if (-not $old -or $old.State -ne "Running") { Die "the old Woodpile service isn't running" }
+        $bin = (Resolve-Path $Binary).Path
+        Native $bin @("send", "--port", "514", "--proto", "udp", "--count", "100", "--rate", "1000")
+        for ($i = 0; ($i -lt 30) -and -not (Test-Path (Join-Path $oldData "logs")); $i++) { Start-Sleep 1 }
+        if (-not (Test-Path (Join-Path $oldData "logs"))) { Die "the old Woodpile service wrote no logs in $oldData" }
+        Ok "the old Woodpile service runs as $($old.StartName) and keeps its logs in $oldData"
+        Refuses "Settings > Apps > Woodpile > Uninstall" $bin @("install")
+
+        Say "the Woodshed MSI over it: msiexec /i $Msi"
+        Install-Msi $Msi (Join-Path $Logs "install-over-woodpile.log")
+        Check-Running | Out-Null
+        if (Get-Service Woodpile -ErrorAction SilentlyContinue) { Die "the old Woodpile service is still there" }
+        if (Get-NetFirewallRule -DisplayName "Woodpile syslog (*)" -ErrorAction SilentlyContinue) { Die "the old firewall rules are still there" }
+        if (Test-Path "HKLM:\Software\Woodpile") { Die "the old MSI's registry key is still there" }
+        if (Test-Path (Join-Path $env:ProgramFiles "Woodpile\woodpile.exe")) { Die "the old woodpile.exe is still there" }
+        $products = @(Get-CimInstance Win32_Product | Where-Object { $_.Name -in "Woodpile", "Woodshed" })
+        if ($products.Count -ne 1 -or $products[0].Name -ne "Woodshed") { Die "products after the upgrade: $(($products | ForEach-Object Name) -join ', ')" }
+        Ok "a major upgrade: only Woodshed is installed; the Woodpile product, service, firewall rules and key are gone"
+        if (-not (Test-Path (Join-Path $oldData "logs"))) { Die "the old data in $oldData was deleted" }
+        Ok "the old data in $oldData is kept"
+        $out = & $Exe status 2>&1 | Out-String
+        Write-Host $out
+        if ($out -notmatch [regex]::Escape("old Woodpile data in $oldData")) { Die "woodshed status doesn't name the old data folder" }
+        if ($out -match "old Woodpile service") { Die "woodshed status still sees the old service" }
+        Ok "woodshed status names the old data folder, and no old service"
+        $r1 = New-RunId
+        Send-Traffic $Exe $r1
+        Uninstall-Msi $Msi (Join-Path $Logs "uninstall-delete.log") @("DELETE_LOGS=1")
         Check-Gone
         Check-DataGone
     }

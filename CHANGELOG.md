@@ -9,6 +9,20 @@ and versions follow [Semantic Versioning](https://semver.org/). Release notes on
 The first release: a syslog server you can install on Windows, macOS or Linux in a minute, that keeps every message
 as plain files within a disk budget and has a web UI for watching, searching and exporting logs.
 
+### Renamed from Woodpile
+- The release candidates were called Woodpile; from 1.0.0 it's Woodshed. Everything carries the new name: the
+  program (`woodshed`), the services (`woodshed.service`, `com.woodshed.daemon`, `Woodshed` running as
+  `NT SERVICE\Woodshed`), the accounts, folders, packages and download names, and the UI's cookies and header (so
+  a browser logs in again once).
+- Installing Woodshed over a Woodpile release candidate replaces it: the MSI upgrades over the Woodpile MSI (whose
+  uninstall removes the `Woodpile` service), the deb and rpm remove the `woodpile` package (Conflicts/Replaces,
+  Obsoletes), and the pkg stops the `com.woodpile.daemon` daemon and removes its plist, program and app.
+- The old data isn't moved or deleted. Woodshed starts with its own data folder and default settings; the Woodpile
+  one (`/var/lib/woodpile` and `/etc/woodpile`, `/Library/Application Support/Woodpile`, `C:\ProgramData\Woodpile`)
+  stays where it is. The installer and `woodshed status` say where, and you can delete it when you no longer need it
+  ([docs/install.md](docs/install.md#moving-from-woodpile)).
+- `woodshed install` refuses while a Woodpile service is still installed, and prints the command that removes it.
+
 ### Known issues (release candidates; fixed before 1.0.0)
 - Under a sustained flood spread across many spoofed source addresses, size-based retention can delete the
   busiest real device's history, including its newest day. Use the sender allowlist on untrusted networks.

@@ -49,6 +49,17 @@ for dir in "$DATA_DIR" "$CONF_DIR"; do
 	fi
 done
 
+# Woodpile, this package's old name: its data isn't migrated or touched; say where it is.
+if [ "$action" = install ]; then
+	old=""
+	for dir in /var/lib/woodpile /etc/woodpile; do
+		if [ -d "$dir" ]; then old="${old:+$old and }$dir"; fi
+	done
+	if [ -n "$old" ]; then
+		echo "woodshed: the old Woodpile data in $old isn't used by Woodshed; you can delete it."
+	fi
+fi
+
 # Raise net.core.rmem_max now; the drop-in keeps it across reboots.
 if [ -f "$SYSCTL_FILE" ] && command -v sysctl >/dev/null 2>&1; then
 	sysctl -q -p "$SYSCTL_FILE" >/dev/null 2>&1 ||
@@ -65,6 +76,14 @@ if [ ! -d /run/systemd/system ]; then
 fi
 
 systemctl daemon-reload >/dev/null 2>&1 || true
+
+# The old Woodpile service would hold port 514. The deb's Conflicts removes the old
+# package before this runs, but rpm removes an obsoleted package after it, and a
+# `woodpile install` service isn't a package at all: stop and disable it first.
+if systemctl cat woodpile.service >/dev/null 2>&1; then
+	systemctl disable --now woodpile.service >/dev/null 2>&1 || true
+	echo "woodshed: stopped and disabled the old Woodpile service (woodpile.service)."
+fi
 
 if [ "$action" = upgrade ]; then
 	# Keep the admin's choice: restart only if it was running.

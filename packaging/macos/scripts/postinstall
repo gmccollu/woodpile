@@ -33,6 +33,11 @@ if ! launchctl bootstrap system "$PLIST"; then
 fi
 log "daemon $LABEL loaded; the UI is at $UI_URL"
 
+# Woodpile, the old name: its data isn't migrated or touched; say where it is.
+if [ -d "/Library/Application Support/Woodpile" ]; then
+	log "the old Woodpile data in /Library/Application Support/Woodpile isn't used by Woodshed; you can delete it"
+fi
+
 # Installer.app sets nothing special, `installer -pkg` sets COMMAND_LINE_INSTALL=1.
 # Only open a browser for an interactive install with someone logged in at the console.
 if [ -z "${COMMAND_LINE_INSTALL:-}" ]; then

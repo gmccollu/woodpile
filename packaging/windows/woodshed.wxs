@@ -32,7 +32,12 @@
     <?define ProjectUrl = https://github.com/gmccollu/woodshed?>
   <?endif?>
 
-  <!-- UpgradeCode never changes: it is how Windows Installer recognises every Woodshed version. -->
+  <!-- UpgradeCode never changes: it is how Windows Installer recognises every Woodshed version,
+       and every Woodpile one (the old name, release candidates only). Installing Woodshed over a
+       Woodpile MSI is a major upgrade: the old product is removed first, and its own uninstall
+       stops and deletes the "Woodpile" service (its ServiceControl has Remove="uninstall"), its
+       firewall rules, event source and Start-menu shortcut. C:\ProgramData\Woodpile is kept, as
+       on any uninstall without DELETE_LOGS=1; `woodshed status` says where it is. -->
   <Package Name="Woodshed"
            Manufacturer="Woodshed"
            Version="$(var.Version)"
@@ -40,7 +45,11 @@
            Scope="perMachine"
            Compressed="yes">
 
-    <MajorUpgrade DowngradeErrorMessage="A newer version of [ProductName] is already installed." />
+    <!-- AllowSameVersionUpgrades: the MSI version drops a release candidate's suffix, so
+         0.9.0-rc4 and 0.9.0-rc3 (or Woodshed and an old Woodpile of the same base version) are
+         both 0.9.0. Without it the newer one installs beside the old instead of replacing it. -->
+    <MajorUpgrade AllowSameVersionUpgrades="yes"
+                  DowngradeErrorMessage="A newer version of [ProductName] is already installed." />
     <MediaTemplate EmbedCab="yes" />
 
     <Property Id="ARPURLINFOABOUT" Value="$(var.ProjectUrl)" />

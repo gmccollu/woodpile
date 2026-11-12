@@ -41,6 +41,7 @@ func noService() {
 	serviceRestart = func() error { return errNoServiceManager }
 	serviceInstall = func(service.InstallOptions) (service.Result, error) { return service.Result{}, errNoServiceManager }
 	serviceUninstall = func(service.UninstallOptions) (service.Result, error) { return service.Result{}, errNoServiceManager }
+	serviceLegacy = func() (service.Legacy, error) { return service.Legacy{}, nil }
 	findPeer = func(context.Context, peer.Options) (peer.Info, bool) { return peer.Info{}, false }
 }
 
@@ -376,6 +377,34 @@ func TestReindex(t *testing.T) {
 	evs, _ := idx.Events(context.Background(), time.Time{}, time.Time{}, 0)
 	if len(evs) == 0 || !strings.Contains(evs[len(evs)-1].Text, "woodshed reindex") {
 		t.Errorf("events = %+v", evs)
+	}
+}
+
+// status points at what Woodpile, the old name, left: a service still installed
+// (with the command that removes it) and data folders it can delete.
+func TestStatusLegacy(t *testing.T) {
+	cfgPath, _ := testConfig(t, func(c *config.Config) {
+		l, _ := net.Listen("tcp", "127.0.0.1:0")
+		c.UI.Port = l.Addr().(*net.TCPAddr).Port
+		l.Close()
+	})
+	t.Cleanup(noService)
+	serviceLegacy = func() (service.Legacy, error) {
+		return service.Legacy{Service: "/usr/lib/systemd/system/woodpile.service", Remove: "sudo apt remove woodpile",
+			Data: []string{"/var/lib/woodpile", "/etc/woodpile"}}, nil
+	}
+	_, out, _ := runCLI("status", "--config", cfgPath)
+	for _, want := range []string{
+		"Woodpile:   the old Woodpile service is still installed (/usr/lib/systemd/system/woodpile.service); remove it with: sudo apt remove woodpile\n",
+		"Woodpile:   the old Woodpile data in /var/lib/woodpile and /etc/woodpile isn't used by Woodshed; you can delete it\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("status doesn't say %q:\n%s", want, out)
+		}
+	}
+	serviceLegacy = func() (service.Legacy, error) { return service.Legacy{}, nil }
+	if _, out, _ = runCLI("status", "--config", cfgPath); strings.Contains(out, "Woodpile") {
+		t.Errorf("status mentions Woodpile with nothing left of it:\n%s", out)
 	}
 }
 

@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"testing"
@@ -13,10 +14,18 @@ type fakeProber struct {
 	svc   bool
 	msi   bool
 	err   error
+	// The old Woodpile service and MSI key (legacy.go).
+	oldSvc, oldMSI bool
 }
 
 func (f fakeProber) exists(p string) bool { return f.files[p] }
-func (f fakeProber) windowsService(string) (bool, bool, error) {
+func (f fakeProber) windowsService(name, msiKey string) (bool, bool, error) {
+	if name == legacyWindowsName && msiKey == legacyWindowsKey {
+		return f.oldSvc, f.oldMSI, f.err
+	}
+	if name != WindowsName || msiKey != windowsMSIKey {
+		return false, false, fmt.Errorf("unexpected service %q, key %q", name, msiKey)
+	}
 	return f.svc, f.msi, f.err
 }
 

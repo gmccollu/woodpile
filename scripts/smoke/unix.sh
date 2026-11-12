@@ -7,6 +7,13 @@
 #   scripts/smoke/unix.sh rpm    dist/woodshed-X.x86_64.rpm  # dnf install / restart / remove
 #   scripts/smoke/unix.sh pkg    dist/macos/woodshed_X.pkg   # installer / kickstart / uninstall.sh
 #   scripts/smoke/unix.sh manual path/to/woodshed            # woodshed install / uninstall
+#   scripts/smoke/unix.sh legacy OLD NEW                      # Woodpile's package, then Woodshed's over it
+#
+# legacy (the rename from Woodpile): OLD is the last Woodpile release candidate's deb, rpm or
+# pkg and NEW is this build's package of the same kind. It installs OLD, checks that
+# `woodshed install` (WOODSHED_BIN) refuses with the command that removes it, installs NEW over
+# it, and checks that the old package and service are gone, the old data is kept and named
+# by the installer output and `woodshed status`, and the new service runs.
 #
 # Each mode checks: the service runs as the unprivileged account, holds UDP and TCP 514,
 # the UI answers on 8514, 10,000 messages sent with `woodshed send` are all on disk
@@ -299,6 +306,74 @@ manual)
 		dscl . -read /Users/_woodshed >/dev/null 2>&1 && die "the _woodshed user is still there"
 		ok "the _woodshed account is deleted"
 	fi
+	;;
+legacy)
+	old_pkg=$(realpath "$artifact")
+	new_pkg=$(realpath "${3:?legacy needs the old and the new package}")
+	if [ "$os" = Darwin ]; then
+		OLD_DATA="/Library/Application Support/Woodpile"
+		remove_cmd="sudo /usr/local/share/woodpile/uninstall.sh"
+		install_pkg() { $SUDO installer -pkg "$1" -target /; }
+	elif [ "${old_pkg%.deb}" != "$old_pkg" ]; then
+		OLD_DATA=/var/lib/woodpile
+		remove_cmd="sudo apt remove woodpile"
+		install_pkg() { $SUDO apt-get install -y "$1"; }
+	else
+		OLD_DATA=/var/lib/woodpile
+		remove_cmd="sudo dnf remove woodpile"
+		install_pkg() { $SUDO dnf install -y "$1"; }
+	fi
+	say "the old Woodpile package: $old_pkg"
+	install_pkg "$old_pkg"
+	wait_up
+	"$(command -v woodpile)" send --port 514 --proto udp --count 100 --rate 1000 >/dev/null
+	for _ in $(seq 30); do $SUDO test -d "$OLD_DATA/logs" && break; sleep 1; done
+	$SUDO test -d "$OLD_DATA/logs" || die "the old Woodpile service wrote no logs in $OLD_DATA"
+	ok "the old Woodpile service runs and keeps its logs in $OLD_DATA"
+	if [ -n "${WOODSHED_BIN:-}" ]; then
+		refuses "remove it first with: $remove_cmd" $SUDO "$(realpath "$WOODSHED_BIN")" install
+	fi
+
+	say "this package over it: $new_pkg"
+	mark=0 # the pkg's script output goes to /var/log/install.log, not to installer's stdout
+	if [ "$os" = Darwin ]; then mark=$($SUDO wc -l /var/log/install.log | awk '{print $1}'); fi
+	install_out=$(install_pkg "$new_pkg" 2>&1) || {
+		echo "$install_out"
+		die "installing $new_pkg over Woodpile failed"
+	}
+	echo "$install_out"
+	if [ "$os" = Darwin ]; then install_out=$($SUDO tail -n +"$((mark + 1))" /var/log/install.log); fi
+	echo "$install_out" | grep -q "old Woodpile data in $OLD_DATA isn't used by Woodshed" ||
+		die "the installer output doesn't name the old data folder"
+	ok "the installer output names the old data folder"
+	check_running
+	if [ "$os" = Darwin ]; then
+		$SUDO launchctl print system/com.woodpile.daemon >/dev/null 2>&1 && die "the old daemon is still loaded"
+		for f in /Library/LaunchDaemons/com.woodpile.daemon.plist /usr/local/bin/woodpile /Applications/Woodpile.app /usr/local/share/woodpile; do
+			[ ! -e "$f" ] || die "$f is still there"
+		done
+		pkgutil --pkg-info com.woodpile.pkg >/dev/null 2>&1 && die "the old pkg receipt is still registered"
+		ok "the old daemon, its plist, binary, launcher app and receipt are gone"
+	else
+		systemctl is-active --quiet woodpile.service && die "the old service is still active"
+		[ ! -e /usr/lib/systemd/system/woodpile.service ] || die "the old unit is still installed"
+		if [ "${old_pkg%.deb}" != "$old_pkg" ]; then
+			st=$(dpkg-query -W -f='${db:Status-Status}' woodpile 2>/dev/null || echo not-installed)
+			case "$st" in not-installed | config-files) ;; *) die "the old package is still $st" ;; esac
+		else
+			rpm -q woodpile >/dev/null 2>&1 && die "the old package is still installed"
+		fi
+		ok "the old package and its service are gone"
+	fi
+	$SUDO test -d "$OLD_DATA/logs" || die "the old data in $OLD_DATA was deleted"
+	ok "the old data in $OLD_DATA is kept"
+	out=$(woodshed_cmd status) || die "woodshed status failed: $out"
+	echo "$out"
+	echo "$out" | grep -q "old Woodpile data in $OLD_DATA" || die "woodshed status doesn't name the old data folder"
+	echo "$out" | grep -q "old Woodpile service" && die "woodshed status still sees the old service"
+	ok "woodshed status names the old data folder, and no old service"
+	r1=$(run_id)
+	traffic "$r1"
 	;;
 *)
 	echo "unknown mode $mode" >&2
