@@ -976,6 +976,28 @@ const SHOTS = [
       return location.hash.startsWith('#/export?') && document.querySelector('#exapp').value === '%FW-*' && document.querySelector('#exhost').value === 'edge-fw-01'
         && document.querySelector('#exex').value === 'denied' && b.app?.[0] === '%FW-*' && b.host?.[0] === 'edge-fw-01' && b.exclude === 'denied'; })()`,
   },
+  ...both({
+    name: 'dashboard-open-in-events',
+    url: '/?mock_panel=0#/dashboard',
+    wait: 3000,
+    check: `(() => { const a = [...document.querySelectorAll('a.tail-btn')].find((x) => x.textContent.trim() === 'Open in Events');
+      return !!a && a.getAttribute('href') === '#/events?r=1h'; })()`,
+  }),
+  {
+    name: 'open-in-events-carries-tail-view',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0&mock_rate=200#/dashboard',
+    wait: 2500,
+    act: `[...document.querySelectorAll('[role=tab]')].find((t) => t.textContent.trim() === 'HQ').click();
+      __set(document.querySelector('input[type=search]'), 'deny'); await __tick();
+      [...document.querySelectorAll('a.tail-btn')].find((x) => x.textContent.trim() === 'Open in Events').click();`,
+    after: 2500,
+    check: `(() => { const p = new URLSearchParams(location.hash.split('?')[1]);
+      const rows = [...document.querySelectorAll('.logline.clickable')];
+      return location.hash.startsWith('#/events?') && p.get('q') === 'deny' && p.get('group') === 'HQ' && p.get('r') === '1h'
+        && document.querySelector('#sq').value === 'deny' && rows.length > 0 && rows.every((r) => r.textContent.toLowerCase().includes('deny')); })()`,
+  },
 
   // ---- Export ----
   ...both({

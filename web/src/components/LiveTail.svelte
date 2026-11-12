@@ -19,6 +19,7 @@
     q = '',
     scope = 'all devices',
     onClearScope,
+    eventsHref,
     height = '560px',
   }: {
     group?: string;
@@ -27,6 +28,8 @@
     q?: string;
     scope?: string;
     onClearScope?: () => void;
+    /** "Open in Events": the stored history for what the tail shows. */
+    eventsHref?: string;
     height?: string;
   } = $props();
 
@@ -186,6 +189,11 @@
           <button class="tail-btn" onclick={onClearScope} aria-label="Show all devices"><Icon name="x" size={13} /></button>
         {/if}
       </div>
+      {#if eventsHref}
+        <a class="tail-btn" href={eventsHref} title="Search the stored history (last hour) with these devices, severities and text">
+          <Icon name="search" size={14} />Open in Events
+        </a>
+      {/if}
       <button class="tail-btn" onclick={togglePause} aria-pressed={paused}>
         <Icon name={paused ? 'play' : 'pause'} size={14} />{paused ? 'Resume' : 'Pause'}
       </button>
@@ -262,6 +270,7 @@
     color: var(--log-fg);
     cursor: pointer;
     font-size: 13px;
+    text-decoration: none;
   }
   .tail-btn:hover,
   .tail-btn[aria-pressed='true'] {

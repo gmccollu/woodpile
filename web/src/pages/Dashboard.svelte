@@ -3,6 +3,9 @@
   import { ago, agoShort, approxDays, bytes, num, num1, rate } from '../lib/format';
   import { anyUngrouped, deviceName, DEVICE_POLL_MS, groupsSeen, live, NOW_WITHIN_S, remember } from '../lib/status.svelte';
   import { ui } from '../lib/ui.svelte';
+  import { prefs } from '../lib/prefs.svelte';
+  import { eventsQueryFor } from '../lib/fields';
+  import { href } from '../lib/router.svelte';
   import LiveTail from '../components/LiveTail.svelte';
   import Sparkline from '../components/Sparkline.svelte';
   import StatusDot from '../components/StatusDot.svelte';
@@ -108,6 +111,11 @@
     }
     return tab === ALL ? 'all devices' : tab === UNGROUPED ? 'ungrouped' : tab;
   });
+
+  // "Open in Events": the same devices (or group), severities and text over the last hour.
+  const eventsHref = $derived(
+    `${href('events')}?${eventsQueryFor({ devices: tailDevices, group: tailGroup, ungrouped: tailUngrouped, severities: prefs.tailSev, q: ui.filter })}`,
+  );
 
   function setTab(t: string) {
     tab = t;
@@ -275,6 +283,7 @@
     {scope}
     height="{tailHeight}px"
     onClearScope={picked.length || tab !== ALL ? () => setTab(ALL) : undefined}
+    {eventsHref}
   />
 </div>
 
