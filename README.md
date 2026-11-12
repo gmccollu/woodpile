@@ -161,6 +161,8 @@ everything to disk first.
 | `woodshed install` / `uninstall` | Install or remove the system service where no installer package was used (needs administrator rights) |
 | `woodshed status` | The service's state, the listeners and the UI address |
 | `woodshed reindex` | Rebuild the index from the log files (with the server stopped) |
+| `woodshed set-password [--stdin]` | Set the UI password from the shell, for servers without a browser (run as administrator) |
+| `woodshed lan-mode on\|off [--port N]` | Turn LAN mode on or off from the shell; prints the addresses and the certificate's SHA-256 (run as administrator) |
 | `woodshed reset-password` | Forgot the UI password: remove it and turn LAN mode off (run as administrator) |
 | `woodshed send` | Send numbered test messages to any syslog server |
 | `woodshed bench` | Measure sustained throughput on a temporary in-process server |

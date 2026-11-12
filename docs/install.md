@@ -256,6 +256,36 @@ Then restart Woodshed in the container (`systemctl restart woodshed`) so it asks
 `externalTrafficPolicy: Local`, or every device shows up under the node's address (the default policy rewrites the
 source IP); `hostNetwork: true` avoids that too. One replica per volume, and `rmem_max` set on the nodes.
 
+## Headless setup (no browser on the machine)
+
+On a server or container you reach only over SSH, the UI's first-run steps (a password, then LAN mode) are also
+commands. Run them as root (`sudo`; an administrator prompt on Windows): they write the password hash into the data
+folder and change the config, as an administrator editing those files would. A running service is restarted to
+pick up the change (a second or two without listeners); a foreground `woodshed run` is told to restart itself.
+
+```sh
+sudo woodshed set-password            # asks twice; nothing is shown as you type
+sudo woodshed lan-mode on             # HTTPS on every interface, with a login
+sudo woodshed status                  # listeners, warnings, UI addresses, certificate SHA-256
+```
+
+- **`woodshed set-password`** sets or changes the UI password (at least 8 characters). In a script, pass it on
+  stdin instead of the prompt: `printf '%s\n' "$PASSWORD" | sudo woodshed set-password --stdin`. The hash is
+  stored like the UI stores it (`ui-password.hash`, Argon2id, mode 0600, owned by the data folder's owner). The
+  first password also turns on `ui.require_login_local`, as setting it in the UI does, so the UI asks for it on
+  localhost too; the command says so. To turn that off, set `require_login_local = false` under `[ui]` in the config
+  (or untick it in Settings) and restart.
+- **`woodshed lan-mode on|off [--port N]`** turns LAN mode on or off, and `--port` moves the UI. `on` refuses until
+  a password is set, and refuses a port that a syslog listener uses. It prints the addresses to open,
+  `https://<address>:<port>/` for each of the machine's stable addresses, and the certificate's SHA-256: check it
+  against what the browser shows the first time you connect (the certificate is self-signed). `off` puts the UI
+  back on `http://localhost:<port>/`.
+- **`woodshed status`** run as root reads the running server's state from the data folder, so it shows the
+  listeners, any warnings (for example a UDP receive buffer smaller than asked for, see above), the UI addresses and
+  the certificate's SHA-256 even when the UI needs a login. Run without root, it can only say that the UI needs a
+  login.
+- **Forgot the password?** `sudo woodshed reset-password` removes it and turns LAN mode off.
+
 ## Behind a reverse proxy (nginx, Caddy)
 
 You can put Woodshed's UI behind a reverse proxy (for your own certificate and name, or single sign-on in front).

@@ -169,36 +169,31 @@ reached.`, stderr)
 	case apiErr == nil:
 		w.row("Server", fmt.Sprintf("running, version %s (%s), up since %s", status.Version, status.Build,
 			status.StartedAt.Local().Format("2006-01-02 15:04:05")))
-		if len(status.Listeners) == 0 {
-			w.row("Listeners", "none enabled")
-		}
-		for i, l := range status.Listeners {
-			label := ""
-			if i == 0 {
-				label = "Listeners"
-			}
-			w.row(label, describeListener(l))
-		}
-		w.row("UI", uiURL(cfg))
-		if status.UICertFingerprint != "" {
-			w.row("TLS cert", "SHA-256 "+status.UICertFingerprint)
-		}
+		listenerRows(w, status.Listeners)
+		uiRows(w, cfg, status.UICertFingerprint)
 		w.row("Data", status.DataDir)
-		for i, b := range status.Banners {
-			label := ""
-			if i == 0 {
-				label = "Attention"
-			}
-			w.row(label, fmt.Sprintf("[%s] %s", b.Level, b.Text))
-		}
+		bannerRows(w, status.Banners)
 		return 0
 	case errors.Is(apiErr, errNeedsLogin):
-		w.row("Server", "running; the UI needs a login")
-		w.row("Listeners", "log in to the UI to see them")
-		w.row("UI", uiURL(cfg))
-		if rs, err := server.ReadState(cfg.Storage.DataDir); err == nil && rs.UI.CertFingerprint != "" {
-			w.row("TLS cert", "SHA-256 "+rs.UI.CertFingerprint)
+		// The run-state file has what /api/status would say. Whoever can read the
+		// data folder (root, or the service account) can read the logs anyway.
+		rs, err := server.ReadState(cfg.Storage.DataDir)
+		if err != nil {
+			w.row("Server", "running; the UI needs a login")
+			w.row("Listeners", "log in to the UI to see them, or run "+asAdmin("status"))
+			uiRows(w, cfg, "")
+			return 0
 		}
+		w.row("Server", fmt.Sprintf("running (pid %d), version %s, up since %s; the UI needs a login", rs.PID, rs.Version,
+			rs.StartedAt.Local().Format("2006-01-02 15:04:05")))
+		if rs.Listeners == nil {
+			w.row("Listeners", "not started yet")
+		} else {
+			listenerRows(w, rs.Listeners)
+		}
+		uiRows(w, cfg, rs.UI.CertFingerprint)
+		w.row("Data", cfg.Storage.DataDir)
+		bannerRows(w, rs.Banners)
 		return 0
 	}
 
@@ -223,6 +218,44 @@ reached.`, stderr)
 		w.row("Server", "not running (nothing answers on "+uiURL(cfg)+")")
 	}
 	return 1
+}
+
+func listenerRows(w *tabw, ls []api.Listener) {
+	if len(ls) == 0 {
+		w.row("Listeners", "none enabled")
+	}
+	for i, l := range ls {
+		label := ""
+		if i == 0 {
+			label = "Listeners"
+		}
+		w.row(label, describeListener(l))
+	}
+}
+
+// uiRows prints the UI's address(es): in LAN mode, also each stable address
+// other machines use, and the certificate's SHA-256 when known.
+func uiRows(w *tabw, cfg config.Config, fingerprint string) {
+	w.row("UI", uiURL(cfg))
+	if cfg.UI.LANMode {
+		addrs, _ := api.StableAddrs()
+		for _, ip := range addrs {
+			w.row("", "https://"+net.JoinHostPort(ip.String(), strconv.Itoa(cfg.UI.Port))+"/")
+		}
+	}
+	if fingerprint != "" {
+		w.row("TLS cert", "SHA-256 "+fingerprint)
+	}
+}
+
+func bannerRows(w *tabw, bs []api.Banner) {
+	for i, b := range bs {
+		label := ""
+		if i == 0 {
+			label = "Attention"
+		}
+		w.row(label, fmt.Sprintf("[%s] %s", b.Level, b.Text))
+	}
 }
 
 func describeListener(l api.Listener) string {

@@ -335,7 +335,7 @@ restarted to use it.`, stderr)
 	case applyFailed:
 		return 1
 	default:
-		applyHint(stdout, a, "the UI moves")
+		applyHint(stdout, a, "the UI changes")
 	}
 	printUIAddrs(stdout, next, dataDir, rs)
 	return 0

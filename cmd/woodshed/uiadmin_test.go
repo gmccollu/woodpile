@@ -7,11 +7,14 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
 	"math/big"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -283,5 +286,43 @@ func TestLANModeRestartsTheService(t *testing.T) {
 	code, _, errOut = runCLI("lan-mode", "off", "--config", cfgPath)
 	if code != 1 || !strings.Contains(errOut, "couldn't restart the service") {
 		t.Errorf("refused: %d %q", code, errOut)
+	}
+}
+
+// With login required, status shows what the run-state file says: listeners,
+// banners and the certificate; without access to it, how to get them.
+func TestStatusNeedsLoginReadsRunState(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, `{"error":"log in"}`, http.StatusUnauthorized)
+	})}
+	go srv.Serve(ln)
+	defer srv.Close()
+	cfgPath, dataDir := testConfig(t, func(c *config.Config) { c.UI.Port = ln.Addr().(*net.TCPAddr).Port })
+
+	code, out, _ := runCLI("status", "--config", cfgPath)
+	if code != 0 || !strings.Contains(out, "the UI needs a login") || !strings.Contains(out, asAdmin("status")) {
+		t.Errorf("no run-state: %d %q", code, out)
+	}
+
+	rs := server.RunState{PID: 4242, Version: "1.2.3", StartedAt: time.Now(), DataDir: dataDir,
+		UI: server.RunStateUI{Listening: true, CertFingerprint: "AB:CD"},
+		Listeners: []api.Listener{{Proto: "udp", Addr: "0.0.0.0", Port: 514, OK: true},
+			{Proto: "tcp", Addr: "0.0.0.0", Port: 514, Error: "address already in use"}},
+		Banners: []api.Banner{{Kind: "udp_buffer_small", Level: api.LevelWarn, Text: "UDP receive buffer is 4 MiB"}}}
+	b, _ := json.Marshal(rs)
+	os.WriteFile(filepath.Join(dataDir, server.StateFileName), b, 0o640)
+	code, out, _ = runCLI("status", "--config", cfgPath)
+	for _, want := range []string{"running (pid 4242), version 1.2.3", "UDP 0.0.0.0:514: listening", "TCP 0.0.0.0:514: NOT listening",
+		"[warn] UDP receive buffer is 4 MiB", "SHA-256 AB:CD"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in %q", want, out)
+		}
+	}
+	if code != 0 || strings.Contains(out, "log in to the UI") {
+		t.Errorf("%d %q", code, out)
 	}
 }
