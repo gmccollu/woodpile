@@ -87,11 +87,28 @@ fi
 
 systemctl daemon-reload >/dev/null 2>&1 || true
 
-# The old Woodpile service would hold port 514. The deb's Conflicts removes the old
-# package before this runs, but rpm removes an obsoleted package after it, and a
-# `woodpile install` service isn't a package at all: stop and disable it first.
+# The old Woodpile service would hold port 514. rpm removes an obsoleted package after
+# this runs, and a `woodpile install` service isn't a package at all: stop and disable it
+# here, and say so if it was running or enabled.
+# The deb's Conflicts makes dpkg run the old package's prerm (which stops and disables the
+# service) and remove it before this package's preinst would run, so no script of ours sees
+# the old service. There systemd's "Stopped" record in the journal shows it was running,
+# and the same line is printed.
+old_stopped=""
 if systemctl cat woodpile.service >/dev/null 2>&1; then
+	if systemctl is-active --quiet woodpile.service || systemctl is-enabled --quiet woodpile.service; then
+		old_stopped=yes
+	fi
 	systemctl disable --now woodpile.service >/dev/null 2>&1 || true
+elif [ "$action" = install ] && command -v journalctl >/dev/null 2>&1; then
+	journalctl --sync >/dev/null 2>&1 || true
+	# The MESSAGE_ID is systemd's "unit stopped" message (SD_MESSAGE_UNIT_STOPPED).
+	if [ -n "$(journalctl -q --no-pager -o cat --since=-10min UNIT=woodpile.service \
+		MESSAGE_ID=9d1aaa27d60140bd96365438aad20286 2>/dev/null)" ]; then
+		old_stopped=yes
+	fi
+fi
+if [ -n "$old_stopped" ]; then
 	echo "woodshed: stopped and disabled the old Woodpile service (woodpile.service)."
 fi
 

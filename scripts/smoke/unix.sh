@@ -12,8 +12,9 @@
 # legacy (the rename from Woodpile): OLD is the last Woodpile release candidate's deb, rpm or
 # pkg and NEW is this build's package of the same kind. It installs OLD, checks that
 # `woodshed install` (WOODSHED_BIN) refuses with the command that removes it, installs NEW over
-# it, and checks that the old package and service are gone, the old data is kept and named
-# by the installer output and `woodshed status`, and the new service runs.
+# it, and checks that the old package and service are gone (on Linux the installer output says
+# it stopped the old service), the old data is kept and named by the installer output and
+# `woodshed status`, and the new service runs.
 #
 # Each mode checks: the service runs as the unprivileged account, holds UDP and TCP 514,
 # the UI answers on 8514, 10,000 messages sent with `woodshed send` are all on disk
@@ -348,6 +349,13 @@ legacy)
 	echo "$install_out" | grep -q "old Woodpile data in $OLD_DATA" ||
 		die "the installer output doesn't name the old data folder"
 	ok "the installer output names the old data folder"
+	if [ "$os" != Darwin ]; then
+		# deb: dpkg removes the old package (its prerm stops the service) before this one's
+		# scripts run; rpm: this one's postinstall stops it. Both must say so.
+		echo "$install_out" | grep -q "stopped and disabled the old Woodpile service" ||
+			die "the installer output doesn't say it stopped the old Woodpile service"
+		ok "the installer output says it stopped the old Woodpile service"
+	fi
 	check_running
 	if [ "$os" = Darwin ]; then
 		$SUDO launchctl print system/com.woodpile.daemon >/dev/null 2>&1 && die "the old daemon is still loaded"

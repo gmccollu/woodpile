@@ -17,6 +17,8 @@ as plain files within a disk budget and has a web UI for watching, searching and
 - Installing Woodshed over a Woodpile release candidate replaces it: the MSI upgrades over the Woodpile MSI (whose
   uninstall removes the `Woodpile` service), the deb and rpm remove the `woodpile` package (Conflicts/Replaces,
   Obsoletes), and the pkg stops the `com.woodpile.daemon` daemon and removes its plist, program and app.
+- The deb now says "stopped and disabled the old Woodpile service" when it replaces a running Woodpile, as the rpm
+  already did.
 - The old data isn't moved or deleted. Woodshed starts with its own data folder and default settings; the Woodpile
   one (`/var/lib/woodpile` and `/etc/woodpile`, `/Library/Application Support/Woodpile`, `C:\ProgramData\Woodpile`)
   stays where it is. The installer and `woodshed status` say where, and you can delete it when you no longer need it

@@ -85,9 +85,10 @@ Upgrades keep the config and data. Uninstalling keeps them too unless you ask fo
 ## Moving from Woodpile
 
 The release candidates were called Woodpile. Install Woodshed the usual way and it replaces them: the MSI upgrades
-over the Woodpile MSI, the deb and rpm remove the `woodpile` package, and the pkg stops the Woodpile daemon and
-removes its program and app. `woodshed install` (no package) instead refuses while a Woodpile service is still there,
-and prints the command that removes it.
+over the Woodpile MSI, the deb and rpm remove the `woodpile` package (and print "stopped and disabled the old
+Woodpile service" when it was running), and the pkg stops the Woodpile daemon and removes its program and app.
+`woodshed install` (no package) instead refuses while a Woodpile service is still there, and prints the command that
+removes it.
 
 The Woodpile data isn't moved: Woodshed starts with an empty data folder and default settings. The installer and
 `woodshed status` say where the old folder is. Keep it as long as you need the logs, then delete it, and the old
