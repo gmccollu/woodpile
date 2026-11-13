@@ -304,7 +304,7 @@ func TestStatusNeedsLoginReadsRunState(t *testing.T) {
 	cfgPath, dataDir := testConfig(t, func(c *config.Config) { c.UI.Port = ln.Addr().(*net.TCPAddr).Port })
 
 	code, out, _ := runCLI("status", "--config", cfgPath)
-	if code != 0 || !strings.Contains(out, "the UI needs a login") || !strings.Contains(out, asAdmin("status")) {
+	if code != 0 || !strings.Contains(out, "the UI needs a login") || !strings.Contains(out, asAdmin("status --config "+shellQuote(cfgPath))) {
 		t.Errorf("no run-state: %d %q", code, out)
 	}
 
