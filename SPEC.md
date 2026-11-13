@@ -302,6 +302,10 @@ product or a SIEM. Each new data type has to fit that rule (decided 2026-11-11).
   a field panel with each field's top values (device, severity, host, program/tag, facility) where a click adds a filter;
   a histogram of matches over time where dragging picks the range; AND / OR / NOT between terms; saved searches. All
   over the same stored files, no new index type. A query language and dashboards stay out (see the scope rule).
+- **UDP receive off the write path:** today the UDP reader writes each message itself, so a slow disk (fsync,
+  rotation) backs up into the OS socket buffer, where loss isn't counted on Windows or macOS. Hand messages to a
+  bounded queue and count drops when it's full, so every loss Woodshed causes shows in `dropped_24h`. A 2026-11-12 lab
+  soak on Windows lost ~20 per million UDP in bursts near the top of the hour; the cause wasn't found in Woodshed.
 - TLS syslog (RFC 5425, port 6514).
 - Alerts: device quiet, error-rate spike, disk filling, drops (email and webhook). Simple thresholds only.
 - Device identity by hostname as an option, for relayed traffic.
