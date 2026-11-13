@@ -1120,7 +1120,7 @@ const SHOTS = [
     mode: 'light',
     url: '/?mock_panel=0&mock_auth=1#/devices',
     act: `document.querySelector('details summary').click();`,
-    check: `document.body.innerText.includes('woodshed reset-password') && document.body.innerText.includes('http://localhost:5173/')`,
+    check: `document.body.innerText.includes('woodshed reset-password') && document.body.innerText.includes(\`http://localhost:\${location.port}/\`)`,
   },
   {
     name: 'login-wrong-password-light',

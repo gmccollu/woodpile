@@ -1,6 +1,6 @@
 // Records the demo GIF and video from mock mode (vendor-neutral demo data):
-// the dashboard filling up, a device filter, the debug chip, Events with the context
-// panel, and an Export from estimate to Ready. Drives headless Chrome over the DevTools
+// the dashboard filling up, a device filter, the debug chip, Events with a Host filter and
+// the context panel, and an Export from estimate to Ready. Drives headless Chrome over the DevTools
 // protocol with real mouse and keyboard events (and a drawn pointer, since headless has
 // none), then assembles the frames with ffmpeg.
 //
@@ -147,7 +147,7 @@ try {
 
   // 2. Click a device: the tail follows only that one; click again to see all.
   await click(`document.querySelector('[aria-label="More for edge-fw-01"]')?.previousElementSibling`);
-  await sleep(1200);
+  await sleep(1000);
   await click(`document.querySelector('[aria-label="More for edge-fw-01"]')?.previousElementSibling`);
   await sleep(300);
 
@@ -155,16 +155,23 @@ try {
   await click(`document.querySelector('[aria-label="Live tail severities"] button[title^="Debug"]')`, 1);
   await sleep(1200);
 
-  // 4. Events: type a query, results stream in, open the lines around one.
+  // 4. Events: type a query, results stream in; click a row's host to keep only that host
+  //    (it fills the Host filter and searches again), then open the lines around one.
   await click(`document.querySelector('nav a[href="#/events"]')`);
   await sleep(250);
   await click(`document.getElementById('sq')`);
-  await type('deny tcp');
+  await type('deny');
   await click(byText('button', 'Search'));
   for (let i = 0; i < 40 && (await evaluate(`document.querySelectorAll('.logline.clickable').length`)) < 6; i++) await sleep(150);
-  await sleep(500);
+  await sleep(400);
+  const host = await evaluate(`document.querySelector('.logline.clickable button.hn').textContent.trim()`);
+  await click(`document.querySelector('.logline.clickable button.hn')`);
+  const onlyHost = `(() => { const h = [...document.querySelectorAll('.logline.clickable .hn')]; return h.length >= 6 && h.every((x) => x.textContent.trim() === ${JSON.stringify(host)}); })()`;
+  for (let i = 0; i < 40 && !(await evaluate(onlyHost)); i++) await sleep(150);
+  if (!(await evaluate(onlyHost))) throw new Error(`the Host filter didn't narrow the results to ${host}`);
+  await sleep(700);
   await click(`document.querySelectorAll('.logline.clickable')[2]`);
-  await sleep(1100);
+  await sleep(900);
   await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
   await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
   await sleep(300);
