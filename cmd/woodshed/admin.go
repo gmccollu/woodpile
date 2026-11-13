@@ -33,6 +33,9 @@ var (
 	serviceRestart   = service.Restart
 	serviceLegacy    = service.DetectLegacy // what Woodpile, the old name, left behind
 	findPeer         = peer.Find            // passed to server.Open: the server's own lookup of the service
+	// What status assumes when it can't read the config, so tests never reach a real
+	// server on the default UI port.
+	defaultConfig = config.Default
 )
 
 // ---- install / uninstall ----
@@ -131,7 +134,9 @@ instead (the error says how).`, stderr)
 func cmdStatus(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("status", "", `
 Show the service's state, the syslog listeners and the UI address. It asks the
-running server over its local API; if nothing answers, it says so.
+running server over its local API; if nothing answers, it says so. Without root
+(administrator rights on Windows) it can't read the config: it says so and
+assumes the defaults.
 
 Exit status: 0 when the server answers, 1 when it isn't running or can't be
 reached.`, stderr)
@@ -141,7 +146,11 @@ reached.`, stderr)
 	}
 	cfg, cfgErr := readConfig(*cfgPath)
 	if cfgErr != nil {
-		cfg = config.Default()
+		cfg = defaultConfig()
+	}
+	fullStatus := "status"
+	if *cfgPath != config.DefaultConfigPath() {
+		fullStatus += " --config " + shellQuote(*cfgPath)
 	}
 
 	w := &tabw{w: stdout}
@@ -151,9 +160,16 @@ reached.`, stderr)
 		svc += " (" + stErr.Error() + ")"
 	}
 	w.row("Service", fmt.Sprintf("%s (%s, %s)", svc, service.Name(runtime.GOOS), service.Platform()))
-	if cfgErr != nil {
+	switch {
+	case errors.Is(cfgErr, os.ErrPermission):
+		// The installers keep the config folder private to the service. A normal user
+		// still gets the service state, and the server's own answer when its UI is on
+		// the default port.
+		w.row("Config", fmt.Sprintf("%s can't be read without %s; assuming the defaults", *cfgPath, adminWord()))
+		w.row("", "for the full status, run: "+asAdmin(fullStatus))
+	case cfgErr != nil:
 		w.row("Config", fmt.Sprintf("%s: %v; assuming the defaults", *cfgPath, cfgErr))
-	} else {
+	default:
 		w.row("Config", *cfgPath)
 	}
 	if old, err := serviceLegacy(); err == nil {
@@ -165,6 +181,14 @@ reached.`, stderr)
 	}
 
 	status, apiErr := fetchStatus(cfg)
+	if cfgErr != nil && apiErr != nil && !errors.Is(apiErr, errNeedsLogin) && !cfg.UI.LANMode {
+		// Without the config, the scheme is a guess: in LAN mode the UI is HTTPS.
+		lan := cfg
+		lan.UI.LANMode = true
+		if st, err := fetchStatus(lan); err == nil || errors.Is(err, errNeedsLogin) {
+			cfg, status, apiErr = lan, st, err
+		}
+	}
 	switch {
 	case apiErr == nil:
 		w.row("Server", fmt.Sprintf("running, version %s (%s), up since %s", status.Version, status.Build,
@@ -180,7 +204,7 @@ reached.`, stderr)
 		rs, err := server.ReadState(cfg.Storage.DataDir)
 		if err != nil {
 			w.row("Server", "running; the UI needs a login")
-			w.row("Listeners", "log in to the UI to see them, or run "+asAdmin("status"))
+			w.row("Listeners", "log in to the UI to see them, or run "+asAdmin(fullStatus))
 			uiRows(w, cfg, "")
 			return 0
 		}
@@ -211,6 +235,9 @@ reached.`, stderr)
 		}
 		w.row("Server", msg)
 		w.row("", "("+apiErr.Error()+")")
+	case errors.Is(lockErr, os.ErrPermission):
+		w.row("Server", fmt.Sprintf("not answering on %s (%v)", uiURL(cfg), apiErr))
+		w.row("", fmt.Sprintf("the data folder can't be checked without %s: run %s", adminWord(), asAdmin(fullStatus)))
 	case lockErr != nil:
 		w.row("Server", fmt.Sprintf("not answering on %s (%v)", uiURL(cfg), apiErr))
 		w.row("", fmt.Sprintf("couldn't check the data folder either: %v (try as administrator)", lockErr))
@@ -344,6 +371,14 @@ func readConfigOrDefault(path string) config.Config {
 		return config.Default()
 	}
 	return c
+}
+
+// adminWord is what a permission error needs: "root", or administrator rights on Windows.
+func adminWord() string {
+	if runtime.GOOS == "windows" {
+		return "administrator rights"
+	}
+	return "root"
 }
 
 // adminErr adds the "run as administrator" hint to a permission error.

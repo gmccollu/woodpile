@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/gmccollu/woodshed/internal/atomicfile"
 	"github.com/gmccollu/woodshed/internal/config"
@@ -50,6 +51,14 @@ func runAsOwnerHint(string) string {
 
 // tightenPortableDir is Unix only: on Windows the server checks the folder's ACL.
 func tightenPortableDir(string) (string, error) { return "", nil }
+
+// shellQuote quotes an argument for a command line shown in a hint, when it needs it.
+func shellQuote(s string) string {
+	if s != "" && !strings.ContainsAny(s, " \t\"&|<>^%()") {
+		return s
+	}
+	return `"` + s + `"`
+}
 
 // writeOwnedLikeDir atomically writes dir/name; on Windows the file inherits the
 // data folder's ACL (perm is ignored).

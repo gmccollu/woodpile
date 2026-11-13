@@ -89,6 +89,8 @@ as plain files within a disk budget and has a web UI for watching, searching and
 - Portable archives (`.zip`, `.tar.gz`) for every OS: unpack, double-click `woodshed`, and the data goes in
   `woodshed-data` next to it.
 - `woodshed install` / `uninstall` set up the same service without a package.
+- `woodshed status` run without root (or administrator rights on Windows) says plainly that it can't read the
+  config and gives the command that can (`sudo woodshed status`), and still shows the service's state and the UI.
 - Command line: `run`, `install`, `uninstall`, `status`, `reindex`, `reset-password`, `send` (numbered test
   messages), `bench` (sustained throughput) and `version`.
 

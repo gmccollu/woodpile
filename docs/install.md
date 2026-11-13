@@ -283,8 +283,9 @@ sudo woodshed status                  # listeners, warnings, UI addresses, certi
   back on `http://localhost:<port>/`.
 - **`woodshed status`** run as root reads the running server's state from the data folder, so it shows the
   listeners, any warnings (for example a UDP receive buffer smaller than asked for, see above), the UI addresses and
-  the certificate's SHA-256 even when the UI needs a login. Run without root, it can only say that the UI needs a
-  login.
+  the certificate's SHA-256 even when the UI needs a login. Run without root, it can't read the config or the data
+  folder: it says so, assumes the default UI port, and shows the service's state and what the server answers there
+  (only that the UI needs a login, in LAN mode).
 - **Forgot the password?** `sudo woodshed reset-password` removes it and turns LAN mode off.
 
 ## Behind a reverse proxy (nginx, Caddy)

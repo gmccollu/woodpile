@@ -299,22 +299,35 @@ func parseWindowsCommand(cmdline string) (exe, cfgPath string) {
 	return exe, cfgPath
 }
 
+// statusOS asks the service manager with query-only access, which a standard user
+// has: the service library's Status also asks for start and stop rights, so for a
+// user who isn't an administrator it fails with "Access is denied".
 func statusOS(runner) (State, error) {
-	s, err := ksvc.New(nopProgram{}, runConfig(config.DefaultConfigPath()))
+	m, err := windows.OpenSCManager(nil, nil, windows.SC_MANAGER_CONNECT)
 	if err != nil {
 		return StateUnknown, err
 	}
-	st, err := s.Status()
-	if errors.Is(err, ksvc.ErrNotInstalled) {
+	defer windows.CloseServiceHandle(m)
+	name, err := windows.UTF16PtrFromString(Name("windows"))
+	if err != nil {
+		return StateUnknown, err
+	}
+	h, err := windows.OpenService(m, name, windows.SERVICE_QUERY_STATUS)
+	if errors.Is(err, windows.ERROR_SERVICE_DOES_NOT_EXIST) {
 		return StateNotInstalled, nil
 	}
 	if err != nil {
 		return StateUnknown, err
 	}
-	switch st {
-	case ksvc.StatusRunning:
+	defer windows.CloseServiceHandle(h)
+	var st windows.SERVICE_STATUS
+	if err := windows.QueryServiceStatus(h, &st); err != nil {
+		return StateUnknown, err
+	}
+	switch st.CurrentState {
+	case windows.SERVICE_RUNNING:
 		return StateRunning, nil
-	case ksvc.StatusStopped:
+	case windows.SERVICE_STOPPED:
 		return StateStopped, nil
 	}
 	return StateUnknown, nil
