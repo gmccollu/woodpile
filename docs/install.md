@@ -48,7 +48,7 @@ Download the installer for your system from the project's releases page. Replace
 return 404. Use the [releases page](https://github.com/gmccollu/woodshed/releases), or a tagged URL in scripts:
 
 ```sh
-curl -fLO https://github.com/gmccollu/woodshed/releases/download/v0.9.0-rc4/woodshed_0.9.0-rc4_amd64.deb
+curl -fLO https://github.com/gmccollu/woodshed/releases/download/v1.0.0/woodshed_1.0.0_amd64.deb
 # pattern: https://github.com/gmccollu/woodshed/releases/download/v<version>/<file>
 ```
 

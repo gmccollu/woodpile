@@ -27,9 +27,9 @@ What it isn't: a SIEM. No correlation, alerting or forwarding (TLS syslog, alert
 [Releases page](https://github.com/gmccollu/woodshed/releases): MSI for Windows (x64, ARM64), a universal pkg
 for macOS, deb and rpm for Linux (amd64, arm64), or a portable zip/tarball that runs with nothing installed.
 
-Until 1.0 every release is a prerelease, so GitHub's `releases/latest` links return 404. Use the releases page or a
-tagged URL, `https://github.com/gmccollu/woodshed/releases/download/v<version>/<file>` (for example
-`.../download/v0.9.0-rc4/woodshed_0.9.0-rc4_amd64.deb`). From 1.0, `releases/latest` works.
+[`releases/latest`](https://github.com/gmccollu/woodshed/releases/latest) is always the newest stable release. File
+names carry the version, so a direct link looks like
+`https://github.com/gmccollu/woodshed/releases/download/v1.0.0/woodshed_1.0.0_amd64.deb`.
 
 The installers and binaries aren't code-signed yet, so Windows SmartScreen and macOS Gatekeeper will ask once
 before running them ("Windows protected your PC" → More info → Run anyway; on macOS, System Settings → Privacy &
@@ -72,15 +72,9 @@ design), [docs/api.md](docs/api.md) (the UI's API), [CONTRIBUTING.md](CONTRIBUTI
 
 ## Known issues
 
-As of 0.9.0-rc4 (details and workarounds in the [CHANGELOG](CHANGELOG.md)):
+As of 1.0.0 (details in the [CHANGELOG](CHANGELOG.md)):
 
-- A sustained flood from many spoofed source addresses can make size-based retention delete the busiest real
-  device's history. Use the sender allowlist on untrusted networks.
-- A flood cycling through more than 10,000 previously seen source addresses can slow ingest to about 12,000 msg/s,
-  and the kernel may then drop UDP for every device.
-- Windows: with `woodshed run` (not the installers), a data folder another local user created beforehand is accepted
-  if its permissions name individual users. A race exists while the installer replaces a folder another user created.
-- Hidden devices with no name or group can come back unhidden after 24 hours without logs.
+- The installers aren't code-signed yet, so Windows SmartScreen and macOS Gatekeeper ask once.
 - On Windows and macOS the OS doesn't expose kernel UDP drops, so the UI says that instead of showing 0.
 
 ## Features

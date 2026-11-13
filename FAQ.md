@@ -147,10 +147,10 @@ with a link to the releases page if you want to check for a newer one yourself.
 
 ## The "latest release" link gives a 404
 
-Until 1.0 every release is a prerelease, and GitHub's `releases/latest` (the page, `releases/latest/download/...`
-and the API) skips prereleases. Use the [releases page](https://github.com/gmccollu/woodshed/releases) or a tagged
-URL: `https://github.com/gmccollu/woodshed/releases/download/v<version>/<file>`, for example
-`.../download/v0.9.0-rc4/woodshed_0.9.0-rc4_amd64.deb`. From 1.0, `releases/latest` works.
+It works from 1.0.0 on. Before that every release was a prerelease, and GitHub's `releases/latest` (the page,
+`releases/latest/download/...` and the API) skips prereleases, so old links or scripts written then may still point
+at a release candidate. Prereleases such as `v1.1.0-rc1` never count as latest. File names carry the version, so a
+direct link looks like `https://github.com/gmccollu/woodshed/releases/download/v1.0.0/woodshed_1.0.0_amd64.deb`.
 
 ## Can I run it in a container (LXC, Docker, Kubernetes)?
 

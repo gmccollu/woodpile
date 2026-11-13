@@ -4,7 +4,7 @@ All notable changes to Woodshed. The format follows [Keep a Changelog](https://k
 and versions follow [Semantic Versioning](https://semver.org/). Release notes on GitHub are taken from this file
 (`scripts/release-notes.sh`), so set a section's date before tagging it.
 
-## [1.0.0] - unreleased
+## [1.0.0] - 2026-11-13
 
 The first release: a syslog server you can install on Windows, macOS or Linux in a minute, that keeps every message
 as plain files within a disk budget and has a web UI for watching, searching and exporting logs.
@@ -25,14 +25,19 @@ as plain files within a disk budget and has a web UI for watching, searching and
   ([docs/install.md](docs/install.md#moving-from-woodpile)).
 - `woodshed install` refuses while a Woodpile service is still installed, and prints the command that removes it.
 
-### Known issues (release candidates; fixed before 1.0.0)
-- Under a sustained flood spread across many spoofed source addresses, size-based retention can delete the
-  busiest real device's history, including its newest day. Use the sender allowlist on untrusted networks.
-- A flood that cycles through more than 10,000 previously seen source addresses can slow ingest to about 12,000
-  messages a second, and the kernel may then drop UDP messages for every device.
-- Windows, `woodshed run` (not the installers): a data folder that another local user created beforehand is accepted
-  if its permissions name individual users. A race exists while the installer replaces a folder another user created.
-- Hidden devices with no name or group can reappear unhidden after 24 hours without logs.
+### Known issues
+- The installers and binaries aren't code-signed yet, so Windows SmartScreen and macOS Gatekeeper ask once.
+- On Windows and macOS the OS doesn't expose kernel UDP drops, so the UI says that instead of showing 0.
+
+### Fixed during the release candidates (affected rc1 and rc2 only)
+- A sustained flood from many spoofed source addresses could make size-based retention delete the busiest real
+  device's history. Retention now splits the cap by each device's 7-day history and keeps established devices'
+  last two days.
+- A flood cycling through more than 10,000 previously seen source addresses could slow ingest to about 12,000
+  messages a second. Known senders are now readmitted at a bounded rate, and active ones are never refused.
+- Windows, `woodshed run`: a data folder another local user created beforehand could be accepted, and the installer
+  had a race while replacing one. The folder is now created protected, and a foreign one is moved aside.
+- Hidden devices with no name or group could reappear unhidden after 24 hours without logs.
 
 ### Receiving
 - Listens on UDP and TCP port 514 straight away, on IPv4 and IPv6, with no setup.
