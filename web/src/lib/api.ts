@@ -29,8 +29,16 @@ export interface Listener {
 
 export type BannerLevel = 'error' | 'warn' | 'info';
 
-export type BannerKind = 'listener_bind' | 'writes_paused' | 'low_disk' | 'ui_port_busy' | 'udp_buffer_small';
-export type BannerAction = '' | 'retry_listeners';
+export type BannerKind =
+  | 'listener_bind'
+  | 'writes_paused'
+  | 'low_disk'
+  | 'ui_port_busy'
+  | 'udp_buffer_small'
+  | 'update_prompt'
+  | 'update_available';
+/** update_choice: Turn on / No thanks (PUT /api/updates); update_dismiss: hide this version (POST /api/updates/dismiss). */
+export type BannerAction = '' | 'retry_listeners' | 'update_choice' | 'update_dismiss';
 
 export interface Banner {
   /** Unknown future kinds are shown like any other banner. */
@@ -38,6 +46,8 @@ export interface Banner {
   level: BannerLevel;
   text: string;
   action: BannerAction | (string & {});
+  /** A link for the banner (update_available: the release page); omitted when empty. */
+  url?: string;
 }
 
 export interface Status {
@@ -295,6 +305,31 @@ export interface Settings {
     trusted_hosts: string[];
   };
   quiet: { quiet_after_seconds: number; offline_after_seconds: number };
+  /** The update check (1.1). Older servers omit it; a PUT without it keeps it. */
+  updates?: { check: UpdateCheck };
+}
+
+export type UpdateCheck = 'ask' | 'on' | 'off';
+
+/** GET /api/updates (docs/api.md → Update check). */
+export interface UpdateInfo {
+  check: UpdateCheck;
+  /** false in a build that can't check (not a release version, or no releases page). */
+  available: boolean;
+  /** The one file the check fetches. */
+  url: string;
+  current: string;
+  last_check: string | null;
+  last_result: '' | 'ok' | 'error';
+  /** A short message Woodshed writes itself. */
+  last_error: string;
+  last_error_kind: string;
+  /** null unless check is "on". */
+  next_check: string | null;
+  /** null until a check succeeds, and while check isn't "on". */
+  latest: { version: string; prerelease: boolean; url: string } | null;
+  update_available: boolean;
+  dismissed_version: string;
 }
 
 export type DeletionReason = 'age' | 'cap' | 'low_disk';
@@ -603,6 +638,13 @@ export async function putSettings(s: Settings, etag: string): Promise<VersionedS
 
 /** A save refused because the settings changed since they were read (409). */
 export const isConflict = (e: unknown) => e instanceof ApiError && e.status === 409;
+export const getUpdates = () => request<UpdateInfo>('GET', '/api/updates');
+/** The banner's Turn on / No thanks, and the Settings switch. */
+export const putUpdates = (check: 'on' | 'off') => request<UpdateInfo>('PUT', '/api/updates', { check });
+/** Check now: 409 unless the check is on, 429 (retryAfter) within a minute of the last one. */
+export const checkUpdatesNow = () => request<void>('POST', '/api/updates/check');
+/** Hide the update_available banner for this version, for everyone. */
+export const dismissUpdate = (version: string) => request<void>('POST', '/api/updates/dismiss', { version });
 export const getStorageHistory = () => request<StorageHistoryEntry[]>('GET', '/api/storage/history');
 
 export interface StorageEstimate {

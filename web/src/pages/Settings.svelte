@@ -18,6 +18,7 @@
   import { failingNow, noteSave, undo, undoLastSave } from '../lib/undo.svelte';
   import PasswordForm from '../components/PasswordForm.svelte';
   import CopyButton from '../components/CopyButton.svelte';
+  import UpdatesSettings from '../components/UpdatesSettings.svelte';
 
   // The form edits friendlier units (GiB, MiB, minutes, one CIDR per line) and converts on save.
   interface Form {
@@ -185,6 +186,20 @@
   }
   load();
 
+  // The Updates switch saves on its own, which changes the settings' ETag. Take the new one
+  // when nothing else changed, so the next Save isn't refused as a conflict.
+  async function adoptEtag() {
+    try {
+      const v = await getSettings();
+      if (saved && JSON.stringify(fromForm(toForm(v.settings))) === JSON.stringify(fromForm(toForm(saved)))) {
+        saved = v.settings;
+        etag = v.etag;
+      }
+    } catch {
+      /* the next save reports it */
+    }
+  }
+
   // "Undo last save" (here or on the banner) put the old settings back: show them.
   let undoSeen = undo.version;
   $effect(() => {
@@ -216,7 +231,7 @@
   // Banners and toasts link to a section: #/settings?section=limits or section=blocklist.
   let scrolled = false;
   $effect(() => {
-    const m = /section=(limits|blocklist|storage)/.exec(router.query);
+    const m = /section=(limits|blocklist|storage|updates)/.exec(router.query);
     if (scrolled || !form || !m) return;
     scrolled = true;
     const id = m[1] === 'limits' ? 'sender-limits' : m[1];
@@ -920,6 +935,8 @@
         </label>
       </div>
     </section>
+
+    <UpdatesSettings onchange={adoptEtag} />
   </form>
 {/if}
 
