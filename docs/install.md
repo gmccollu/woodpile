@@ -4,6 +4,11 @@ Woodshed is one program that runs as a background service. Every installer sets 
 leaves it listening for syslog on **UDP and TCP port 514**. The web UI is at **http://127.0.0.1:8514/** on the same
 machine (localhost only until you turn on LAN mode in Settings).
 
+> **Before you send a firewall's logs over TCP:** some firewalls block traffic through themselves while their TCP
+> syslog server is unreachable (Woodshed stopped, its computer restarting, the path to it down), unless an option
+> such as "permit traffic when the log host is down" is set. Check that option on the firewall before you choose
+> TCP. UDP has no such risk: the firewall keeps passing traffic whether or not anything receives its logs.
+
 ## Portable mode: no install
 
 To spin up a syslog server on the spot (for a case, a lab, a laptop), download the program for your system (the

@@ -12,6 +12,8 @@ and versions follow [Semantic Versioning](https://semver.org/). Release notes on
 - A sender at its TCP connections-per-address (or per-/64) limit, for example after rebooting without closing its
   connections, now replaces its own connection idle longest instead of being refused. Keepalives are set
   explicitly on every TCP connection, so connections to a vanished sender close within minutes.
+- The install guide and user guide now warn that some firewalls block traffic while their TCP syslog server is
+  unreachable, unless a "permit traffic when the log host is down" option is set; UDP has no such risk.
 
 ## [1.0.0] - 2026-11-13
 

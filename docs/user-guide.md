@@ -35,6 +35,10 @@ In each device's logging or syslog settings, set the syslog server to one of the
 port 514, UDP (or TCP if the device offers it). Save, and make the device log something (log in to it, or change
 a setting). The Setup page says when the first message arrives.
 
+> **Firewalls and TCP:** some firewalls stop passing traffic while their TCP syslog server can't be reached, unless
+> an option such as "permit traffic when the log host is down" is set. Check that option before you choose TCP.
+> UDP has no such risk.
+
 Over TCP, Woodshed keeps a quiet connection open for 24 hours, because some devices don't notice a closed
 connection until their next message fails, and lose messages until they reconnect. To change it, set
 `tcp_idle_timeout` under `[listeners]` in the config file ([where it is](install.md#where-things-live); for example
