@@ -19,6 +19,7 @@ import (
 	"golang.org/x/sys/windows/svc/mgr"
 
 	"github.com/gmccollu/woodshed/internal/config"
+	"github.com/gmccollu/woodshed/internal/fwrule"
 	"github.com/gmccollu/woodshed/internal/winacl"
 )
 
@@ -171,6 +172,13 @@ func installOS(o InstallOptions) (Result, error) {
 			res.Notes = append(res.Notes, fmt.Sprintf("couldn't add the firewall rule %q: %v", r.name, err))
 		}
 	}
+	// The TLS rule is created disabled (`woodshed tls on` enables it), and an
+	// existing one is left as it is, so a reinstall keeps its state (SPEC §10.3.6).
+	if created, err := fwrule.WindowsEnsure(h.run, exe); err != nil {
+		res.Notes = append(res.Notes, fmt.Sprintf("couldn't add the firewall rule %q: %v", fwrule.RuleName, err))
+	} else if created {
+		h.say("added the firewall rule %q, disabled (`woodshed tls on` turns it on)", fwrule.RuleName)
+	}
 	if err := s.Start(); err != nil {
 		return res, fmt.Errorf("the service is installed but didn't start (see Event Viewer > Application): %w", err)
 	}
@@ -218,6 +226,7 @@ func uninstallOS(o UninstallOptions) (Result, error) {
 	for _, r := range windowsFirewallRules {
 		_, _ = h.run("netsh", "advfirewall", "firewall", "delete", "rule", "name="+r.name)
 	}
+	_ = fwrule.WindowsRemove(h.run)
 	_ = eventlog.Remove(WindowsName)
 
 	if exe != "" && strings.EqualFold(filepath.Clean(exe), filepath.Clean(windowsExe())) {

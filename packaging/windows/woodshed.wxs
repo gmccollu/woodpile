@@ -14,6 +14,8 @@
     full control; ordinary users get no access).
   - Opens the firewall for woodshed.exe on UDP 514 and TCP 514 only. The UI port (8514) is
     localhost-only by default and is not opened.
+  - Adds the rule "Woodshed syslog (TLS 6514)" (TCP 6514 for woodshed.exe, all profiles) present
+    but disabled; `woodshed tls on` enables it. Upgrades and repairs keep its state.
   - Registers the "Woodshed" event source in the Application log, and a Start menu shortcut to the UI.
   - Upgrades in place (MajorUpgrade). Uninstall keeps C:\ProgramData\Woodshed unless DELETE_LOGS=1:
       msiexec /x woodshed.msi DELETE_LOGS=1
@@ -172,9 +174,24 @@
     <CustomAction Id="WoodshedResetDataAcl" BinaryRef="WoodshedAclFix"
                   ExeCommand="&quot;[CommonAppDataFolder]Woodshed&quot;"
                   Execute="deferred" Impersonate="no" Return="check" />
+    <!-- The TLS syslog rule (SPEC §10.3.6) isn't a fw:FirewallException: the extension's uninstall
+         step deletes its rules, and a major upgrade removes the old product (RemoveExistingProducts
+         after InstallValidate) before the new one adds them again, so an enabled rule would come
+         back disabled after every upgrade. woodshed-aclfix (internal/fwrule, the same code as
+         `woodshed install`) creates it disabled only when it's missing and otherwise leaves it as
+         it is; it's deleted only on a real uninstall, not when an upgrade removes the old product. -->
+    <CustomAction Id="WoodshedTlsFirewallEnsure" BinaryRef="WoodshedAclFix"
+                  ExeCommand="--tls-firewall ensure &quot;[INSTALLFOLDER]woodshed.exe&quot;"
+                  Execute="deferred" Impersonate="no" Return="ignore" />
+    <CustomAction Id="WoodshedTlsFirewallRemove" BinaryRef="WoodshedAclFix"
+                  ExeCommand="--tls-firewall remove"
+                  Execute="deferred" Impersonate="no" Return="ignore" />
     <InstallExecuteSequence>
       <Custom Action="WoodshedResetDataAcl" Before="CreateFolders" Condition="NOT (REMOVE~=&quot;ALL&quot;)" />
       <Custom Action="WoodshedFileTimes" After="InstallFiles" Condition="NOT (REMOVE~=&quot;ALL&quot;)" />
+      <Custom Action="WoodshedTlsFirewallEnsure" After="InstallFiles" Condition="NOT (REMOVE~=&quot;ALL&quot;)" />
+      <Custom Action="WoodshedTlsFirewallRemove" Before="RemoveFiles"
+              Condition="REMOVE~=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
     </InstallExecuteSequence>
 
     <StandardDirectory Id="ProgramMenuFolder">

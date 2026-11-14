@@ -17,6 +17,16 @@
 // An MSI cabinet stores file times as local time with no zone, and Windows Installer applies
 // them as the target machine's local time, so without this a file can look hours newer (or
 // older) than it is. Only regular files directly in the folder are touched; links are skipped.
+//
+// And it manages the TLS syslog firewall rule (fwrule.RuleName, SPEC §10.3.6), which the WiX
+// firewall extension can't keep across a major upgrade (its uninstall step deletes the rule
+// when the old product is removed):
+//
+//	woodshed-aclfix.exe --tls-firewall ensure "C:\Program Files\Woodshed\woodshed.exe"
+//	woodshed-aclfix.exe --tls-firewall remove
+//
+// ensure creates the rule disabled on TCP 6514 if it doesn't exist, and otherwise leaves it
+// exactly as it is (enabled or not, its port); remove deletes it (a real uninstall only).
 package main
 
 import (
@@ -26,12 +36,16 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/gmccollu/woodshed/internal/fwrule"
 	"github.com/gmccollu/woodshed/internal/winacl"
 )
 
 func main() {
 	if len(os.Args) == 4 && os.Args[1] == "--file-times" {
 		os.Exit(fileTimes(os.Args[2], os.Args[3]))
+	}
+	if len(os.Args) >= 3 && os.Args[1] == "--tls-firewall" {
+		os.Exit(tlsFirewall(os.Args[2:]))
 	}
 	if len(os.Args) != 2 {
 		fmt.Fprintln(os.Stderr, "usage: woodshed-aclfix <data folder>")
@@ -72,4 +86,31 @@ func fileTimes(dir, secs string) int {
 	}
 	fmt.Printf("woodshed-aclfix: set %d files in %s to %s\n", done, dir, t.UTC().Format(time.RFC3339))
 	return 0
+}
+
+// tlsFirewall is --tls-firewall ensure <exe> | remove.
+func tlsFirewall(args []string) int {
+	switch {
+	case len(args) == 2 && args[0] == "ensure":
+		created, err := fwrule.WindowsEnsure(fwrule.Exec, args[1])
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "woodshed-aclfix: --tls-firewall ensure:", err)
+			return 1
+		}
+		if created {
+			fmt.Printf("woodshed-aclfix: added the firewall rule %q, disabled\n", fwrule.RuleName)
+		} else {
+			fmt.Printf("woodshed-aclfix: the firewall rule %q exists; left as it is\n", fwrule.RuleName)
+		}
+		return 0
+	case len(args) == 1 && args[0] == "remove":
+		if err := fwrule.WindowsRemove(fwrule.Exec); err != nil {
+			fmt.Fprintln(os.Stderr, "woodshed-aclfix: --tls-firewall remove:", err)
+			return 1
+		}
+		fmt.Printf("woodshed-aclfix: removed the firewall rule %q\n", fwrule.RuleName)
+		return 0
+	}
+	fmt.Fprintln(os.Stderr, "usage: woodshed-aclfix --tls-firewall ensure <woodshed.exe> | remove")
+	return 2
 }
