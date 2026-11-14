@@ -32,7 +32,7 @@ func (e *Engine) NewScanner(ctx context.Context, device string, f Filter) (*Scan
 	if err != nil {
 		return nil, err
 	}
-	r := &run{e: e, ctx: ctx, now: e.now(), m: c.m, ex: c.ex, fields: c.fields, sevs: f.Severities, need: 1, files: map[int64]struct{}{}, ringBytes: e.ringBytes}
+	r := &run{e: e, ctx: ctx, now: e.now(), m: c.m, ex: c.ex, fields: c.fields, sevs: f.Severities, facs: f.Facilities, need: 1, files: map[int64]struct{}{}, ringBytes: e.ringBytes}
 	if r.fromMs, r.toMs, err = e.resolveRange(f); err != nil {
 		return nil, err
 	}
@@ -41,7 +41,7 @@ func (e *Engine) NewScanner(ctx context.Context, device string, f Filter) (*Scan
 		return nil, err
 	}
 	s := newStream(device, files[device])
-	if f.Severities == hub.SeverityNone {
+	if f.Severities == hub.SeverityNone || f.Facilities == FacilityNone {
 		s.done = true
 	}
 	return &Scanner{r: r, s: s}, nil
@@ -99,7 +99,7 @@ func (e *Engine) Estimate(ctx context.Context, devices []string, f Filter) (Esti
 	if err != nil {
 		return est, err
 	}
-	if f.Severities == hub.SeverityNone {
+	if f.Severities == hub.SeverityNone || f.Facilities == FacilityNone {
 		return est, nil
 	}
 	files, err := e.filesByDevice(ctx, devices, fromMs, toMs)

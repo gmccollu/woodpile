@@ -204,6 +204,10 @@ func (f *fixture) expect(q Query) []rec {
 	for _, d := range q.Devices {
 		named[d] = true
 	}
+	dropped := map[string]bool{}
+	for _, d := range q.ExcludeDevices {
+		dropped[d] = true
+	}
 	for _, a := range f.devs {
 		id := model.DeviceID(a)
 		group := ""
@@ -213,7 +217,7 @@ func (f *fixture) expect(q Query) []rec {
 		if len(named) > 0 && !named[id] || len(named) == 0 && a == devH {
 			continue
 		}
-		if q.Group != "" && group != q.Group || q.Ungrouped && group != "" {
+		if q.Group != "" && group != q.Group || q.Ungrouped && group != "" || dropped[id] {
 			continue
 		}
 		devs[id] = true
@@ -227,8 +231,42 @@ func (f *fixture) expect(q Query) []rec {
 		re = regexp.MustCompile(expr)
 	}
 	// textMatch is q's rule for any needle, for Q and for Exclude.
-	textMatch := func(needle, raw string) bool {
+	var textMatch func(needle, raw string) bool
+	textMatch = func(needle, raw string) bool {
 		switch {
+		case q.Terms:
+			// The tree from the parser (its grammar is tested on its own), with
+			// each term matched as text mode matches q.
+			e, err := parseTerms(needle, q.Case)
+			if err != nil {
+				f.t.Fatal(err)
+			}
+			var eval func(n *termNode) bool
+			eval = func(n *termNode) bool {
+				switch n.op {
+				case opTerm:
+					if q.Case {
+						return strings.Contains(raw, n.text)
+					}
+					return strings.Contains(strings.ToLower(raw), strings.ToLower(n.text))
+				case opNot:
+					return !eval(n.kids[0])
+				case opAnd:
+					for _, k := range n.kids {
+						if !eval(k) {
+							return false
+						}
+					}
+					return true
+				}
+				for _, k := range n.kids {
+					if eval(k) {
+						return true
+					}
+				}
+				return false
+			}
+			return e == nil || eval(e)
 		case q.Regex:
 			expr := needle
 			if !q.Case {
@@ -248,11 +286,11 @@ func (f *fixture) expect(q Query) []rec {
 		if len(q.Hosts) > 0 && !slices.ContainsFunc(q.Hosts, func(h string) bool { return strings.EqualFold(h, m.Hostname) }) {
 			return false
 		}
-		if len(q.Apps) == 0 {
-			return true
+		if m.Hostname != "" && slices.ContainsFunc(q.ExcludeHosts, func(h string) bool { return strings.EqualFold(strings.TrimSpace(h), m.Hostname) }) {
+			return false
 		}
 		app := strings.ToLower(strings.TrimPrefix(m.App, "%"))
-		return app != "" && slices.ContainsFunc(q.Apps, func(a string) bool {
+		appMatch := func(a string) bool {
 			if a = strings.TrimSpace(a); a == "" {
 				return false
 			}
@@ -261,22 +299,40 @@ func (f *fixture) expect(q Query) []rec {
 				return strings.HasPrefix(app, p)
 			}
 			return app == a
-		})
+		}
+		if app != "" && slices.ContainsFunc(q.ExcludeApps, appMatch) {
+			return false
+		}
+		if len(q.Apps) == 0 {
+			return true
+		}
+		return app != "" && slices.ContainsFunc(q.Apps, appMatch)
 	}
 	var out []rec
 	for _, r := range f.recs {
 		if !devs[r.dev] || r.ms < fromMs || r.ms >= toMs {
 			continue
 		}
-		if q.Severities != 0 {
+		if q.Severities != 0 || q.Facilities != 0 {
 			var m model.Message
 			syslog.Parse([]byte(r.raw), &m)
-			if !q.Severities.Has(m.Severity) {
+			if q.Severities != 0 && !q.Severities.Has(m.Severity) {
+				continue
+			}
+			fac := m.Facility
+			if m.Severity == model.Unknown {
+				fac = model.Unknown
+			}
+			if q.Facilities != 0 && !q.Facilities.Has(fac) {
 				continue
 			}
 		}
 		switch {
 		case q.Q == "":
+		case q.Terms:
+			if !textMatch(q.Q, r.raw) {
+				continue
+			}
 		case re != nil:
 			if !re.MatchString(r.raw) {
 				continue

@@ -143,7 +143,10 @@ func New(opts Options) *Engine {
 type Filter struct {
 	Q     string
 	Regex bool // Q (and Exclude) is an RE2 regular expression
-	Case  bool // case-sensitive (substring and regex, Q and Exclude)
+	// Terms: Q (and Exclude) are boolean terms (syntax=terms, SPEC §10.1.3).
+	// It can't be combined with Regex.
+	Terms bool
+	Case  bool // case-sensitive (substring, regex and terms; Q and Exclude)
 	// Exclude drops the lines whose raw message matches it, like Q with the
 	// same Regex and Case. Empty: nothing is dropped.
 	Exclude string
@@ -153,8 +156,14 @@ type Filter struct {
 	// "%FW-6-*" both match "%FW-6-302013". Empty: no filter. The header is
 	// parsed only for lines that passed every other check.
 	Apps, Hosts []string
+	// ExcludeApps and ExcludeHosts drop the lines whose program/tag or
+	// hostname matches one of them, with the rules of Apps and Hosts. A line
+	// without a program/tag (or hostname) is never dropped by them.
+	ExcludeApps, ExcludeHosts []string
 	// Severities: 0 means all; hub.SeverityNone matches nothing.
 	Severities hub.SeveritySet
+	// Facilities: 0 means all; FacilityNone matches nothing.
+	Facilities FacilitySet
 	// From and To bound the received time: From <= received < To. Zero values
 	// default (Search: To = now, From = To - 24 h).
 	From, To time.Time
@@ -164,13 +173,15 @@ type Filter struct {
 type Query struct {
 	Filter
 	// Devices, Group and Ungrouped pick the devices as for the live tail. Hidden
-	// devices are searched only when named in Devices.
-	Devices   []string
-	Group     string
-	Ungrouped bool
-	Asc       bool // oldest first; the default is newest first
-	Limit     int  // default 500, at most 5,000
-	Cursor    string
+	// devices are searched only when named in Devices. ExcludeDevices are then
+	// left out (an exclusion wins over a name).
+	Devices        []string
+	Group          string
+	Ungrouped      bool
+	ExcludeDevices []string
+	Asc            bool // oldest first; the default is newest first
+	Limit          int  // default 500, at most 5,000
+	Cursor         string
 }
 
 // Line is one result.
@@ -212,14 +223,26 @@ type compiled struct {
 }
 
 func (e *Engine) compile(f Filter) (compiled, error) {
-	m, err := newMatcher(f.Q, f.Regex, f.Case)
+	if f.Terms && f.Regex {
+		return compiled{}, &QueryError{Msg: ErrTermsWithRegex}
+	}
+	compile := func(q string) (*matcher, error) {
+		if f.Terms {
+			return newTermsMatcher(q, f.Case)
+		}
+		return newMatcher(q, f.Regex, f.Case)
+	}
+	m, err := compile(f.Q)
 	if err != nil {
 		return compiled{}, err
 	}
-	c := compiled{m: m, fields: newFieldMatcher(f.Apps, f.Hosts)}
+	c := compiled{m: m, fields: newFieldMatcher(f.Apps, f.Hosts, f.ExcludeApps, f.ExcludeHosts)}
 	if f.Exclude != "" {
-		if c.ex, err = newMatcher(f.Exclude, f.Regex, f.Case); err != nil {
+		if c.ex, err = compile(f.Exclude); err != nil {
 			return compiled{}, &QueryError{Msg: "exclude: " + err.Error()}
+		}
+		if c.ex.kind == matchAll {
+			c.ex = nil // a terms exclude with no terms (only spaces) excludes nothing
 		}
 	}
 	return c, nil
@@ -242,18 +265,30 @@ func (e *Engine) resolveRange(f Filter) (fromMs, toMs int64, err error) {
 }
 
 // devices resolves the query's device selection to IDs, sorted.
-func (e *Engine) devices(ctx context.Context, named []string, group string, ungrouped bool) ([]string, error) {
+func (e *Engine) devices(ctx context.Context, named []string, group string, ungrouped bool, excluded []string) ([]string, error) {
 	all, err := e.idx.ListDevices(ctx)
 	if err != nil {
 		return nil, err
 	}
+	return selectDevices(all, named, group, ungrouped, excluded), nil
+}
+
+// selectDevices applies a device selection to every device (sorted by ID).
+func selectDevices(all []index.Device, named []string, group string, ungrouped bool, excluded []string) []string {
 	want := map[string]bool{}
 	for _, d := range named {
 		want[d] = true
 	}
+	drop := map[string]bool{}
+	for _, d := range excluded {
+		drop[d] = true
+	}
 	var out []string
 	for _, d := range all {
 		if len(named) > 0 && !want[d.ID] {
+			continue
+		}
+		if drop[d.ID] {
 			continue
 		}
 		if len(named) == 0 && d.Hidden {
@@ -267,13 +302,14 @@ func (e *Engine) devices(ctx context.Context, named []string, group string, ungr
 		}
 		out = append(out, d.ID)
 	}
-	return out, nil
+	return out
 }
 
 // ResolveDevices is the device selection of a search or export: named devices
-// (hidden ones too) or every visible device, narrowed by group or ungrouped.
-func (e *Engine) ResolveDevices(ctx context.Context, named []string, group string, ungrouped bool) ([]string, error) {
-	return e.devices(ctx, named, group, ungrouped)
+// (hidden ones too) or every visible device, narrowed by group or ungrouped,
+// less the excluded ones.
+func (e *Engine) ResolveDevices(ctx context.Context, named []string, group string, ungrouped bool, excluded []string) ([]string, error) {
+	return e.devices(ctx, named, group, ungrouped, excluded)
 }
 
 // filesByDevice returns each device's files that may hold lines in
@@ -313,7 +349,7 @@ func (e *Engine) Search(ctx context.Context, q Query) (Page, error) {
 	bind := q.binding()
 
 	r := &run{e: e, ctx: ctx, deadline: start.Add(e.budget), maxSteps: e.testMaxSteps, now: e.now(), desc: !q.Asc, m: c.m,
-		ex: c.ex, fields: c.fields, sevs: q.Severities, need: limit, files: map[int64]struct{}{}}
+		ex: c.ex, fields: c.fields, sevs: q.Severities, facs: q.Facilities, need: limit, files: map[int64]struct{}{}}
 	var streams []*stream
 	if q.Cursor != "" {
 		cur, err := e.decodeCursor(q.Cursor, bind)
@@ -336,10 +372,10 @@ func (e *Engine) Search(ctx context.Context, q Query) (Page, error) {
 		if r.fromMs, r.toMs, err = e.resolveRange(q.Filter); err != nil {
 			return Page{}, err
 		}
-		if q.Severities == hub.SeverityNone {
+		if q.Severities == hub.SeverityNone || q.Facilities == FacilityNone {
 			return Page{Results: []Line{}, Elapsed: time.Since(start)}, nil
 		}
-		devs, err := e.devices(ctx, q.Devices, q.Group, q.Ungrouped)
+		devs, err := e.devices(ctx, q.Devices, q.Group, q.Ungrouped, q.ExcludeDevices)
 		if err != nil {
 			return Page{}, err
 		}

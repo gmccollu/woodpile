@@ -78,6 +78,12 @@ type Filters struct {
 	Apps       []string        `json:"app,omitempty"`  // program/tag values, as for search
 	Hosts      []string        `json:"host,omitempty"` // header hostnames, as for search
 	Exclude    string          `json:"exclude,omitempty"`
+	// 1.1: syntax=terms, facilities and the exclude forms (docs/api.md).
+	Terms          bool               `json:"terms,omitempty"`
+	Facilities     search.FacilitySet `json:"facilities,omitempty"` // 0: all; search.FacilityNone: nothing
+	ExcludeDevices []string           `json:"exclude_devices,omitempty"`
+	ExcludeApps    []string           `json:"exclude_app,omitempty"`
+	ExcludeHosts   []string           `json:"exclude_host,omitempty"`
 }
 
 // Request is a POST /api/exports body, parsed.
@@ -278,8 +284,8 @@ func (m *Manager) event(level index.Level, text string) {
 
 // filter is the search filter of a request.
 func (r Request) filter() search.Filter {
-	return search.Filter{Q: r.Q, Regex: r.Regex, Case: r.Case, Severities: r.Severities, From: r.From, To: r.To,
-		Apps: r.Apps, Hosts: r.Hosts, Exclude: r.Exclude}
+	return search.Filter{Q: r.Q, Regex: r.Regex, Terms: r.Terms, Case: r.Case, Severities: r.Severities, Facilities: r.Facilities,
+		From: r.From, To: r.To, Apps: r.Apps, Hosts: r.Hosts, ExcludeApps: r.ExcludeApps, ExcludeHosts: r.ExcludeHosts, Exclude: r.Exclude}
 }
 
 // resolve validates a request and returns its devices.
@@ -306,7 +312,7 @@ func (m *Manager) resolve(ctx context.Context, r Request) ([]string, error) {
 		}
 		return nil, err
 	}
-	devs, err := m.eng.ResolveDevices(ctx, r.Devices, r.Group, r.Ungrouped)
+	devs, err := m.eng.ResolveDevices(ctx, r.Devices, r.Group, r.Ungrouped, r.ExcludeDevices)
 	if err != nil {
 		return nil, err
 	}

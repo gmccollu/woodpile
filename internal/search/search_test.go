@@ -177,6 +177,43 @@ func testSearchFilters(t *testing.T, f *fixture) {
 			q.Regex = true
 		}),
 		"default range": {Filter: Filter{}, Limit: MaxLimit},
+		// 1.1 (docs/api.md): facilities, the exclude forms and syntax=terms.
+		"facilities":            with(func(q *Query) { q.Facilities = facs(0, 4, 20) }),
+		"facilities unknown":    with(func(q *Query) { q.Facilities = FacilityUnknownBit }),
+		"facilities none":       with(func(q *Query) { q.Facilities = FacilityNone }),
+		"facilities and sev":    with(func(q *Query) { q.Facilities = facs(20, 1); q.Severities = sevs(4, 6) }),
+		"exclude devices":       with(func(q *Query) { q.ExcludeDevices = []string{"192.0.2.2"} }),
+		"exclude devices group": with(func(q *Query) { q.Group = "HQ"; q.ExcludeDevices = []string{"192.0.2.1"} }),
+		"exclude named device": with(func(q *Query) {
+			q.Devices = []string{"192.0.2.1", "192.0.2.2"}
+			q.ExcludeDevices = []string{"192.0.2.1"}
+		}),
+		"exclude all devices":    with(func(q *Query) { q.Devices = []string{"192.0.2.1"}; q.ExcludeDevices = []string{"192.0.2.1"} }),
+		"exclude app":            with(func(q *Query) { q.ExcludeApps = []string{"%FW-*", "SSHD"} }),
+		"exclude app with app":   with(func(q *Query) { q.Apps = []string{"%FW-*"}; q.ExcludeApps = []string{"fw-4-*"} }),
+		"exclude app wins":       with(func(q *Query) { q.Apps = []string{"sshd"}; q.ExcludeApps = []string{"sshd"} }),
+		"exclude host":           with(func(q *Query) { q.ExcludeHosts = []string{"HOST", "web-01"} }),
+		"exclude host with host": with(func(q *Query) { q.Hosts = []string{"web-01", "web-02"}; q.ExcludeHosts = []string{"WEB-02"} }),
+		"terms and":              with(func(q *Query) { q.Terms = true; q.Q = "seq=00 conn" }),
+		"terms or":               with(func(q *Query) { q.Terms = true; q.Q = "Deny OR accepted" }),
+		"terms not":              with(func(q *Query) { q.Terms = true; q.Q = "NOT conn" }),
+		"terms phrase":           with(func(q *Query) { q.Terms = true; q.Q = `"link down" OR "conn opened tcp"` }),
+		"terms nested":           with(func(q *Query) { q.Terms = true; q.Q = `(deny OR built) NOT (seq=0001 OR seq=0002) "fw-"` }),
+		"terms case":             with(func(q *Query) { q.Terms = true; q.Case = true; q.Q = "Deny OR Link" }),
+		"terms escapes":          with(func(q *Query) { q.Terms = true; q.Q = `"multi\nline" OR "C:\\temp"` }),
+		"terms across escape":    with(func(q *Query) { q.Terms = true; q.Q = "multi\nline seq" }),
+		"terms unicode":          with(func(q *Query) { q.Terms = true; q.Q = "ÜNÏCODE warning" }),
+		"terms exclude":          with(func(q *Query) { q.Terms = true; q.Q = "seq"; q.Exclude = "conn OR deny" }),
+		"terms empty":            with(func(q *Query) { q.Terms = true; q.Q = "   " }),
+		"every 1.1 filter at once": with(func(q *Query) {
+			q.Terms = true
+			q.Q = `seq NOT "seq=0000"`
+			q.Exclude = "opened"
+			q.Facilities = facs(20, 4, 1)
+			q.ExcludeApps = []string{"kernel"}
+			q.ExcludeHosts = []string{"edge-fw-02"}
+			q.ExcludeDevices = []string{"198.51.100.7"}
+		}),
 	}
 	f.clock.Set(f.day0.Add(40 * time.Hour)) // "now" for the default range
 	// The checkpointed fixture must really seek: a 1 h range reads far less than
@@ -199,7 +236,8 @@ func testSearchFilters(t *testing.T, f *fixture) {
 			got, _ := f.all(q)
 			label := name + map[bool]string{true: " asc", false: " desc"}[asc]
 			want := f.expect(q)
-			if len(want) == 0 && name != "severities none" && name != "q not in prefix" && name != "app none" {
+			if len(want) == 0 && name != "severities none" && name != "q not in prefix" && name != "app none" &&
+				name != "facilities none" && name != "exclude all devices" && name != "exclude app wins" {
 				t.Errorf("%s: the fixture has no matches; the case tests nothing", label)
 			}
 			same(t, label, got, want)
@@ -213,6 +251,44 @@ func testSearchFilters(t *testing.T, f *fixture) {
 		if l.DeviceID == "2001_db8__5" {
 			t.Fatal("hidden device searched without being named")
 		}
+	}
+}
+
+func facs(v ...int) FacilitySet {
+	var s FacilitySet
+	for _, x := range v {
+		s = s.With(x)
+	}
+	return s
+}
+
+func TestFacilityAgreesWithParse(t *testing.T) {
+	for _, raw := range []string{"<0>x", "<191>x", "<192>x", "x", "<13>x", "\xef\xbb\xbf<165>1 - -", "<8>", "<"} {
+		var m model.Message
+		syslog.Parse([]byte(raw), &m)
+		if got := Facility([]byte(raw)); got != m.Facility {
+			t.Errorf("Facility(%q) = %d, syslog.Parse says %d", raw, got, m.Facility)
+		}
+	}
+	for _, c := range []struct {
+		in   string
+		want FacilitySet
+		bad  bool
+	}{
+		{"", 0, false}, {"0,4,23", facs(0, 4, 23), false}, {"unknown", FacilityUnknownBit, false}, {"none", FacilityNone, false},
+		{" 4 , ,16", facs(4, 16), false}, {"24", 0, true}, {"-1", 0, true}, {"x", 0, true}, {"none,4", 0, true}, {"004", 0, true},
+	} {
+		got, err := ParseFacilities(c.in)
+		if (err != nil) != c.bad || got != c.want {
+			t.Errorf("ParseFacilities(%q) = %v, %v", c.in, got, err)
+		}
+	}
+	all := ""
+	for i := 0; i < 24; i++ {
+		all += fmt.Sprint(i, ",")
+	}
+	if got, _ := ParseFacilities(all + "unknown"); got != 0 {
+		t.Errorf("every facility is no filter: %v", got)
 	}
 }
 
@@ -369,6 +445,12 @@ func TestCursorTamperAndBinding(t *testing.T) {
 		func(q *Query) { q.Exclude = "x" },
 		func(q *Query) { q.Apps = []string{"app"} },
 		func(q *Query) { q.Hosts = []string{"host"} },
+		// 1.1: every new parameter is bound too.
+		func(q *Query) { q.Terms = true },
+		func(q *Query) { q.Facilities = facs(4) },
+		func(q *Query) { q.ExcludeDevices = []string{"192.0.2.1"} },
+		func(q *Query) { q.ExcludeApps = []string{"app"} },
+		func(q *Query) { q.ExcludeHosts = []string{"host"} },
 	} {
 		q2 := q
 		q2.Cursor = p.NextCursor
@@ -704,7 +786,7 @@ func TestFields(t *testing.T) {
 			t.Errorf("%q: %q/%q, want %q/%q", c.raw, app, host, c.app, c.host)
 		}
 	}
-	fm := newFieldMatcher([]string{"FW-6-*", "SSHD", "%kernel"}, nil)
+	fm := newFieldMatcher([]string{"FW-6-*", "SSHD", "%kernel"}, nil, nil, nil)
 	var m model.Message
 	for raw, want := range map[string]bool{
 		"<166>Nov 10 20:41:07 h %FW-6-302013: x": true,
@@ -718,7 +800,7 @@ func TestFields(t *testing.T) {
 			t.Errorf("%q: %v", raw, got)
 		}
 	}
-	if newFieldMatcher([]string{" ", ""}, []string{""}) != nil {
+	if newFieldMatcher([]string{" ", ""}, []string{""}, nil, nil) != nil {
 		t.Error("blank values make a filter")
 	}
 }
