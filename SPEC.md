@@ -21,7 +21,8 @@ proposal and can change.
 - Not a SIEM: no correlation, dashboards-as-code or long-term analytics.
 - No multi-user accounts or roles.
 - No forwarding or relaying to other systems.
-- No outbound network connections of any kind **(decided)**.
+- No outbound network connections of any kind **(decided)**. 1.1 adds one exception, the opt-in update check (§10.2)
+  **(decided, 2026-11-13)**.
 
 ## 2. Decisions so far
 
@@ -35,7 +36,9 @@ proposal and can change.
 | Device identity | Source IP, with a friendly name and group set in the UI **(decided)** |
 | Repo / license | Personal github.com account, MIT **(decided)** |
 | Device config helper | Not in v1 **(decided)** |
-| Telemetry / updates | None. No outbound connections; the version and a releases link are shown in the UI **(decided)** |
+| Telemetry / updates | None. No outbound connections; the version and a releases link are shown in the UI **(decided)**. From 1.1: still no telemetry, plus an opt-in update check that asks once, makes one plain HTTPS GET of the public releases file a day when on, and never downloads or installs anything (§10.2) **(decided, 2026-11-13)** |
+| Update check details (1.1) | `updates.check` = ask / on / off, `ask` on fresh installs, upgrades and portable; the URL is the existing Pages file `releases.json`; User-Agent `Woodshed` with no version; no query, cookies or conditional headers; proxy from the environment; no redirects; only `internal/updatecheck` may dial (§10.2) |
+| Events v2 (1.1) | Field panel and histogram over the same files and index. Field counts are exact over a stated span (newest first), never sampled. The histogram comes from the stats and checkpoints when the query is unfiltered, from the same scan otherwise. Boolean terms only with `syntax=terms`, so 1.0 links keep their meaning. Saved searches live in `index.db`. Every endpoint takes `type` (only `syslog` in 1.1) (§10.1) |
 | First run | Zero-config: listens immediately, and the UI opens on a welcome page **(decided)** |
 | Port 514 in use | The listener fails with a clear error; the UI still starts and explains the clash **(decided)** |
 | UI port | 8514 on localhost (§5) **(decided)** |
@@ -230,7 +233,8 @@ configurable.
     wildcard. With the application firewall on, it reports the binary as permitted; no prompt appears headless.
     A prompt for a logged-in user on an unsigned binary is still unverified.
 - No outbound connections, no telemetry, no update checks. The CI test suite asserts that no code path dials
-  out.
+  out. From 1.1 the one exception is the opt-in update check (§10.2): tests assert that nothing else dials out, and
+  that it doesn't either unless it's on.
 
 ## 6. Packaging and install
 
@@ -292,16 +296,14 @@ network devices send, so it can be handed to whoever is helping. It isn't a moni
 product or a SIEM. Each new data type has to fit that rule (decided 2026-11-11).
 
 ### 1.x
+- **1.1:** Events v2 (field panel, histogram, boolean terms, saved searches) and the opt-in update check, designed in
+  §10; TLS syslog (designed separately).
 - **Pluggable data types:** generalise the pipeline (listener → per-device store → index → search → export) so
   each data type adds its own listener, record format, UI tab and export section, with syslog as the first.
   Devices stay keyed by source IP across types.
 - **SNMP trap receiver** (UDP 162; v1, v2c, and v3 with user-configured credentials stored like the UI password).
   Traps are stored decoded as text lines, with varbinds and the raw PDU, in the same per-device, per-day files. No
   MIB compiler in the first version; numeric OIDs, plus an optional folder of MIB files for names.
-- **Events viewer, next steps** (after the 1.0 Events page: program/tag, host and exclude filters, clickable columns):
-  a field panel with each field's top values (device, severity, host, program/tag, facility) where a click adds a filter;
-  a histogram of matches over time where dragging picks the range; AND / OR / NOT between terms; saved searches. All
-  over the same stored files, no new index type. A query language and dashboards stay out (see the scope rule).
 - **UDP receive off the write path:** today the UDP reader writes each message itself, so a slow disk (fsync,
   rotation) backs up into the OS socket buffer, where loss isn't counted on Windows or macOS. Hand messages to a
   bounded queue and count drops when it's full, so every loss Woodshed causes shows in `dropped_24h`. A 2026-11-12 lab
@@ -311,7 +313,6 @@ product or a SIEM. Each new data type has to fit that rule (decided 2026-11-11).
 - Device identity by hostname as an option, for relayed traffic.
 - Forwarding to another collector; RELP.
 - Signed installers.
-- An opt-in update check (off by default).
 
 ### 2.0
 - **NetFlow v5/v9 and IPFIX collector** (UDP 2055/4739, configurable): template handling per exporter and
@@ -328,7 +329,353 @@ product or a SIEM. Each new data type has to fit that rule (decided 2026-11-11).
 - SIEM features: correlation rules, threat detection, compliance reporting, case management.
 - Full network monitoring: discovery, topology, general SNMP polling, dashboards-as-code.
 
-## 10. Open questions
+## 10. 1.1 design (draft, 2026-11-13)
+
+Two features: Events v2 (§10.1) and the opt-in update check (§10.2). TLS syslog is also planned for 1.1 and is
+designed separately. As in the rest of this spec, only items marked **(decided)** came from the owner; everything else
+is a proposal. The API contract is in `docs/api.md` → "1.1 (planned)".
+
+### 10.1 Events v2
+
+Everything here reads the same stored files and the existing index (file rows, checkpoints, minute and hourly
+stats). There's no new index type and no query language beyond the boolean terms in §10.1.3 (the §9 scope rule).
+
+**New filters**, on search, the summary, export and saved searches (the live tail is unchanged in 1.1):
+- `facilities=0,4,16,unknown`: like `severities` (0–23, `unknown`, `none`), read from the PRI.
+- `exclude_devices`, `exclude_app`, `exclude_host`: the opposites of `devices`, `app` and `host`, with the same
+  matching rules. When a value is both included and excluded, the exclusion wins.
+- Severity and facility are excluded by sending the complement set, so they need no exclude parameter.
+- `syntax=text|terms` (§10.1.3) and `type=syslog` (§10.1.6).
+
+#### 10.1.1 Field panel
+A panel beside the results lists, for the current query and range, each field's top values and their counts:
+device, severity, facility, host (the header hostname) and program/tag. The server lists the fields and how each maps
+to a filter (`GET /api/search/schema`); the client has no field list of its own, so a new data type brings its own
+fields (§10.1.6).
+- Clicking a value adds it as a filter. Values of one field OR together, and different fields AND together.
+  Alt/Option-click, or the row's "−" button, excludes the value. Each row also has a "+" button, for touch and
+  keyboard. Clicking an active filter's chip removes it. Clicking a value twice doesn't cycle through states: a
+  click that does something different each time is easy to get wrong.
+- Lines with no hostname or program/tag are counted as "(none)". That row isn't clickable, because no filter can
+  express it yet.
+- Each field shows up to 10 values (`top`, at most 50), then "N others" and the number of distinct values. Severity
+  and facility show every value that has a count.
+
+**Counts are exact over a stated span; they're never sampled and never shown with "≈".** One scan, using the search
+engine, reads newest first and counts every matching line. Each response covers `[counted_from, to)` exactly, and the
+panel says so ("Counted 14:02–15:00 of 12:00–15:00"). The UI keeps asking with the cursor, as search does, for up to
+60 s of scanning per query, then offers **Count the rest**. Why exact:
+- The counts are evidence. "web-01 sent 1,204 of these" has to match what Export puts in the zip, and a scaled
+  sample can't be checked against it.
+- Sampling fails on the query troubleshooting runs most: a rare string in a busy day. A fixed sample finds 0–3 hits
+  and scales them into noise. The scan's cost is the bytes it reads, not the number of matches, so a sample saves
+  little exactly where it's needed.
+- Reading newest first makes a partial answer useful: the last hour of a 24 h range is counted first, and its counts
+  are exact.
+- The cost is that a busy server takes many budgets over a long range. The panel states its span instead of hiding
+  it, the fix is a narrower range or fewer devices, and the histogram is instant for unfiltered queries.
+
+The summary tracks at most 10,000 distinct values per field. After that, new values count under "others"
+(`distinct_capped`).
+
+#### 10.1.2 Histogram
+A histogram above the results shows the matches per time bucket for the current query. Dragging across it selects a
+range, snapped to bucket edges, and runs the search on that range. The range goes into the URL, so Back zooms out.
+
+The bucket size depends on the range (`to − from`), giving at most 120 buckets:
+
+| Range up to | Bucket | | Range up to | Bucket |
+|---|---|---|---|---|
+| 2 min | 1 s | | 30 h | 15 min |
+| 10 min | 5 s | | 5 d | 1 h |
+| 30 min | 15 s | | 10 d | 2 h |
+| 2 h | 1 min | | 30 d | 6 h |
+| 10 h | 5 min | | 120 d | 1 d |
+| | | | longer | 7 d |
+
+So the presets get: 15 min → 15 s buckets (60 bars), 1 h → 1 min (60), 24 h → 15 min (96), 7 d → 2 h (84). The
+default 1 h view is on whole minutes, so it can use the stats. Buckets start at multiples of their size since the
+Unix epoch, in UTC (7 d buckets start on Monday 00:00 UTC). The first and last buckets count only lines inside
+`[from, to)`. `bucket=` overrides the size with one from the table, up to 1,000 buckets.
+
+The histogram has two sources:
+- **The index** (`source: "index"`), when the query is unfiltered and the bucket is at least 1 min. Unfiltered means
+  no `q`, `exclude`, `app`, `host`, their exclude forms, or facility or severity filter. A device selection (devices,
+  group, ungrouped, `exclude_devices`) still counts as unfiltered, because the stats are per device. No log file is
+  read, so it answers in milliseconds and is complete in the first response.
+  - Buckets in the last 24 h come from the per-minute stats. Buckets of 1 h or more in the last 7 d come from the
+    hourly stats.
+  - Anything older comes from the files' checkpoints (stats are kept for 7 d, logs for 30 d by default), and so does a
+    minute-sized bucket older than 24 h. The lines between two checkpoints (and between the last one and the file's
+    last received time) are spread evenly over that time. With 1 d buckets this is exact, because files never cross
+    midnight UTC and each file's row has its line count; only the first and last buckets, where `from` and `to` cut a
+    day, can be approximate. An approximate bucket carries `approx: true`, and the UI shows "≈" in its tooltip.
+  - Stats outlive the files that retention deletes. For each device, stats from before its oldest remaining file are
+    left out (search would find nothing there), and the bucket that straddles that point is taken from the
+    checkpoints.
+  - Hidden devices follow search's device selection, and the `_refused` counter is never included.
+- **A scan** (`source: "scan"`) otherwise. It's the same scan as the field panel's (one pass feeds both), with the
+  same budget, cursor and `counted_from`. Buckets older than `counted_from` are `null` and are drawn hatched, as "not
+  counted yet".
+
+#### 10.1.3 Boolean terms
+`syntax=terms` turns `q` (and `exclude`) into terms joined by AND, OR and NOT, with parentheses and quoted phrases.
+The default stays `syntax=text`, the 1.0 meaning: `q` is one substring, so `deny tcp` still matches only that phrase.
+Every existing link, bookmark, export and "Open in Events" keeps its meaning. The UI's Regex toggle becomes a
+three-way switch, **Text | Terms | Regex** (`re=1` or `syn=terms` in the page URL).
+
+Why a parameter, rather than switching it on when the query contains operators: syslog text is full of the words and
+characters such a rule would key on ("NOT FOUND", `"GET /index.html"`, `(pid 312)`), so a 1.0 link could silently
+change meaning. A parameter is explicit, is kept in saved searches, and costs one toggle.
+
+Grammar (whitespace separates tokens):
+```
+expr   = or
+or     = and { "OR" and }
+and    = unary { [ "AND" ] unary }        (two terms side by side mean AND)
+unary  = "NOT" unary | atom
+atom   = word | phrase | "(" expr ")"
+phrase = '"' { any character except '"' and '\' | '\"' | '\\' } '"'
+word   = a run of characters other than whitespace, '(' and ')', not starting with '"'
+```
+- Precedence: NOT, then AND, then OR, each left to right. `a OR b c` means `a OR (b AND c)`.
+- Only the upper-case words `AND`, `OR` and `NOT` are operators; `and`, `or` and `not` are ordinary terms. To search
+  for the word AND, quote it: `"AND"`.
+- Each word and phrase is a substring of the raw message, matched exactly as text mode matches `q`:
+  case-insensitive unless `case=true` (which applies to every term), with the same Unicode folding. A phrase is one
+  substring, spaces included: `"deny tcp"` in terms mode equals `deny tcp` in text mode.
+- Outside quotes, `(` and `)` always group. Quote a term that contains them (`"(pid 312)"`). A `"` inside a word is
+  an ordinary character, so `user="bob"` is one word.
+- `NOT x` on its own is allowed and matches every line without x. An empty `q` matches everything, as now.
+- `regex=true` together with `syntax=terms` is a 400. RE2 already has alternation, and a regex inside the term
+  grammar would need quoting rules of its own (regex terms like `/…/` are an open question, §10.3).
+- Limits: 32 words and phrases, parentheses nested up to 8 deep, and 4 KiB of `q`.
+- Errors are 400s that give a 1-based character position. For `exclude`, the message starts with `exclude: `.
+  - `Unclosed quote starting at character 12.`
+  - `Unmatched ")" at character 20.` / `Missing ")" for the "(" at character 3.`
+  - `"OR" at character 9 needs a term on both sides.` (the same for AND)
+  - `"NOT" at character 30 needs a term after it.`
+  - `Empty phrase at character 5.` / `Empty parentheses at character 5.`
+  - `Too many terms (40); the limit is 32.` / `Parentheses nested deeper than 8.` / `The query is longer than 4 KiB.`
+  - `Terms and regex can't be combined: pick one.`
+- Highlighting marks the words and phrases that aren't under a NOT.
+- Implementation note: the escaped-bytes prefilter uses the longest term that every match must contain (a positive
+  term on the top-level AND chain), when there is one.
+
+#### 10.1.4 Saved searches
+Saved searches are named and stored on the server, so everyone who can open the UI shares them (there are no
+accounts).
+- A saved search holds every Events parameter:
+  - `type`, `q`, `syntax`, `regex`, `case` and `exclude`;
+  - the device selection (`devices`, `group`, `ungrouped`, `exclude_devices`);
+  - `severities`, `facilities`, `app`, `exclude_app`, `host`, `exclude_host` and `order`;
+  - the range: relative (`{"last": "1h"}`, from 1 min to 400 d) or absolute (`from`, `to`). Saving a preset range
+    saves it as relative.
+
+  Display settings (the raw view) aren't saved.
+- Limits: 200 saved searches. A name is 1–80 characters after trimming, unique ignoring case. A saved search is
+  validated like `/api/search`, so a bad regex can't be saved.
+- They're stored in `index.db`, in a new `saved_searches` table (a schema migration on start), not in the TOML.
+  - Device names, groups and hidden flags already live in `index.db`, and `reindex` keeps them. Saved searches are the
+    same kind of user data. `reindex` rebuilds only the files and checkpoints tables.
+  - Each save is one row in one transaction. In the TOML, every save would rewrite the user's config file and change
+    the settings ETag, so someone with Settings open would get a 409 because someone else saved a search. On Linux the
+    TOML is in `/etc/woodshed`, which config-management tools often overwrite.
+  - The cost: deleting `index.db` loses them, as it loses device names. Each saved search has **Copy link**, and the
+    API returns plain JSON for a backup.
+- **Deleted devices:** a saved search keeps the device IDs it was saved with, and Woodshed never edits it behind the
+  user's back. Device IDs are source IPs, so a forgotten device that sends again matches again.
+  - Until then, the API lists the IDs it can't find (`missing_devices`), the UI shows them struck through as "no
+    longer known", and the search runs with the rest.
+  - If every named device is gone, the selection matches nothing, as `/api/search` does today. It never widens to all
+    devices. A group with no devices left behaves the same way (`missing_group: true`).
+- UI: a **Saved** menu on Events (open, save, save as, rename, delete). Opening a saved search fills the form and the
+  URL with its parameters, plus `saved=<id>`. **Save** updates it, and the form shows "changed" once it differs.
+
+#### 10.1.5 Load
+- A summary request has its own budget (`budget_ms`, 2 s by default, at most the 10 s search budget), so the panel
+  updates every couple of seconds.
+- The running counts stay on the server for 10 min after the last request, for at most 8 summaries, least recently
+  used out first. A cursor whose counts are gone gets a 400, and the UI starts again.
+- At most 2 summary scans run at once. The others wait within their own budget and return what they have. Result
+  searches never wait for summaries.
+- A summary stops when its HTTP request is cancelled. The UI cancels it on every new query.
+
+#### 10.1.6 Other data types
+1.2 adds SNMP traps, and 2.0 adds flows, "under the same hood" (§9). Events v2 is shaped so that they plug in without
+breaking the API.
+- **Shared:**
+  - the time range and the received-time order;
+  - device selection by source IP;
+  - the budget, cursor and partial rules;
+  - the histogram (counts per bucket), with its index and scan sources;
+  - the summary response's shape and the field descriptors;
+  - saved searches (`type` plus `query`).
+- **Per type:**
+  - the record format and its parser;
+  - what `q` matches (for a trap, its decoded text line; flows may have no free text);
+  - its fields and their filter parameters, listed by `GET /api/search/schema` (for example trap OID and SNMP
+    version, or protocol and port);
+  - its stats, for the index histogram;
+  - how its records show in the results.
+- Every endpoint takes `type`, defaulting to `syslog`. 1.1 accepts only `syslog`; anything else is
+  `400 type: unknown data type "x"`. A saved search's `query` is validated by the rules of its type. The first step
+  in 1.2 is a second entry in the schema's list.
+
+### 10.2 Opt-in update check
+
+**(decided, 2026-11-13: off until the user agrees; it asks once; a plain HTTPS GET of the public releases list; it
+never downloads or installs anything.)** When it's on, Woodshed fetches the project's public releases file once a day.
+If there's a newer version, it shows a banner that links to that version's release page.
+
+**Asking.** `updates.check` is `"ask"`, `"on"` or `"off"`.
+- The default is `"ask"`: for fresh installs, for upgrades from 1.0 (their config has no `[updates]`), and in portable
+  mode.
+- While it's `"ask"`, nothing is fetched, and `/api/status` carries the info banner `update_prompt`: "Check for new
+  Woodshed versions once a day? It fetches one public file from gmccollu.github.io and sends nothing about this
+  server." It has two buttons, **Turn on** and **No thanks** (action `update_choice`). Either answer is written to the
+  config, and the banner doesn't come back. Settings → Updates has the switch either way.
+- Portable mode asks too. A portable copy on a laptop is the one most likely to stay on an old version, and the answer
+  is saved in its own folder.
+- To decide for many machines, set `[updates] check = "off"` (or `"on"`) in `woodshed.toml` before the first start.
+  There's no banner then.
+- A build whose version isn't a release (`0.0.0-dev` from `make build`), or that has no `releases_url`, never checks
+  and never asks. Settings says "Not available in this build".
+
+**The request.**
+- The URL is `https://gmccollu.github.io/woodshed/releases.json`, a constant in `internal/updatecheck` that can't be
+  configured. Why this file and not the GitHub API:
+  - It already exists. `pages.yml` writes it from the releases API on every release change and daily, for the
+    website's download section. `site/tools/releases.mjs` gives it the shape `{generated_at, stable, prerelease}`, each
+    a release with `tag_name`, `html_url`, `published_at` and its assets, or `null`. The checker reads only `stable`
+    and `prerelease`, and from each only `tag_name` and `html_url`.
+  - It's static, about 8 KB, cached by a CDN, and has no API rate limit. The anonymous API allows 60 requests an hour
+    per IP, so a shared company egress address with a few installs and browsers would run out, and the check would
+    fail. This is the same reason `pages.yml` gives for writing the file at all.
+  - Its schema is ours. `releases.mjs`'s output becomes a contract: those keys stay, and a test in `site/test` pins
+    them.
+  - The trade-off: a Pages outage or a failed deploy makes checks fail or lag by a day. Both are visible in Settings,
+    and both are harmless.
+- It's a plain `GET`: no query string, no cookies (no cookie jar), no `Authorization`, and no `If-None-Match` or
+  `If-Modified-Since` (an ETag can work as an identifier). The only headers are `Host`, `User-Agent: Woodshed`,
+  `Accept: application/json` and `Accept-Encoding: gzip`.
+- **The User-Agent is `Woodshed`, with no version.** The comparison is local, so the server never needs the version. A
+  version in every daily request would let the host count installs per version and see who's behind on fixes; a bare
+  name doesn't. Go's default `Go-http-client/1.1` would be just as anonymous, but it hides what's calling; naming it
+  is more honest to whoever reads the proxy logs.
+- Proxy: it honours `HTTPS_PROXY` / `https_proxy` and `NO_PROXY` (Go's `ProxyFromEnvironment`). The service sees only
+  variables set in its own environment (systemd `Environment=`, the launchd plist, the Windows service's environment).
+  The OS's system proxy settings aren't read, and the FAQ says so.
+- TLS uses the system's roots, version 1.2 or later, and there's no option to skip verification.
+- Redirects aren't followed; a redirect is an error. The URL is a contract and must not move: a custom domain for the
+  site would have to keep this path answering.
+- Limits: a 10 s timeout for the whole request and a 1 MiB response, JSON only.
+- It has its own `http.Transport` and `net.Dialer` in `internal/updatecheck`, the only package allowed to connect to a
+  host that Woodshed picks itself.
+
+**Schedule.**
+- The first check runs 2–10 min (at random) after start-up. If one ran in the last 24 h, the next is due 24 h after
+  it instead. The last check's time is kept in `<data>/update-check.json` (mode 0640).
+- After that, checks run every 24 h ± 1 h, picked at random each time. After a failure it retries once 1–2 h later,
+  then waits for the next daily check.
+- Turning it on checks within a minute. **Check now** in Settings runs a check (at most once a minute). Turning it off
+  cancels the next check and clears the banner.
+- Each check is logged in the service log (time and result), not in the events log.
+
+**The result.**
+- Versions are compared as SemVer, without the `v`. An identifier such as `rc10` compares its letters, then its
+  number, so `rc10` is newer than `rc9`.
+- A release build looks at `stable`. A prerelease build also looks at `prerelease`. If either is newer than the
+  running version, the newer of the two counts as available.
+- When one is available, an info banner `update_available` appears: "Woodshed 1.2.0 is available (this is 1.1.0)." It
+  can be dismissed and has a link (`url`) to the release page.
+  - The link must be `releases_url + "/tag/" + tag_name`. If `html_url` says anything else, it's ignored, and the
+    banner links to `releases_url`.
+  - Woodshed writes the text from the parsed version alone, and nothing else from the file is shown, so a tampered
+    file can't put words or links in the UI.
+- Dismissing the banner hides it for that version, for everyone (kept in `update-check.json`). A newer version shows
+  it again.
+- Settings → Updates shows the switch, the URL, the last check (its time and result: "OK, 1.1.0 is the latest", or the
+  error), the next check, and **Check now**. A failure shows only there, as in "Last check failed 3 h ago: TLS
+  certificate not trusted (a proxy that inspects HTTPS?)". The error kinds are `dns`, `connect`, `proxy`, `tls`,
+  `timeout`, `http_status`, `redirect`, `too_large`, `bad_json` and `no_release`.
+
+**Tests.**
+- `internal/api`'s `TestNoClientNetworkAPIs` and `TestNoHandlerDialsOut` stay as they are, on the default config
+  (now `"ask"`).
+- A new module-wide static check: only an allowlist of packages may use the client-side network and process APIs that
+  `TestNoClientNetworkAPIs` forbids, namely `internal/updatecheck` plus the packages that use them today
+  (`internal/loadgen` for `woodshed send` and `bench`, `internal/peer` for loopback to the local Woodshed, and the OS
+  helpers in `internal/listen`, `internal/service` and `cmd/woodshed`). Adding a package to it is a reviewed change.
+  The releases host appears in no other package.
+- A new runtime test, `TestOnlyUpdateCheckDials` in `internal/server`. It runs the real server with a fake clock, the
+  default transport and resolver hooked as in `TestNoHandlerDialsOut`, and the checker's dialer pointed at a local TLS
+  server.
+  - With `"ask"` and with `"off"`: 3 simulated days with every route exercised (the new ones too) make 0 dials and 0
+    lookups.
+  - With `"on"`: exactly one request inside the start-up window, then one every 24 h ± 1 h. Each is
+    `GET /woodshed/releases.json` with an empty query and exactly the headers above, and nothing else dials or looks
+    anything up.
+  - Turning it off while it waits: no further request. A restart within 24 h of a check: no start-up check.
+  - With `HTTPS_PROXY` set, the one connection is a `CONNECT gmccollu.github.io:443` to the proxy. With a matching
+    `NO_PROXY`, it goes direct.
+  - Bad responses (a redirect, 1 MiB + 1 byte, not JSON, an off-site `html_url`, no release) give an error in
+    Settings, no banner, and no retry beyond the one.
+
+**Doc wording.** Apply this in the PR that ships the checker, not before. While 1.0 is the latest release, its docs
+have to keep saying that it makes no outbound connections, and SECURITY.md's policy covers the latest release.
+Editing them on main now would make them wrong for 1.0 users, so the exact wording is here instead.
+
+- **README.md**, Features, replacing "No outbound connections, no telemetry, no update checks.":
+  > No telemetry. The only outbound connection is an optional daily update check, off until you turn it on: it
+  > fetches one public file (`https://gmccollu.github.io/woodshed/releases.json`), sends nothing about your
+  > installation, and never downloads or installs anything.
+- **SECURITY.md**, "What counts", replacing the last item:
+  > - Woodshed making any outbound network connection other than the opt-in update check: one HTTPS `GET` of
+  >   `https://gmccollu.github.io/woodshed/releases.json` a day, made only after an administrator turns it on. A check
+  >   while it's off or still asking, a request that sends more than that (a query string, a cookie, an identifier, the
+  >   version), a connection anywhere else, or an update banner that links outside this repository's releases all
+  >   count.
+- **FAQ.md**, "Does Woodshed connect to the internet?":
+  > Only if you turn on the update check. The first time you open the UI, Woodshed asks once whether to check for new
+  > versions once a day. Until you say yes, and after **No thanks**, it makes no outbound connections at all. You can
+  > change your answer any time in **Settings → Updates**.
+  >
+  > When it's on, Woodshed fetches one public file once a day, `https://gmccollu.github.io/woodshed/releases.json`,
+  > with a plain HTTPS GET: no query string, no cookies, and a User-Agent of just `Woodshed` (no version). Nothing
+  > about your installation, devices or logs is sent. As with any web request, your DNS server and the site's host
+  > see your public IP address and the time. It uses `HTTPS_PROXY` and `NO_PROXY` if they're set in the service's
+  > environment; it doesn't read the system's proxy settings. If a newer version is out, the UI shows a banner with a
+  > link to its release page. Woodshed never downloads or installs anything itself. Settings shows when it last
+  > checked and whether that worked.
+  >
+  > There's no telemetry. The version is on the **About** page, with a link to the releases page if you'd rather check
+  > yourself. To decide for many machines at once, set `check = "off"` (or `"on"`) under `[updates]` in
+  > `woodshed.toml` before the first start. Versions before 1.1 have no update check and make no outbound connections.
+- **docs/user-guide.md**, a new section before "Stop or remove it":
+  > **Updates.** The first time you open the UI, a banner asks whether Woodshed may check for new versions once a day.
+  > **Turn on** lets it fetch one public file a day (nothing about your installation is sent); **No thanks** keeps it
+  > off and it won't ask again. You can change this in **Settings → Updates**, which also shows the last check. When a
+  > newer version is out, a banner links to its release page. Woodshed never updates itself: to upgrade, download the
+  > new installer from the releases page and run it, and your settings and logs are kept.
+- **CONTRIBUTING.md**, Rules:
+  > **No outbound connections, except the update check.** Woodshed never dials out on its own: no telemetry, fonts or
+  > CDNs. The one exception is the opt-in update check in `internal/updatecheck` (SPEC §10.2), the only package allowed
+  > to reach the internet. Tests enforce both; don't work around them.
+- **CHANGELOG.md** (1.1.0): "Opt-in update check: asks once, off unless you turn it on, one GET of the public releases
+  file a day, never installs anything." Earlier entries stay as they are.
+
+### 10.3 Open questions (1.1)
+1. Regex terms inside `syntax=terms` (`/deny.*tcp/ AND NOT 10.0.0.1`)? 1.1 refuses mixing the two.
+2. Should the live tail get `syntax=terms` and the new exclude filters? 1.1 leaves it unchanged.
+3. A filter for "(none)", lines with no hostname or program/tag, so the panel can click it.
+4. A silent-install switch for the update check (an MSI property, a pkg choice) for fleets, beyond pre-seeding
+   `woodshed.toml`.
+5. Should a future custom domain for the site be allowed by following same-site redirects? 1.1 follows none.
+6. Is the 60 s auto-continue limit for the field panel right on a small install, where the scan usually finishes
+   anyway?
+
+## 11. Open questions
 1. Where the repo lives. The answer given was the internal GHE, which conflicts with "open source on
    github.com" in §2 (see the reply of 2026-11-10).
 2. Retention fairness: decided 2026-11-11 (fair shares, §3.4). An optional per-device cap or minimum
