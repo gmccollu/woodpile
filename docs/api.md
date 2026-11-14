@@ -582,7 +582,7 @@ SPEC §10.3. Off by default.
 ```json
 {"enabled": true, "port": 6514, "source": "woodshed",           // "woodshed": its own CA | "file": cert_file/key_file
  "allow_legacy_tls": false,
- "ca": {"subject": "CN=Woodshed CA logs-01 2026-11-13", "not_before": "2026-11-13T15:00:00Z", "not_after": "2046-11-13T15:00:00Z",
+ "ca": {"subject": "CN=Woodshed CA logs-01 2026-11-13", "not_before": "2026-11-13T15:00:00Z", "not_after": "2037-12-31T23:59:59Z",
         "sha256": "AB:CD:…", "sha1": "AB:CD:…"},                // null when source is "file"
  "cert": {"subject": "CN=logs-01.example.net", "issuer": "CN=Woodshed CA logs-01 2026-11-13",
           "not_before": "2026-11-13T15:00:00Z", "not_after": "2036-11-13T15:00:00Z", "sha256": "AB:CD:…",

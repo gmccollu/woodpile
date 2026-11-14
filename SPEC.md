@@ -4,8 +4,9 @@ Woodshed is a syslog server you can install on any Windows, macOS or Linux machi
 every message it receives as plain files, keeps them within a disk budget, and has a clean web UI for
 watching, searching and exporting logs.
 
-Status: draft for review. Decisions marked **(decided)** came from the project owner; everything else is a
-proposal and can change.
+Status: draft for review. Decisions marked **(decided)** came from the project owner. Those marked
+**decided (coordinator, date, owner-delegated)** are calls the coordinating agent made under the owner's delegation;
+the owner can still overrule them. Everything else is a proposal and can change.
 
 ## 1. Goals and non-goals
 
@@ -37,9 +38,9 @@ proposal and can change.
 | Repo / license | Personal github.com account, MIT **(decided)** |
 | Device config helper | Not in v1 **(decided)** |
 | Telemetry / updates | None. No outbound connections; the version and a releases link are shown in the UI **(decided)**. From 1.1: still no telemetry, plus an opt-in update check that asks once, makes one plain HTTPS GET of the public releases file a day when on, and never downloads or installs anything (§10.2) **(decided, 2026-11-13)** |
-| Update check details (1.1) | `updates.check` = ask / on / off, `ask` on fresh installs, upgrades and portable; the URL is the existing Pages file `releases.json`; User-Agent `Woodshed` with no version; no query, cookies or conditional headers; proxy from the environment; no redirects; only `internal/updatecheck` may dial (§10.2) |
-| TLS syslog (1.1) | Off by default, one Settings switch, TCP 6514 by default (port configurable) **(decided, 2026-11-13)**. TLS 1.2 and 1.3 (1.0/1.1 only behind `allow_legacy_tls`); no SNI, ALPN or client certificate needed; Woodshed's own RSA-2048 CA (20 y) and leaf (10 y), changed only on an explicit renew; the same framing and limits as TCP; the MSI ships its firewall rule disabled, and `woodshed tls on` enables it (§10.3) |
-| Events v2 (1.1) | Field panel and histogram over the same files and index. Field counts are exact over a stated span (newest first), never sampled. The histogram comes from the stats and checkpoints when the query is unfiltered, from the same scan otherwise. Boolean terms only with `syntax=terms`, so 1.0 links keep their meaning. Saved searches live in `index.db`. Every endpoint takes `type` (only `syslog` in 1.1) (§10.1) |
+| Update check details (1.1) | `updates.check` = ask / on / off, `ask` on fresh installs, upgrades and portable; the URL is the existing Pages file `releases.json`; User-Agent `Woodshed` with no version; no query, cookies or conditional headers; proxy from the environment; no redirects; only `internal/updatecheck` may dial (§10.2) **decided (coordinator, 2026-11-13, owner-delegated)** |
+| TLS syslog (1.1) | Off by default, one Settings switch, TCP 6514 by default (port configurable) **(decided, 2026-11-13)**. TLS 1.2 and 1.3 (1.0/1.1 only behind `allow_legacy_tls`); no SNI, ALPN or client certificate needed; Woodshed's own RSA-2048 CA and leaf (until 2037-12-31, the leaf 10 y at most), changed only on an explicit renew; the same framing and limits as TCP; the MSI ships its firewall rule disabled, and `woodshed tls on` enables it (§10.3); the details are **decided (coordinator, 2026-11-13, owner-delegated)** |
+| Events v2 (1.1) | Field panel and histogram over the same files and index. Field counts are exact over a stated span (newest first), never sampled. The histogram comes from the stats and checkpoints when the query is unfiltered, from the same scan otherwise. Boolean terms only with `syntax=terms`, so 1.0 links keep their meaning. Saved searches live in `index.db`. Every endpoint takes `type` (only `syslog` in 1.1) (§10.1) **decided (coordinator, 2026-11-13, owner-delegated)** |
 | First run | Zero-config: listens immediately, and the UI opens on a welcome page **(decided)** |
 | Port 514 in use | The listener fails with a clear error; the UI still starts and explains the clash **(decided)** |
 | UI port | 8514 on localhost (§5) **(decided)** |
@@ -369,8 +370,8 @@ product or a SIEM. Each new data type has to fit that rule (decided 2026-11-11).
 
 ## 10. 1.1 design (draft, 2026-11-13)
 
-Three features: Events v2 (§10.1), the opt-in update check (§10.2) and the TLS syslog listener (§10.3). As in the rest of this spec, only items marked **(decided)** came from the owner; everything else
-is a proposal. The API contract is in `docs/api.md` → "1.1 (planned)".
+Three features: Events v2 (§10.1), the opt-in update check (§10.2) and the TLS syslog listener (§10.3). Owner decisions are marked **(decided)**; the delegated calls are
+listed in §10.4. The API contract is in `docs/api.md` → "1.1 (planned)".
 
 ### 10.1 Events v2
 
@@ -578,7 +579,7 @@ If there's a newer version, it shows a banner that links to that version's relea
   is saved in its own folder.
 - To decide for many machines, set `[updates] check = "off"` (or `"on"`) in `woodshed.toml` before the first start.
   There's no banner then.
-- Silent fleet installs set it at install time with `WOODSHED_UPDATE_CHECK=on|off|ask` **(decided, 2026-11-13)**:
+- Silent fleet installs set it at install time with `WOODSHED_UPDATE_CHECK=on|off|ask` (**decided (coordinator, 2026-11-13, owner-delegated)**):
   - MSI: a public property, `msiexec /i woodshed_X.Y.Z_windows_amd64.msi /qn WOODSHED_UPDATE_CHECK=off`.
   - pkg, deb and rpm: an environment variable the install script reads, as in
     `sudo WOODSHED_UPDATE_CHECK=off apt install ./woodshed_X.Y.Z_amd64.deb`.
@@ -587,8 +588,8 @@ If there's a newer version, it shows a banner that links to that version's relea
     wins. When it isn't set, the config is left alone. An invalid value is ignored with a warning in the install log;
     it never fails the install, because a half-configured deb is worse than a missing setting.
   - The install smoke tests check each one. Whether macOS `installer` passes the variable through to the pkg's
-    scripts, and `sudo` and dpkg to the deb's, has to be confirmed there; if `installer` doesn't, the pkg documents
-    pre-seeding the TOML instead.
+    scripts, and `sudo` and dpkg to the deb's, is an acceptance item for the 1.1 build (§10.4); if `installer`
+    doesn't, the pkg documents pre-seeding the TOML instead.
 - A build whose version isn't a release (`0.0.0-dev` from `make build`), or that has no `releases_url`, never checks
   and never asks. Settings says "Not available in this build".
 
@@ -780,7 +781,7 @@ by it. Devices import the **CA**, so a renewed leaf needs no change on any devic
 - **Files** in the data folder, mode 0600 like the UI certificate:
   - `tls-ca.pem` and `tls-ca-key.pem`;
   - `tls-cert.pem` (the leaf, then the CA: the chain that's sent) and `tls-key.pem`.
-- **Key type: RSA-2048 for both, signed with SHA-256 (decided here).** The study couldn't confirm which server key
+- **Key type: RSA-2048 for both, signed with SHA-256** (**decided (coordinator, 2026-11-13, owner-delegated)**). The study couldn't confirm which server key
   types older senders accept, while RSA-2048 with SHA-256 is accepted by every TLS 1.0–1.3 client in use, including
   TLS 1.0-only stacks and those limited to 2048-bit keys. ECDSA P-256 would make handshakes cheaper, but a sender that
   can't use it fails closed, and on some firewalls that blocks traffic.
@@ -789,7 +790,7 @@ by it. Devices import the **CA**, so a renewed leaf needs no change on any devic
   - The trade-off is margin: guidance retires 2048-bit RSA around 2030, inside the CA's lifetime. Replacing the CA is
     an explicit action (below), and a user's own certificate can be any type.
 - **The CA:** subject `CN=Woodshed CA <hostname> <yyyy-mm-dd>`; `basicConstraints CA:TRUE, pathlen:0`; KU
-  keyCertSign + cRLSign; valid for **20 years**.
+  keyCertSign + cRLSign; valid until **2037-12-31T23:59:59Z** (about 11 years from 1.1).
 - **The leaf:**
   - `basicConstraints CA:FALSE`;
   - KU digitalSignature + keyEncipherment, and EKU serverAuth;
@@ -798,8 +799,8 @@ by it. Devices import the **CA**, so a renewed leaf needs no change on any devic
   - IP SANs for every stable address and each `ui.extra_hostnames` IP. Some senders ignore IP SANs, which is why the
     DNS names matter;
   - CN set to the primary DNS name: the first search-domain name if there is one, otherwise the hostname;
-  - valid for **10 years**, and never past the CA's own expiry.
-- **Why 20 and 10 years:** these aren't browser certificates.
+  - valid for **10 years** or until the same 2037-12-31T23:59:59Z cap, whichever is earlier.
+- **Why such long lives:** these aren't browser certificates.
   - The 398-day limits apply to publicly trusted certificates. A private CA that devices import by hand is under no
     such rule, and the device stacks studied enforce no maximum.
   - An expired certificate stops TLS logging on every device at once, and on some firewalls it blocks traffic. A
@@ -807,7 +808,12 @@ by it. Devices import the **CA**, so a renewed leaf needs no change on any devic
   - The risk of a long life is a stolen key. Devices rarely check revocation, so a stolen leaf key stays trusted until
     the CA is replaced. The leaf key and the CA key sit in the same 0600 folder, so whoever can take one can take
     both; the answer to a compromise is **Replace CA**, whatever the lifetimes.
-  - Known edge (§10.5): some old 32-bit device stacks can't read dates after 2038-01-19, and a 20-year CA ends in 2046.
+  - **Why the 2037 cap** (**decided (coordinator, 2026-11-13, owner-delegated)**): some old 32-bit device stacks keep
+    time as a signed 32-bit count of seconds and can't represent anything after 2038-01-19. Such a stack may refuse a
+    later date at import, or wrap it into the past and treat the certificate as already expired. An expiry before 2038
+    parses everywhere. Its cost is a renewal inside the working life of old gear, but that renewal is planned: the
+    60-day banner announces it, and renewing the leaf needs nothing on the devices. Both certificates therefore end
+    on 2037-12-31T23:59:59Z, which makes the CA about 11 years.
 - **Never changed silently.** Unlike the UI certificate, which regenerates itself, the TLS certificate changes only
   on an explicit action.
   - **Renew certificate** (Settings, or `woodshed tls renew`) makes a new leaf with a new key and the current host
@@ -880,7 +886,7 @@ The service account can't change the host firewall, and shouldn't be able to. So
     to `listeners.tls.port`. `woodshed tls off` turns both off.
   - The UI switch turns the listener on without touching the rule. While the rule exists but is disabled, or its port
     differs, there's a warn banner `tls_firewall` with the exact command to run in an administrator prompt
-    (`woodshed tls on`). The rule's state is read through the OS, which doesn't need administrator rights. The check
+    (`woodshed tls on`). The rule's state is read through the OS without administrator rights (an acceptance item, §10.4). The check
     lives outside `internal/api`, which may not run programs.
   - Portable mode has no rule. Windows' first-run "allow" dialog covers the program on every port, so 6514 works if
     Allow was chosen.
@@ -910,7 +916,8 @@ The service account can't change the host firewall, and shouldn't be able to. So
 - A client with no SNI, with a wrong SNI and with ALPN connects. A client that verifies the chain against the
   downloaded CA and checks a DNS name from the SANs connects, and one checking a name that isn't there fails with
   `cert_rejected` counted.
-- Certificate profile: CA and leaf fields exactly as in §10.3.3. A Go `x509.Verify` with the CA as the only root, for
+- Certificate profile: CA and leaf fields exactly as in §10.3.3. With a fake clock in 2030, the leaf ends at the
+  2037 cap, not 10 years on. A Go `x509.Verify` with the CA as the only root, for
   each SAN name. The chain sent is leaf + CA.
 - Never silent: a fake clock past the 60-day mark and a changed hostname raise the banners and leave the files
   byte-identical. Renew keeps `tls-ca.pem` byte-identical.
@@ -956,7 +963,49 @@ Apply this with the implementation, as for §10.2.
   syslog over TLS (TCP 6514) with its own CA, so devices import one certificate that renewals don't change."
 - Device-specific commands stay out of the repo.
 
-### 10.4 Questions settled for 1.1 (decided, 2026-11-13)
+### 10.4 Decisions for 1.1
+
+**Owner** **(decided, 2026-11-13)**: the update check is opt-in, asks once, makes a plain HTTPS GET of the public
+releases list and never installs anything (§10.2); the TLS listener is off by default, has one Settings switch, and
+listens on TCP 6514 by default, with the port configurable (§10.3); the roadmap order in §9.
+
+Everything below is **decided (coordinator, 2026-11-13, owner-delegated)**.
+
+Events v2 and the update check:
+1. Field counts are exact over a stated span, newest first, never sampled (§10.1.1).
+2. One summary endpoint feeds both the field panel and the histogram; `fields=none` gives the histogram alone
+   (§10.1.2).
+3. Excluding a value is Alt-click or the "−" button, not a second click (§10.1.1).
+4. "(none)" rows can't be clicked (§10.1.1).
+5. Boolean terms need `syntax=terms`; they never switch on because operators appear, and only upper-case operators
+   count (§10.1.3).
+6. `syntax=terms` with `regex=true` is a 400 (§10.1.3).
+7. Saved searches live in `index.db`, not the TOML (§10.1.4).
+8. A saved search keeps the IDs of missing devices and is never edited automatically (§10.1.4).
+9. The update check reads the existing Pages file `releases.json`, not the GitHub API (§10.2).
+10. The User-Agent is `Woodshed`, with no version (§10.2).
+11. Redirects aren't followed (§10.2).
+12. Portable mode asks too (§10.2).
+13. Development builds never check or ask (§10.2).
+14. No `If-None-Match` or `If-Modified-Since` (§10.2).
+15. The public docs change only when the checker ships; the wording waits in §10.2 (§10.2).
+16. At most 2 summary scans at once, 2 s per summary request by default, running counts kept 10 min for at most 8
+    summaries (§10.1.5).
+
+TLS:
+1. RSA-2048 with SHA-256 for the CA and the leaf (§10.3.3).
+2. Long lives: the CA until the 2037 cap, the leaf 10 years or the cap, whichever is earlier (§10.3.3; the cap is
+   TLS answer 1 below).
+3. TCP and TLS share one connection pool and its per-source limits (§10.3.5).
+4. Handshakes stay out of the connection slots, with their own limits of 256 at once and 8 per address (§10.3.5).
+5. Session tickets are off (§10.3.2).
+6. `tls_cert_names` warns about DNS names only, not addresses (§10.3.3).
+7. With a user's own certificate, the CA download is a 404 (§10.3.4).
+8. `WOODSHED_UPDATE_CHECK` applies on upgrades too, and an invalid value is ignored with a warning (§10.2).
+9. The 1.0.1 change: at its per-source limit, a sender's newcomer evicts that sender's own longest-idle connection
+   (§9). It's being built in 1.0.1.
+
+Answers to the 1.1 questions:
 1. No regex terms inside `syntax=terms` in 1.1; mixing the two stays a 400.
 2. The live tail gets neither `syntax=terms` nor the new exclude filters in 1.1.
 3. No filter for "(none)" (lines with no hostname or program/tag) yet; the panel row stays unclickable.
@@ -968,17 +1017,21 @@ Apply this with the implementation, as for §10.2.
 8. The 1.3 SNMP poller will be a second package that connects out on its own; §10.2's allowlist test and its "only
    `internal/updatecheck`" wording get amended then.
 
-### 10.5 Open questions (TLS)
-1. Cap the CA and leaf at 2038-01-19 for old 32-bit device stacks? That would make the CA about 11 years, not 20.
-2. Does any TLS 1.0-only sender need static-RSA suites (`AES128-SHA`)? The study couldn't confirm what the unlicensed
-   case offers. 1.1 leaves them out; adding them behind `allow_legacy_tls` is a one-line change if a real sender
-   needs it.
-3. To confirm in the install smoke tests: that the WiX firewall extension in use can ship a rule disabled, and that
-   the virtual service account can read the rule's state for the `tls_firewall` banner.
-4. A Linux firewall hint the service can trust (it can't read ufw or firewalld state as its own user), or is the
-   Settings text enough?
-5. An RSA-3072 (or ECDSA) CA option for sites that don't need the oldest senders.
-6. Optional client-certificate verification (`client_ca`), for senders that support mutual TLS: later, if asked for.
+Answers to the TLS questions:
+1. Both certificates end at 2037-12-31T23:59:59Z, for 32-bit device stacks (§10.3.3 says why).
+2. No static-RSA suites in 1.1. Add them later only if a real sender needs them.
+3. Firewall rule details: an acceptance item, below.
+4. On Linux the Settings text is enough; there's no firewall banner.
+5. No RSA-3072 or ECDSA CA option in 1.1.
+6. Client-certificate verification (`client_ca`) comes later, if asked for.
+7. The installers' `WOODSHED_UPDATE_CHECK` pass-through: an acceptance item, below.
+
+**Acceptance items for the 1.1 build** (the install smoke tests confirm each, or the design changes before release):
+- The WiX firewall extension in use can ship the TLS 6514 rule present but disabled, and an upgrade keeps its state.
+- The virtual service account (`NT SERVICE\Woodshed`) can read that rule's state, for the `tls_firewall` banner.
+- `WOODSHED_UPDATE_CHECK` reaches the install scripts: the MSI property; macOS `installer` to the pkg's scripts;
+  `sudo`, apt/dpkg and dnf/rpm to the deb's and rpm's. Where it doesn't, that installer documents pre-seeding the
+  TOML instead.
 
 ## 11. Open questions
 1. Where the repo lives. The answer given was the internal GHE, which conflicts with "open source on
