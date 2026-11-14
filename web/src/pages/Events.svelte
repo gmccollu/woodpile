@@ -753,35 +753,41 @@
     <aside class="log-panel fp-err" aria-label="Field values"><p class="m-0 p-4 font-sans text-[13px] text-[var(--sev-err)]" role="alert">{sumError}</p></aside>
   {/if}
   <section class="log-panel res flex min-w-0 flex-col overflow-hidden" aria-label="Results">
-    <div class="bar flex flex-wrap items-center gap-2 px-[18px] py-2.5 font-sans text-[13px]">
-      <b class="text-white">Results</b>
-      <span class="text-log-dim" aria-live="polite">
-        {#if status === 'idle'}Leave the text empty to browse every stored message, or type to filter.
-        {:else if active}
-          {num(results.length)} line{results.length === 1 ? '' : 's'}{cursor ? '+' : ''} · {scopeLabel(activeScope)} · {stamp(
-            active.from!,
-            prefs.utc,
-          )} → {stamp(active.to!, prefs.utc)}{prefs.utc ? ' UTC' : ''}
+    <!-- Two rows, so the buttons stay on the first line beside the field panel: the title and the buttons, then
+         what the results are and how much was scanned. -->
+    <div class="bar px-[18px] py-2.5 font-sans text-[13px]">
+      <div class="flex flex-wrap items-center gap-2">
+        <b class="text-white">Results</b>
+        <span class="grow"></span>
+        {#if status === 'running'}<button type="button" class="tail-btn" onclick={cancelAll}>Cancel</button>{/if}
+        <button type="button" class="tail-btn" aria-pressed={prefs.wrap} onclick={() => (prefs.wrap = !prefs.wrap)}>Wrap</button>
+        <button type="button" class="tail-btn" aria-pressed={showRaw} onclick={() => (showRaw = !showRaw)} title="Show the PRI and syslog header too">Raw</button>
+        <button
+          type="button"
+          class="tail-btn"
+          onclick={exportThese}
+          disabled={!active || !results.length}
+          title="Open Export with these devices, range, severities, text, program/tag, host, facility and exclude filters"
+        >
+          <Icon name="export" size={14} />Export these results
+        </button>
+      </div>
+      <div class="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5">
+        <span class="text-log-dim" aria-live="polite">
+          {#if status === 'idle'}Leave the text empty to browse every stored message, or type to filter.
+          {:else if active}
+            {num(results.length)} line{results.length === 1 ? '' : 's'}{cursor ? '+' : ''} · {scopeLabel(activeScope)} · {stamp(
+              active.from!,
+              prefs.utc,
+            )} → {stamp(active.to!, prefs.utc)}{prefs.utc ? ' UTC' : ''}
+          {/if}
+        </span>
+        {#if status === 'running'}
+          <span class="scan" role="status"><span class="spin" aria-hidden="true"></span>Scanned {bytes(scanned.bytes)} in {num(scanned.files)} file{scanned.files === 1 ? '' : 's'}…</span>
+        {:else if status !== 'idle'}
+          <span class="text-log-dim">Scanned {bytes(scanned.bytes)} in {num(scanned.files)} file{scanned.files === 1 ? '' : 's'}</span>
         {/if}
-      </span>
-      <span class="grow"></span>
-      {#if status === 'running'}
-        <span class="scan" role="status"><span class="spin" aria-hidden="true"></span>Scanned {bytes(scanned.bytes)} in {num(scanned.files)} file{scanned.files === 1 ? '' : 's'}…</span>
-        <button type="button" class="tail-btn" onclick={cancelAll}>Cancel</button>
-      {:else if status !== 'idle'}
-        <span class="text-log-dim">Scanned {bytes(scanned.bytes)} in {num(scanned.files)} file{scanned.files === 1 ? '' : 's'}</span>
-      {/if}
-      <button type="button" class="tail-btn" aria-pressed={prefs.wrap} onclick={() => (prefs.wrap = !prefs.wrap)}>Wrap</button>
-      <button type="button" class="tail-btn" aria-pressed={showRaw} onclick={() => (showRaw = !showRaw)} title="Show the PRI and syslog header too">Raw</button>
-      <button
-        type="button"
-        class="tail-btn"
-        onclick={exportThese}
-        disabled={!active || !results.length}
-        title="Open Export with these devices, range, severities, text, program/tag, host, facility and exclude filters"
-      >
-        <Icon name="export" size={14} />Export these results
-      </button>
+      </div>
     </div>
 
     {#if active}

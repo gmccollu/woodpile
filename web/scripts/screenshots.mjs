@@ -977,6 +977,20 @@ const SHOTS = [
         && document.querySelector('#exex').value === 'denied' && b.app?.[0] === '%FW-*' && b.host?.[0] === 'edge-fw-01' && b.exclude === 'denied'; })()`,
   },
   // ---- Events v2: field panel, histogram, Text | Terms | Regex, saved searches (SPEC §10.1) ----
+  // With the field panel beside the results (1,100 px and wider), "Export these results" stays on the Results
+  // bar's first line, next to the title.
+  ...[1100, 1400].map((w) => ({
+    name: `events2-results-bar-${w}-light`,
+    mode: 'light',
+    w,
+    url: '/?mock_panel=0#/events?q=deny&r=24h',
+    wait: 3500,
+    check: `(() => { const bar = document.querySelector('section[aria-label=Results] .bar'); const title = bar.querySelector('b');
+      const exp = [...bar.querySelectorAll('button')].find((b) => b.textContent.includes('Export these results'));
+      const fp = document.querySelector('aside.fp'); const res = document.querySelector('section[aria-label=Results]');
+      return !!exp && Math.abs(exp.getBoundingClientRect().top - title.getBoundingClientRect().top) < 12
+        && fp.getBoundingClientRect().right <= res.getBoundingClientRect().left && bar.innerText.includes('Scanned'); })()`,
+  })),
   ...both({
     name: 'events2-panel',
     url: '/?mock_panel=0#/events?r=1h',
