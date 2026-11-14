@@ -127,6 +127,8 @@ func TestHelpNeverRunsTheCommand(t *testing.T) {
 		{"status", "--help"},
 		{"reindex", "--help"},
 		{"reset-password", "--help"},
+		{"update-check", "--help"},
+		{"update-check", "on", "--config", "/nonexistent/x.toml", "-h"},
 		{"portable", "--help"},
 		{"portable", "--port", port, "--no-browser", "-h"},
 		{"version", "--help"},

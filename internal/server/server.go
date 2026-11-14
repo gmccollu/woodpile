@@ -232,13 +232,7 @@ func Open(cfgPath string, opts Options) (*Server, error) {
 // (woodshed-data in the config file's folder), so `woodshed run --config
 // ./x/woodshed.toml` is self-contained. LoadConfig doesn't validate.
 func LoadConfig(path string) (config.Config, bool, error) {
-	def := config.Default()
-	if !samePath(path, config.DefaultConfigPath()) {
-		// woodshed-data next to the config, never the config's folder itself:
-		// `--config /etc/woodshed.toml` must not make /etc the data folder (review M2).
-		def.Storage.DataDir = filepath.Join(filepath.Dir(path), "woodshed-data")
-	}
-	c, created, err := config.LoadOrCreate(path, def)
+	c, created, err := config.LoadOrCreate(path, NewConfigFor(path))
 	if err != nil {
 		if errors.Is(err, os.ErrPermission) {
 			return c, false, fmt.Errorf("%w (run as the service's user or an administrator, or pass --config)", err)
@@ -246,6 +240,18 @@ func LoadConfig(path string) (config.Config, bool, error) {
 		return c, false, err
 	}
 	return c, created, nil
+}
+
+// NewConfigFor is the config LoadConfig creates at a missing path (it writes
+// nothing).
+func NewConfigFor(path string) config.Config {
+	def := config.Default()
+	if !samePath(path, config.DefaultConfigPath()) {
+		// woodshed-data next to the config, never the config's folder itself:
+		// `--config /etc/woodshed.toml` must not make /etc the data folder (review M2).
+		def.Storage.DataDir = filepath.Join(filepath.Dir(path), "woodshed-data")
+	}
+	return def
 }
 
 func samePath(a, b string) bool {
