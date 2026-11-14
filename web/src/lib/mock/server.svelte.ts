@@ -19,6 +19,8 @@
 //   mock_locked=1     with mock_auth: logins from "this address" are locked out for 15 minutes
 //   mock_password=1   localhost mode, but a password is already set (so LAN mode can be turned on)
 //   mock_slow_scan=1  search pages come back partial (budget used up) so the UI keeps fetching
+//   mock_slow_summary=1 summaries count 1,200 lines a request and report 2 s each, so the field panel fills in
+//                     slowly and stops after 60 s of scanning ("Count the rest")
 //   mock_export_fail=1 exports fail at 40 %
 //   mock_export_secs=N seconds an export takes to build (default 8)
 //   mock_devices=N    add N generated devices (up to 10,000) to the fleet
@@ -34,6 +36,7 @@ import type {
   Device,
   ExportInfo,
   RejectedSender,
+  SavedQuery,
   Settings,
   Stats,
   Status,
@@ -42,6 +45,7 @@ import type {
 } from '../api';
 import { isKnown } from '../severity';
 import { setSessionSecret } from '../api';
+import { matchTerms, parseTerms, TERMS_AND_REGEX } from '../terms';
 import { FLEET, fieldsOf, line, SPECIAL, specialLine, testLine, weighted, type GenLine, type MockDeviceDef, type Special } from './gen';
 import { STEP, deviceAt, lineAt, shareOf } from './history';
 
@@ -66,6 +70,8 @@ export const mock = $state({
   loggedIn: P.get('mock_loggedin') === '1',
   /** Search scans run out of budget quickly, so results arrive as partial pages. */
   slowScan: P.get('mock_slow_scan') === '1',
+  /** Each summary request counts only a little, so the field panel and histogram fill in over many requests. */
+  slowSummary: P.get('mock_slow_summary') === '1',
   /** The next export fails part-way. */
   exportFail: P.get('mock_export_fail') === '1',
   /** Seconds an export takes to build. */
@@ -1122,68 +1128,164 @@ const err = (status: number, error: string) => json({ error }, status);
 /** Lines scanned per request before the 10 s budget "runs out" (slow-scan mode: far fewer). */
 const scanBudget = () => (mock.slowScan ? 2500 : 120_000);
 
-function searchRoute(u: URLSearchParams, now: number): Response {
-  let sev: Set<string> | null;
-  try {
-    sev = sevFilter(u);
-  } catch (e) {
-    return err(400, (e as Error).message);
+/** A filter as search, the summary and exports apply it (docs/api.md → Search, and the 1.1 filters). */
+interface LineFilter {
+  from: number;
+  to: number;
+  dev: MockFilters & { exclude?: string[] };
+  sev: Set<string> | null;
+  fac: Set<string> | null;
+  /** q and exclude, compiled for the syntax. */
+  q: (raw: string) => boolean;
+  ex: ((raw: string) => boolean) | null;
+  fields: (f: { app: string; host: string }) => boolean;
+  /** No q, exclude, app, host, their exclude forms, facility or severity filter (the index histogram's rule). */
+  unfiltered: boolean;
+}
+
+/** The facility of a raw message from its PRI (0-23), or "unknown". */
+function facilityOf(raw: string): string {
+  const m = /^<(\d{1,3})>/.exec(raw);
+  return m && Number(m[1]) <= 191 ? String(Number(m[1]) >> 3) : 'unknown';
+}
+
+const FACILITY_LABELS = ['kern', 'user', 'mail', 'daemon', 'auth', 'syslog', 'lpr', 'news', 'uucp', 'cron', 'authpriv', 'ftp', 'ntp', 'audit', 'alert', 'clock',
+  'local0', 'local1', 'local2', 'local3', 'local4', 'local5', 'local6', 'local7'];
+const SEV_LABELS = ['emerg', 'alert', 'crit', 'err', 'warning', 'notice', 'info', 'debug'];
+
+/** facilities=0,4,unknown | none (docs/api.md, 1.1). Throws on an invalid value. */
+function facFilter(v: string): Set<string> | null {
+  const parts = v.split(',').map((x) => x.trim()).filter(Boolean);
+  if (!parts.length) return null;
+  if (parts.includes('none')) {
+    if (parts.length > 1) throw new Error('facilities: none can\'t be combined with other values');
+    return new Set();
   }
-  const q = u.get('q') ?? '';
-  const isRe = u.get('regex') === 'true';
-  const cs = u.get('case') === 'true';
-  let re: RegExp | null = null;
+  for (const x of parts) if (x !== 'unknown' && !(/^\d{1,2}$/.test(x) && Number(x) <= 23)) throw new Error(`facilities: "${x}" is not a facility (0 to 23, unknown, or none on its own)`);
+  return new Set(parts.map((x) => (x === 'unknown' ? x : String(Number(x)))));
+}
+
+const listParam = (u: URLSearchParams, k: string) => (u.get(k) ?? '').split(',').map((x) => x.trim()).filter(Boolean);
+const normApp = (x: string) => x.replace(/^%/, '').toLowerCase();
+const appMatch = (pats: string[], app: string) => {
+  const a = normApp(app);
+  return !!a && pats.some((p) => (p.endsWith('*') ? a.startsWith(p.replace(/\*+$/, '')) : a === p));
+};
+
+/** A substring (or regex, or terms) matcher for q or exclude; throws an Error with the server's message. */
+function textMatcher(v: string, syntax: string, isRe: boolean, cs: boolean): ((raw: string) => boolean) | null {
+  if (!v) return null;
   if (isRe) {
+    let re: RegExp;
     try {
-      re = new RegExp(q, cs ? '' : 'i');
+      re = new RegExp(v, cs ? '' : 'i');
     } catch (e) {
       // RE2's message style; the JS engine's detail follows.
-      return err(400, `error parsing regexp: ${(e as Error).message.replace(/^Invalid regular expression: /, '')}`);
+      throw new Error(`error parsing regexp: ${(e as Error).message.replace(/^Invalid regular expression: /, '')}`);
     }
+    return (raw) => re.test(raw);
   }
-  // exclude, app and host (docs/api.md → Search): exclude is matched like q; app and host
-  // against the parsed header, ignoring case, with a trailing * as a prefix and "%" optional.
+  if (syntax === 'terms') {
+    const n = parseTerms(v);
+    return n ? (raw) => matchTerms(n, raw, cs) : null;
+  }
+  const lv = v.toLowerCase();
+  return cs ? (raw) => raw.includes(v) : (raw) => raw.toLowerCase().includes(lv);
+}
+
+/** Reads every filter parameter of search and the summary; a string is the 400's message. */
+function lineFilter(u: URLSearchParams, now: number): LineFilter | string {
+  const type = u.get('type') ?? 'syslog';
+  if (type !== 'syslog') return `type: unknown data type "${type}".`;
+  const syntax = u.get('syntax') ?? 'text';
+  if (syntax !== 'text' && syntax !== 'terms') return `syntax must be text or terms, not "${syntax}"`;
+  const isRe = u.get('regex') === 'true';
+  const cs = u.get('case') === 'true';
+  if (isRe && syntax === 'terms') return TERMS_AND_REGEX;
+  let sev: Set<string> | null;
+  let fac: Set<string> | null;
+  try {
+    sev = sevFilter(u);
+    fac = facFilter(u.get('facilities') ?? '');
+  } catch (e) {
+    return (e as Error).message;
+  }
+  const q = u.get('q') ?? '';
   const exclude = u.get('exclude') ?? '';
-  let exRe: RegExp | null = null;
-  if (isRe && exclude) {
-    try {
-      exRe = new RegExp(exclude, cs ? '' : 'i');
-    } catch (e) {
-      return err(400, `exclude: error parsing regexp: ${(e as Error).message.replace(/^Invalid regular expression: /, '')}`);
-    }
+  let qm: ((raw: string) => boolean) | null;
+  let exm: ((raw: string) => boolean) | null;
+  try {
+    qm = textMatcher(q, syntax, isRe, cs);
+  } catch (e) {
+    return (e as Error).message;
   }
-  const excluded = (raw: string) =>
-    !!exclude && (exRe ? exRe.test(raw) : cs ? raw.includes(exclude) : raw.toLowerCase().includes(exclude.toLowerCase()));
-  const list = (k: string) => (u.get(k) ?? '').split(',').map((x) => x.trim()).filter(Boolean);
-  const norm = (x: string) => x.replace(/^%/, '').toLowerCase();
-  const apps = list('app').map(norm);
-  const hosts = list('host').map((x) => x.toLowerCase());
-  const fieldsPass = (f: { app: string; host: string }) => {
+  try {
+    exm = textMatcher(exclude, syntax, isRe, cs);
+  } catch (e) {
+    return `exclude: ${(e as Error).message}`;
+  }
+  const apps = listParam(u, 'app').map(normApp);
+  const hosts = listParam(u, 'host').map((x) => x.toLowerCase());
+  const xapps = listParam(u, 'exclude_app').map(normApp);
+  const xhosts = listParam(u, 'exclude_host').map((x) => x.toLowerCase());
+  const fields = (f: { app: string; host: string }) => {
     if (hosts.length && !hosts.includes(f.host.toLowerCase())) return false;
-    if (!apps.length) return true;
-    const a = norm(f.app);
-    return !!a && apps.some((p) => (p.endsWith('*') ? a.startsWith(p.replace(/\*+$/, '')) : a === p));
+    if (apps.length && !appMatch(apps, f.app)) return false;
+    // A line without a program/tag (or hostname) is never left out by the exclude forms.
+    if (xhosts.length && f.host && xhosts.includes(f.host.toLowerCase())) return false;
+    if (xapps.length && f.app && appMatch(xapps, f.app)) return false;
+    return true;
   };
   const to = u.has('to') ? Date.parse(u.get('to')!) : now;
   const from = u.has('from') ? Date.parse(u.get('from')!) : to - 24 * H;
-  if (Number.isNaN(from) || Number.isNaN(to)) return err(400, '"from" and "to" must be RFC 3339 times.');
-  if (!(from < to)) return err(400, '"from" must be before "to".');
+  if (Number.isNaN(from) || Number.isNaN(to)) return '"from" and "to" must be RFC 3339 times.';
+  if (!(from < to)) return '"from" must be before "to".';
+  const group = u.get('group') ?? undefined;
+  const ungrouped = u.get('ungrouped') === 'true';
+  if (group && ungrouped) return 'group and ungrouped=true are alternatives; send one';
+  return {
+    from,
+    to,
+    dev: { devices: u.get('devices')?.split(',').filter(Boolean), group, ungrouped, sev, exclude: listParam(u, 'exclude_devices') },
+    sev,
+    fac,
+    q: qm ?? (() => true),
+    ex: exm,
+    fields,
+    unfiltered: !qm && !exm && !apps.length && !hosts.length && !xapps.length && !xhosts.length && !sev && !fac,
+  };
+}
+
+/** The device part: search's selection (hidden only when named), then exclude_devices wins. */
+const devicePasses = (ip: string, f: LineFilter) => deviceMatches(ip, f.dev, true) && !f.dev.exclude?.includes(ip);
+
+/** Every filter on one stored line; the text and header are generated only once the device passes. */
+function linePasses(l: GenLine, f: LineFilter): { app: string; host: string } | null {
+  if (f.sev && !f.sev.has(sevKeyOf(l.severity))) return null;
+  if (f.fac && !f.fac.has(facilityOf(l.raw))) return null;
+  if (!f.q(l.raw)) return null;
+  if (f.ex?.(l.raw)) return null;
+  const fl = fieldsOf(l.raw);
+  return f.fields(fl) ? fl : null;
+}
+
+/** The cursor signature: every parameter except the cursor, limit and the summary's own budget. */
+function signature(u: URLSearchParams): string {
+  const s = new URLSearchParams(u);
+  for (const k of ['cursor', 'limit', 'budget_ms']) s.delete(k);
+  s.sort();
+  return [...s.toString()].reduce((h, c) => (Math.imul(h, 31) + c.charCodeAt(0)) >>> 0, 7).toString(36);
+}
+
+function searchRoute(u: URLSearchParams, now: number): Response {
+  const f = lineFilter(u, now);
+  if (typeof f === 'string') return err(400, f);
   const order = u.get('order') === 'asc' ? 'asc' : 'desc';
   const limit = Math.min(5000, Math.max(1, Number(u.get('limit') || 500)));
-  const f: MockFilters = {
-    devices: u.get('devices')?.split(',').filter(Boolean),
-    group: u.get('group') ?? undefined,
-    ungrouped: u.get('ungrouped') === 'true',
-    sev,
-  };
   // The cursor is tied to the other parameters, as on the real server.
-  const sigSrc = new URLSearchParams(u);
-  sigSrc.delete('cursor');
-  sigSrc.delete('limit');
-  sigSrc.sort();
-  const sig = [...sigSrc.toString()].reduce((h, c) => (Math.imul(h, 31) + c.charCodeAt(0)) >>> 0, 7).toString(36);
-  const lo = Math.ceil(from / STEP);
-  const hi = Math.floor(Math.min(to, now) / STEP);
+  const sig = signature(u);
+  const lo = Math.ceil(f.from / STEP);
+  const hi = Math.ceil(Math.min(f.to, now) / STEP) - 1;
   let i = order === 'desc' ? hi : lo;
   const cur = u.get('cursor');
   if (cur) {
@@ -1201,15 +1303,11 @@ function searchRoute(u: URLSearchParams, now: number): Response {
   for (; inRange(i) && results.length < limit && scanned < budget; i += step) {
     scanned++;
     const d = deviceAt(i);
-    if (!deviceMatches(d.ip, f, true)) continue;
+    if (!devicePasses(d.ip, f)) continue;
     files.add(`${d.ip}/${Math.floor((i * STEP) / (24 * H))}`);
     const l = lineAt(i);
-    if (sev && !sev.has(sevKeyOf(l.severity))) continue;
-    if (re ? !re.test(l.raw) : q && !(cs ? l.raw.includes(q) : l.raw.toLowerCase().includes(q.toLowerCase()))) continue;
-    if (excluded(l.raw)) continue;
-    const fl = fieldsOf(l.raw);
-    if (!fieldsPass(fl)) continue;
-    results.push({ ...l, ...fl, ref: `h${i}` });
+    const fl = linePasses(l, f);
+    if (fl) results.push({ ...l, ...fl, ref: `h${i}` });
   }
   const exhausted = !inRange(i);
   return json({
@@ -1220,6 +1318,362 @@ function searchRoute(u: URLSearchParams, now: number): Response {
     elapsed_ms: Math.round(performance.now() - t0) + (mock.slowScan ? 9800 : 40),
     partial: !exhausted && results.length < limit,
   });
+}
+
+// ---------- Events v2: schema, summary (docs/api.md, 1.1) ----------
+
+const SCHEMA = {
+  types: [
+    {
+      type: 'syslog',
+      label: 'Syslog',
+      default: true,
+      fields: [
+        { key: 'device', label: 'Device', param: 'devices', exclude_param: 'exclude_devices', domain: null },
+        {
+          key: 'severity', label: 'Severity', param: 'severities', exclude_param: '',
+          domain: [...SEV_LABELS.map((l, i) => ({ value: String(i), label: l })), { value: 'unknown', label: 'unknown' }],
+        },
+        {
+          key: 'facility', label: 'Facility', param: 'facilities', exclude_param: '',
+          domain: [...FACILITY_LABELS.map((l, i) => ({ value: String(i), label: l })), { value: 'unknown', label: 'unknown' }],
+        },
+        { key: 'host', label: 'Host', param: 'host', exclude_param: 'exclude_host', domain: null },
+        { key: 'app', label: 'Program/tag', param: 'app', exclude_param: 'exclude_app', domain: null },
+      ],
+    },
+  ],
+};
+const FIELD_KEYS = SCHEMA.types[0].fields.map((x) => x.key);
+
+/** Mock slow summary (mock_slow_summary=1): each request counts only this many stored lines. */
+const summaryLines = (budgetMs: number) => (mock.slowSummary ? 1200 : Math.round((budgetMs / 10_000) * 120_000));
+
+/** SPEC §10.1.2: the bucket for a range, giving at most 120 buckets. */
+function defaultBucket(rangeMs: number): number {
+  const S = 1000, M = 60 * S, HR = 60 * M, D = 24 * HR;
+  const table: [number, number][] = [[2 * M, 1], [10 * M, 5], [30 * M, 15], [2 * HR, 60], [10 * HR, 300], [30 * HR, 900], [5 * D, 3600],
+    [10 * D, 7200], [30 * D, 21600], [120 * D, 86400]];
+  for (const [upTo, b] of table) if (rangeMs <= upTo) return b;
+  return 604800;
+}
+
+/** Bucket starts are multiples of the size since the epoch; 7-day buckets start on Mondays (4 days after it). */
+const bucketStart = (t: number, sizeMs: number) => {
+  const off = sizeMs === 604_800_000 ? 4 * 86_400_000 : 0;
+  return Math.floor((t - off) / sizeMs) * sizeMs + off;
+};
+
+interface ValueTally {
+  label: string;
+  count: number;
+}
+interface SummaryState {
+  sig: string;
+  /** The next stored line to count (newest first); lo - 1 once done. */
+  next: number;
+  seq: number;
+  used: number;
+  matched: number;
+  scannedFiles: Set<string>;
+  hist: Map<number, number>;
+  fields: Map<string, { values: Map<string, ValueTally>; none: number; overflow: number }>;
+}
+const summaries = new Map<string, SummaryState>();
+const SUMMARY_TTL = 10 * MIN;
+const MAX_DISTINCT = 10_000;
+
+function keepSummary(id: string, s: SummaryState, now: number) {
+  s.used = now;
+  summaries.delete(id);
+  summaries.set(id, s);
+  for (const [k, v] of summaries) if (now - v.used > SUMMARY_TTL) summaries.delete(k);
+  while (summaries.size > 8) summaries.delete(summaries.keys().next().value!); // least recently used out first
+}
+
+const devLabel = (ip: string) => devs.get(ip)?.name || FLEET.find((d) => d.ip === ip)?.name || ip;
+
+function summaryRoute(u: URLSearchParams, now: number): Response {
+  const f = lineFilter(u, now);
+  if (typeof f === 'string') return err(400, f);
+  const fieldsArg = u.get('fields');
+  const want = fieldsArg === null || fieldsArg === '' ? FIELD_KEYS : fieldsArg === 'none' ? [] : fieldsArg.split(',').map((x) => x.trim()).filter(Boolean);
+  for (const k of want) if (!FIELD_KEYS.includes(k)) return err(400, `fields: unknown field "${k}".`);
+  const top = u.has('top') ? Number(u.get('top')) : 10;
+  if (!Number.isInteger(top) || top < 1 || top > 50) return err(400, `top must be an integer from 1 to 50, not "${u.get('top')}"`);
+  const wantHist = u.get('histogram') !== 'false';
+  const budgetMs = u.has('budget_ms') ? Number(u.get('budget_ms')) : 2000;
+  if (!Number.isInteger(budgetMs) || budgetMs < 1 || budgetMs > 10_000) return err(400, `budget_ms must be an integer from 1 to 10000, not "${u.get('budget_ms')}"`);
+  const bucketSec = u.has('bucket') ? Number(u.get('bucket')) : defaultBucket(f.to - f.from);
+  const bucketMs = bucketSec * 1000;
+  const allowed = [1, 5, 15, 60, 300, 900, 3600, 7200, 21600, 86400, 604800];
+  if (!allowed.includes(bucketSec)) return err(400, `bucket must be one of ${allowed.join(', ')} seconds, not "${u.get('bucket')}"`);
+  const firstB = bucketStart(f.from, bucketMs);
+  const nBuckets = Math.ceil((f.to - firstB) / bucketMs);
+  if (nBuckets > 1000) return err(400, `bucket=${bucketSec} gives ${nBuckets} buckets over this range; the limit is 1,000. Pick a larger bucket.`);
+
+  const sig = signature(u);
+  const lo = Math.ceil(f.from / STEP);
+  const hi = Math.ceil(Math.min(f.to, now) / STEP) - 1;
+  const indexHist = wantHist && f.unfiltered && bucketSec >= 60;
+  const needScan = want.length > 0 || !indexHist;
+
+  let id = '';
+  let st: SummaryState;
+  const cur = u.get('cursor');
+  if (cur) {
+    const [cid, seq, s2] = cur.split('.');
+    const got = summaries.get(cid);
+    if (!got || now - got.used > SUMMARY_TTL || String(got.seq) !== seq) return err(400, 'This summary expired; start it again.');
+    if (s2 !== sig) return err(400, 'The cursor belongs to a different summary: keep every parameter the same as on the first request.');
+    id = cid;
+    st = got;
+  } else {
+    id = Math.random().toString(36).slice(2, 10);
+    st = { sig, next: hi, seq: 0, used: now, matched: 0, scannedFiles: new Set(), hist: new Map(), fields: new Map() };
+    for (const k of want) st.fields.set(k, { values: new Map(), none: 0, overflow: 0 });
+  }
+
+  const t0 = performance.now();
+  let scanned = 0;
+  const files = new Set<string>();
+  if (needScan) {
+    const budget = summaryLines(budgetMs);
+    const tally = (key: string, value: string, label: string) => {
+      const fs = st.fields.get(key);
+      if (!fs) return;
+      if (!value) {
+        fs.none++;
+        return;
+      }
+      // Host and program/tag group ignoring case (and a leading % for tags), as their filters match.
+      const k = key === 'host' ? value.toLowerCase() : key === 'app' ? normApp(value) : value;
+      const v = fs.values.get(k);
+      if (v) v.count++;
+      else if (fs.values.size >= MAX_DISTINCT) fs.overflow++;
+      else fs.values.set(k, { label: key === 'device' ? `${value}\u0000${label}` : value, count: 1 });
+    };
+    for (; st.next >= lo && scanned < budget; st.next--) {
+      scanned++;
+      const i = st.next;
+      const d = deviceAt(i);
+      if (!devicePasses(d.ip, f)) continue;
+      files.add(`${d.ip}/${Math.floor((i * STEP) / (24 * H))}`);
+      const l = lineAt(i);
+      const fl = linePasses(l, f);
+      if (!fl) continue;
+      st.matched++;
+      const b = bucketStart(i * STEP, bucketMs);
+      st.hist.set(b, (st.hist.get(b) ?? 0) + 1);
+      tally('device', d.ip, devLabel(d.ip));
+      tally('severity', sevKeyOf(l.severity), '');
+      tally('facility', facilityOf(l.raw), '');
+      tally('host', fl.host, '');
+      tally('app', fl.app, '');
+    }
+  } else st.next = lo - 1;
+  for (const x of files) st.scannedFiles.add(x);
+  const done = st.next < lo;
+  // Every line from st.next + 1 on is counted, and line i was received at i × STEP.
+  const countedFrom = done ? f.from : Math.min(f.to, Math.max(f.from, (st.next + 1) * STEP));
+
+  let histogram: unknown;
+  if (wantHist) {
+    const counts = new Map<number, number>();
+    let approxFrom = -Infinity;
+    if (indexHist) {
+      // From the "stats and checkpoints": every line in range, without reading text.
+      for (let i = hi; i >= lo; i--) {
+        if (!devicePasses(deviceAt(i).ip, f)) continue;
+        const b = bucketStart(i * STEP, bucketMs);
+        counts.set(b, (counts.get(b) ?? 0) + 1);
+      }
+      // Older than the per-minute stats (24 h) a cut edge bucket is spread from checkpoints.
+      approxFrom = now - 24 * H;
+    }
+    const buckets = [];
+    for (let k = 0; k < nBuckets; k++) {
+      const start = firstB + k * bucketMs;
+      const end = start + bucketMs;
+      const edge = (start < f.from || end > f.to) && start < approxFrom && bucketSec < 86400;
+      const count = indexHist ? (counts.get(start) ?? 0) : end <= countedFrom ? null : (st.hist.get(start) ?? 0);
+      buckets.push({ start: new Date(start).toISOString(), count, approx: indexHist && edge && (count ?? 0) > 0 });
+    }
+    histogram = { bucket_seconds: bucketSec, source: indexHist ? 'index' : 'scan', buckets };
+  }
+
+  const fieldsOut = want.map((key) => {
+    const desc = SCHEMA.types[0].fields.find((x) => x.key === key)!;
+    const fs = st.fields.get(key)!;
+    const all = [...fs.values.entries()].map(([k, v]) => {
+      const [value, devName] = key === 'device' ? v.label.split('\u0000') : [v.label, ''];
+      const label = desc.domain ? (desc.domain.find((x) => x.value === k)?.label ?? k) : key === 'device' ? devName : value;
+      return { value: desc.domain ? k : value, label, count: v.count, filterable: !value.includes(',') && !(key === 'app' && value.endsWith('*')) };
+    });
+    all.sort((a, b) => b.count - a.count || (a.value < b.value ? -1 : a.value > b.value ? 1 : 0));
+    const values = desc.domain ? all : all.slice(0, top);
+    const listed = values.reduce((s, v) => s + v.count, 0);
+    const withValue = all.reduce((s, v) => s + v.count, 0) + fs.overflow;
+    return {
+      key, label: desc.label, values, other: withValue - listed, none: fs.none, distinct: fs.values.size,
+      distinct_capped: fs.values.size >= MAX_DISTINCT && fs.overflow > 0,
+    };
+  });
+
+  let matched = st.matched;
+  if (!needScan && histogram) matched = (histogram as { buckets: { count: number }[] }).buckets.reduce((s, b) => s + b.count, 0);
+  st.seq++;
+  if (done) summaries.delete(id);
+  else keepSummary(id, st, now);
+  return json({
+    type: 'syslog',
+    from: new Date(f.from).toISOString(),
+    to: new Date(f.to).toISOString(),
+    matched,
+    counted_from: new Date(countedFrom).toISOString(),
+    ...(histogram ? { histogram } : {}),
+    fields: fieldsOut,
+    next_cursor: done ? '' : `${id}.${st.seq}.${sig}`,
+    partial: !done,
+    scanned_bytes: scanned * 142,
+    scanned_files: files.size,
+    elapsed_ms: Math.round(performance.now() - t0) + (mock.slowSummary ? 2000 : needScan ? 30 : 2),
+  });
+}
+
+/** Ends every summary's running counts now (the panel's "expire summaries"), so the next cursor is a 400. */
+export function expireSummaries() {
+  summaries.clear();
+}
+
+// ---------- Saved searches (docs/api.md, 1.1) ----------
+
+interface MockSaved {
+  id: string;
+  name: string;
+  type: string;
+  created: string;
+  updated: string;
+  query: SavedQuery;
+  version: number;
+}
+
+const savedList: MockSaved[] = [];
+function seedSaved() {
+  const t = new Date(Date.now() - 3 * 24 * H).toISOString();
+  const add = (name: string, query: SavedQuery) =>
+    savedList.push({ id: `ss_${Math.random().toString(16).slice(2, 10)}`, name, type: 'syslog', created: t, updated: t, query, version: 1 });
+  add('Edge denies', { q: 'deny NOT 10.1.0.255', syntax: 'terms', devices: ['10.1.0.1', '10.1.0.2'], range: { last: '1h' } });
+  add('Auth failures', { q: 'failed', app: ['sshd'], devices: ['10.2.0.20', '10.9.9.9'], range: { last: '24h' } });
+  add('Switch port flaps', { q: 'flap', group: 'HQ', exclude_app: ['lldpd'], range: { last: '7d' } });
+}
+seedSaved();
+
+const SAVED_LIMIT = 200;
+const knownDevice = (ip: string) => devs.has(ip) || FLEET.some((d) => d.ip === ip);
+
+function savedJSON(s: MockSaved) {
+  const devices = s.query.devices ?? [];
+  const group = s.query.group ?? '';
+  return {
+    id: s.id, name: s.name, type: s.type, created: s.created, updated: s.updated,
+    query: {
+      q: '', syntax: 'text', regex: false, case: false, exclude: '', devices: [], group: '', ungrouped: false, exclude_devices: [],
+      severities: [], facilities: [], app: [], exclude_app: [], host: [], exclude_host: [], order: 'desc', range: { last: '1h' },
+      ...s.query,
+    },
+    missing_devices: devices.filter((d) => !knownDevice(d)),
+    missing_group: !!group && !FLEET.some((d) => d.group === group) && ![...devs.values()].some((d) => d.group === group),
+  };
+}
+const savedEtag = (s: MockSaved) => `"${s.id}-${s.version}"`;
+
+/** Validates a saved-search body; returns the dotted-key errors (none: {}). */
+function validateSaved(b: { name?: unknown; type?: unknown; query?: SavedQuery }, selfId = ''): { errors: Record<string, string>; conflict?: string } {
+  const e: Record<string, string> = {};
+  const name = typeof b.name === 'string' ? b.name.trim() : '';
+  if (!name) e.name = 'Give the search a name.';
+  else if ([...name].length > 80) e.name = 'At most 80 characters.';
+  if (b.type !== undefined && b.type !== 'syslog') e.type = `Unknown data type "${String(b.type)}".`;
+  const q = b.query ?? {};
+  const syntax = q.syntax ?? 'text';
+  if (syntax !== 'text' && syntax !== 'terms') e['query.syntax'] = 'Must be text or terms.';
+  if (q.regex && syntax === 'terms') e['query.syntax'] = TERMS_AND_REGEX;
+  else {
+    for (const [k, v] of [['query.q', q.q], ['query.exclude', q.exclude]] as const) {
+      try {
+        textMatcher(v ?? '', syntax, !!q.regex, !!q.case);
+      } catch (x) {
+        e[k] = (x as Error).message;
+      }
+    }
+  }
+  for (const k of ['devices', 'exclude_devices', 'app', 'exclude_app', 'host', 'exclude_host', 'severities', 'facilities'] as const) {
+    const v = q[k];
+    if (v !== undefined && (!Array.isArray(v) || v.length > 1000)) e[`query.${k}`] = 'A list of at most 1,000 items.';
+  }
+  if (q.group && q.ungrouped) e['query.ungrouped'] = 'group and ungrouped are alternatives; send one.';
+  const r = q.range;
+  if (r && 'last' in r) {
+    const m = /^(\d+)([mhd])$/.exec(r.last);
+    const mins = m ? Number(m[1]) * ({ m: 1, h: 60, d: 1440 } as const)[m[2] as 'm' | 'h' | 'd'] : 0;
+    if (!m || mins < 1 || mins > 400 * 1440) e['query.range.last'] = 'A whole number of m, h or d, from 1m to 400d.';
+  } else if (r) {
+    const f = Date.parse(r.from), t = Date.parse(r.to);
+    if (Number.isNaN(f)) e['query.range.from'] = 'Must be an RFC 3339 time.';
+    if (Number.isNaN(t)) e['query.range.to'] = 'Must be an RFC 3339 time.';
+    else if (!(f < t)) e['query.range.to'] = 'Must be after "from".';
+  }
+  if (Object.keys(e).length) return { errors: e };
+  const clash = savedList.find((s) => s.id !== selfId && s.name.toLowerCase() === name.toLowerCase());
+  if (clash) return { errors: {}, conflict: `A saved search named "${clash.name}" already exists.` };
+  return { errors: {} };
+}
+
+function savedRoute(method: string, p: string, u: URLSearchParams, body: unknown, ifMatch: string | null, now: number): Response | null {
+  if (p === '/api/saved-searches') {
+    if (method === 'GET') {
+      const type = u.get('type') ?? 'syslog';
+      if (type !== 'syslog') return err(400, `type: unknown data type "${type}".`);
+      return json([...savedList].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })).map(savedJSON));
+    }
+    if (method === 'POST') {
+      const b = (body ?? {}) as { name?: string; type?: string; query?: SavedQuery };
+      const v = validateSaved(b);
+      if (Object.keys(v.errors).length) return json({ error: 'Some fields need fixing.', errors: v.errors }, 400);
+      if (v.conflict) return err(409, v.conflict);
+      if (savedList.length >= SAVED_LIMIT) return err(409, `There are already ${SAVED_LIMIT} saved searches; delete one first.`);
+      const t = new Date(now).toISOString();
+      const s: MockSaved = { id: `ss_${Math.random().toString(16).slice(2, 10)}`, name: b.name!.trim(), type: 'syslog', created: t, updated: t, query: b.query ?? {}, version: 1 };
+      savedList.push(s);
+      return json(savedJSON(s), 201, { ETag: savedEtag(s) });
+    }
+    return null;
+  }
+  const m = /^\/api\/saved-searches\/([^/]+)$/.exec(p);
+  if (!m) return null;
+  const id = decodeURIComponent(m[1]);
+  const k = savedList.findIndex((s) => s.id === id);
+  if (k < 0) return err(404, `No saved search with id "${id}".`);
+  const s = savedList[k];
+  if (method === 'GET') return json(savedJSON(s), 200, { ETag: savedEtag(s) });
+  if (method === 'DELETE') {
+    savedList.splice(k, 1);
+    return new Response(null, { status: 204 });
+  }
+  if (method === 'PUT') {
+    if (ifMatch && ifMatch !== '*' && ifMatch !== savedEtag(s)) return err(409, 'This saved search changed since you loaded it.');
+    const b = (body ?? {}) as { name?: string; type?: string; query?: SavedQuery };
+    const v = validateSaved(b, id);
+    if (Object.keys(v.errors).length) return json({ error: 'Some fields need fixing.', errors: v.errors }, 400);
+    if (v.conflict) return err(409, v.conflict);
+    s.name = b.name!.trim();
+    s.query = b.query ?? {};
+    s.updated = new Date(now).toISOString();
+    s.version++;
+    return json(savedJSON(s), 200, { ETag: savedEtag(s) });
+  }
+  return null;
 }
 
 async function route(method: string, url: URL, body: unknown, header: string | null, signal?: AbortSignal, ifMatch: string | null = null): Promise<Response> {
@@ -1359,6 +1813,12 @@ async function route(method: string, url: URL, body: unknown, header: string | n
   }
   if (method === 'GET' && p === '/api/rejected') return json(rejected(now));
   if (method === 'GET' && p === '/api/search') return searchRoute(url.searchParams, now);
+  if (method === 'GET' && p === '/api/search/schema') return json(SCHEMA);
+  if (method === 'GET' && p === '/api/search/summary') return summaryRoute(url.searchParams, now);
+  if (p.startsWith('/api/saved-searches')) {
+    const r = savedRoute(method, p, url.searchParams, body, ifMatch, now);
+    if (r) return r;
+  }
   if (method === 'GET' && p === '/api/context') {
     const m = /^h(\d+)$/.exec(url.searchParams.get('ref') ?? '');
     if (!m) return err(404, 'That line is no longer stored.');
@@ -1392,12 +1852,29 @@ async function route(method: string, url: URL, body: unknown, header: string | n
     const b = (body ?? {}) as {
       all_devices?: boolean; devices?: string[]; group?: string; ungrouped?: boolean; from?: string; to?: string;
       severities?: unknown[]; q?: string; regex?: boolean; case?: boolean; app?: string[]; host?: string[]; exclude?: string;
+      type?: string; syntax?: 'text' | 'terms'; facilities?: (number | string)[]; exclude_devices?: string[]; exclude_app?: string[]; exclude_host?: string[];
     };
     // devices, group or ungrouped: resolved as the build would (hidden devices only when named).
     probe.lastExportBody = JSON.stringify(b);
     const f: MockFilters = { devices: b.devices, group: b.group || undefined, ungrouped: !!b.ungrouped, sev: null };
     const anySelector = b.all_devices || !!b.devices?.length || !!b.group || !!b.ungrouped;
-    const ids = anySelector ? FLEET.map((d) => d.ip).filter((ip) => deviceMatches(ip, f, true)) : [];
+    const ids = anySelector ? FLEET.map((d) => d.ip).filter((ip) => deviceMatches(ip, f, true) && !b.exclude_devices?.includes(ip)) : [];
+    if (b.type !== undefined && b.type !== 'syslog') return err(400, `type: unknown data type "${b.type}".`);
+    if (b.regex && b.syntax === 'terms') return err(400, TERMS_AND_REGEX);
+    if (b.syntax === 'terms') {
+      for (const [what, v] of [['', b.q], ['exclude: ', b.exclude]] as const) {
+        try {
+          parseTerms(v ?? '');
+        } catch (e) {
+          return err(400, `${what}${(e as Error).message}`);
+        }
+      }
+    }
+    try {
+      facFilter((b.facilities ?? []).join(','));
+    } catch (e) {
+      return err(400, (e as Error).message);
+    }
     if (!ids.length) return err(400, 'Pick at least one device (by list, group or ungrouped).');
     if (!b.from || !b.to || !(Date.parse(b.from) < Date.parse(b.to))) return err(400, '"from" must be before "to".');
     for (const x of b.severities ?? []) if (!(x === 'unknown' || (Number.isInteger(x) && (x as number) >= 0 && (x as number) <= 7))) return err(400, `invalid severity ${JSON.stringify(x)}`);
@@ -1420,6 +1897,8 @@ async function route(method: string, url: URL, body: unknown, header: string | n
         group: b.group ?? '', ungrouped: !!b.ungrouped, severities: (b.severities ?? []) as ExportInfo['filters']['severities'],
         q: b.q ?? '', regex: !!b.regex, case: !!b.case,
         app: b.app ?? [], host: b.host ?? [], exclude: b.exclude ?? '',
+        type: 'syslog', syntax: b.syntax ?? 'text', facilities: (b.facilities ?? []) as ExportInfo['filters']['facilities'],
+        exclude_devices: b.exclude_devices ?? [], exclude_app: b.exclude_app ?? [], exclude_host: b.exclude_host ?? [],
       },
     };
     exportsList.unshift(e);
@@ -1477,6 +1956,7 @@ export const mockTransport: Transport = {
     const body = typeof init?.body === 'string' ? JSON.parse(init.body) : undefined;
     await sleep(mock.latency * (0.5 + Math.random()));
     if (mock.slowScan && url.pathname === '/api/search') await sleep(700);
+    if (mock.slowSummary && url.pathname === '/api/search/summary') await sleep(150);
     const header = probe.cookieOnly ? null : new Headers(init?.headers).get('X-Woodshed-Session');
     return route(method, url, body, header, init?.signal ?? undefined, new Headers(init?.headers).get('If-Match'));
   },
