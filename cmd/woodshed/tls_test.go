@@ -22,6 +22,11 @@ type fakeFirewall struct {
 
 func (f *fakeFirewall) run(name string, args ...string) (string, error) {
 	f.calls = append(f.calls, filepath.Base(name)+" "+strings.Join(args, " "))
+	// The code runs ufw and firewall-cmd by full path when the host has them
+	// (/usr/sbin/ufw on CI runners): match on the base name, whatever is installed.
+	if b := filepath.Base(name); b == "ufw" || b == "firewall-cmd" {
+		name = b
+	}
 	switch {
 	case name == "ufw" && args[0] == "status":
 		return "Status: active", nil
