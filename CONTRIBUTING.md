@@ -34,8 +34,9 @@ Packaging: `make snapshot` builds the archives, deb and rpm into `dist/` without
 
 ## Rules
 
-- **No outbound connections.** Woodshed never dials out: no telemetry, update checks, fonts or CDNs. A test enforces
-  it; don't work around it.
+- **No outbound connections, except the update check.** Woodshed never dials out on its own: no telemetry, fonts or
+  CDNs. The one exception is the opt-in update check in `internal/updatecheck` (SPEC §10.2), the only package allowed
+  to reach the internet. Tests enforce both; don't work around them.
 - **Never lose or change a message.** The raw message is stored exactly as received; parsing only adds metadata.
   Anything dropped or truncated is counted and shown, never silent.
 - **Plain files stay the source of truth.** The index must always be rebuildable from the log files.

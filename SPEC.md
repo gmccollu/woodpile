@@ -673,7 +673,7 @@ If there's a newer version, it shows a banner that links to that version's relea
   - Bad responses (a redirect, 1 MiB + 1 byte, not JSON, an off-site `html_url`, no release) give an error in
     Settings, no banner, and no retry beyond the one.
 
-**Doc wording.** Apply this in the PR that ships the checker, not before. While 1.0 is the latest release, its docs
+**Doc wording** (applied in the PR that ships the checker, build 2026-11-13). Apply this in the PR that ships the checker, not before. While 1.0 is the latest release, its docs
 have to keep saying that it makes no outbound connections, and SECURITY.md's policy covers the latest release.
 Editing them on main now would make them wrong for 1.0 users, so the exact wording is here instead.
 
@@ -1025,6 +1025,36 @@ Answers to the TLS questions:
 5. No RSA-3072 or ECDSA CA option in 1.1.
 6. Client-certificate verification (`client_ca`) comes later, if asked for.
 7. The installers' `WOODSHED_UPDATE_CHECK` pass-through: an acceptance item, below.
+
+Update check, **decided (build, 2026-11-13)** (the smallest choice where §10.2 or docs/api.md left it open):
+1. A release build, which may check and ask: a SemVer version that isn't 0.0.0, with no build metadata, and a
+   prerelease part, if any, like a real tag's (`rc1`, `rc.1`, `beta2`, `alpha`). A `git describe` version
+   (`1.0.0-5-gabc1234-dirty`), a CI snapshot (`1.0.1-snapshot.abc1234`) and `-dev`, `-ci` or `-dirty` builds never
+   check or ask.
+2. `main.releasesURL` is now `https://github.com/gmccollu/woodshed/releases` (it was empty "until the project has a
+   public home"), so release builds have a `releases_url`; the About page links to it too.
+3. `html_url`: exactly `releases_url + "/tag/" + tag_name` gives that link; empty or anything else under
+   `releases_url` gives `releases_url`; anything outside `releases_url` (another host, or a look-alike such as
+   `…/releases.evil.example/…`) is the "off-site `html_url`" of the tests: a `bad_json` error and no banner.
+4. A considered entry whose `tag_name` isn't a version, or a `stable` entry with a prerelease version (a
+   `prerelease` one without), is `bad_json`. A response whose `Content-Type` isn't `application/json` is `bad_json`.
+5. Turning it on checks 5–30 s later. **Check now** while a check is running counts that one.
+6. After a restart within 24 h of a check, the next is exactly 24 h after it, even when that check failed (a
+   pending retry isn't kept across a restart).
+7. `latest` is `null` whenever `check` isn't `"on"` (still asking, too), not only after turning it off.
+8. `GET /api/settings` always has `updates`; a `PUT` without it keeps the setting (1.0 clients and scripts).
+9. `POST /api/updates/check` answers `202` with no body, and `409` in a build that can't check as well.
+   `POST /api/updates/dismiss` with a `version` that isn't one is a `400`.
+10. The request is HTTP/1.1 and its connection is closed after each check, without Go's `DisableKeepAlives`,
+    which would add a fifth header (`Connection: close`).
+11. Error messages are Woodshed's own; an HTTP status shows its number and Go's text, never the server's.
+12. `woodshed update-check` accepts any case and surrounding spaces; an invalid value exits 2 and changes nothing.
+    With no config yet it writes one with the defaults a server would use there, owned like its folder (the folder
+    must exist). `--no-restart` is for the installers, which run it before they start or restart the service.
+13. The update banners are in the run-state file too, so `woodshed status` lists them; it also has an `Updates`
+    line (the setting and the last check).
+14. The MSI runs it through WixQuietExec (its output goes to the install log) with `Return="ignore"`, before
+    `StartServices`. The pkg's and the deb/rpm scripts print the warning and carry on.
 
 **Acceptance items for the 1.1 build** (the install smoke tests confirm each, or the design changes before release):
 - The WiX firewall extension in use can ship the TLS 6514 rule present but disabled, and an upgrade keeps its state.

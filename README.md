@@ -91,8 +91,10 @@ As of 1.0.0 (details in the [CHANGELOG](CHANGELOG.md)):
 - Web UI: a dashboard with the message rate, device tiles and a live tail with server-side filters; an Events page to
   browse and filter all stored history (text or regex, program/tag, host, exclude, devices, time, severity); a
   devices page to rename, group or hide senders; settings that apply without a restart; light and dark modes.
-- The UI listens on `127.0.0.1:8514` only by default. LAN mode serves HTTPS with a password. No outbound connections,
-  no telemetry, no update checks.
+- The UI listens on `127.0.0.1:8514` only by default. LAN mode serves HTTPS with a password.
+- No telemetry. The only outbound connection is an optional daily update check, off until you turn it on: it
+  fetches one public file (`https://gmccollu.github.io/woodshed/releases.json`), sends nothing about your
+  installation, and never downloads or installs anything.
 - If port 514 is taken, the UI still starts and shows which program holds the port, with a Retry button.
 - One binary, one service, with the UI embedded. The installers set it up as a system service.
 
