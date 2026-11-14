@@ -17,6 +17,7 @@ and versions follow [Semantic Versioning](https://semver.org/). Release notes on
 - A portable copy or `woodshed run` no longer warns that it "will compete for ports" with the installed service when
   it uses other ports. It checks the service's actual ports (its run-state file or config, when readable, else its
   defaults), names the ports that clash, and says "may" when it could only compare with the defaults.
+- New FAQ entry, linked from the README: why not tcpdump, rsyslog, syslog-ng or Graylog?
 
 ## [1.0.0] - 2026-11-13
 

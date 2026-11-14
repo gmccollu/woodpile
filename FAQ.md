@@ -3,6 +3,7 @@
 New to Woodshed? Start with the [user guide](docs/user-guide.md). Installer details are in
 [docs/install.md](docs/install.md).
 
+- [Why not tcpdump, rsyslog, syslog-ng or Graylog?](#why-not-tcpdump-rsyslog-syslog-ng-or-graylog)
 - [Why port 514, and why UDP?](#why-port-514-and-why-udp)
 - [Devices can't reach Woodshed](#devices-cant-reach-woodshed)
 - [What does the installer change in the firewall?](#what-does-the-installer-change-in-the-firewall)
@@ -16,6 +17,18 @@ New to Woodshed? Start with the [user guide](docs/user-guide.md). Installer deta
 - [The "latest release" link gives a 404](#the-latest-release-link-gives-a-404)
 - [Can I run it in a container (LXC, Docker, Kubernetes)?](#can-i-run-it-in-a-container-lxc-docker-kubernetes)
 - [Can I put the UI behind a reverse proxy?](#can-i-put-the-ui-behind-a-reverse-proxy)
+
+## Why not tcpdump, rsyslog, syslog-ng or Graylog?
+
+They're all good tools, for different jobs:
+
+- **tcpdump** captures only while someone is running it and watching. Installed, Woodshed is a service: it survives
+  reboots, rotates its files, keeps to its disk cap, lets you search what it kept, and exports a zip that marks the
+  times it wasn't running.
+- **rsyslog and syslog-ng** are great if you're comfortable configuring them. Woodshed is for the one Windows box or
+  the laptop on site: no config file to write, a web UI, a disk cap that's on by default, counters for anything it
+  drops, and an export zip for whoever needs the logs.
+- **Graylog, ELK and Loki** are log platforms, with more moving parts to run. If you already have one, use it.
 
 ## Why port 514, and why UDP?
 
