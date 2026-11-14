@@ -660,10 +660,10 @@
             <span class="missing">
               Devices no longer known:
               {#each savedCur.missing_devices as d, i (d)}{i ? ', ' : ''}<s title="No longer known; the search runs with the rest">{d}</s>{/each}
-              (no longer known)
+              {savedCur.missing_devices.length === (savedCur.query.devices?.length ?? 0) ? '(so it matches nothing)' : '(the search runs with the rest)'}
             </span>
           {/if}
-          {#if savedCur.missing_group}<span class="missing">Group <s>{savedCur.query.group}</s> has no devices any more (no longer known)</span>{/if}
+          {#if savedCur.missing_group}<span class="missing">Group <s>{savedCur.query.group}</s> has no devices any more, so it matches nothing</span>{/if}
         {:else}<span class="text-muted">{savedNote}</span>{/if}
       </div>
     {/if}
