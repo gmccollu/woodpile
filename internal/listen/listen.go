@@ -1,5 +1,6 @@
-// Package listen runs Woodshed's syslog listeners (SPEC §3.1): one UDP socket and
-// one TCP listener, each framing messages, applying the sender allowlist, parsing,
+// Package listen runs Woodshed's syslog listeners (SPEC §3.1, §10.3): one UDP
+// socket, one TCP listener and, when it's on, one TLS listener (tls.go), each
+// framing messages, applying the sender allowlist, parsing,
 // and handing every message to a Sink.
 //
 // A listener that fails to bind doesn't stop the others. Its status says why (the
@@ -8,6 +9,7 @@
 package listen
 
 import (
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -55,7 +57,7 @@ type Event struct {
 	Time  time.Time
 	Level string // LevelInfo, LevelWarn or LevelError
 	Kind  string // KindStart, KindStop or KindBind
-	Proto string // "udp" or "tcp": the listener it's about (readers act on this, not on Text)
+	Proto string // "udp", "tcp" or "tls": the listener it's about (readers act on this, not on Text)
 	Text  string
 }
 
@@ -83,6 +85,17 @@ type Options struct {
 	// doesn't wait for it, so a long idle timeout can't pin the slots.
 	IdleTimeout time.Duration
 
+	// TLSCertificate supplies the TLS listener's certificate on each handshake
+	// (so a renewal applies to new connections at once). Without it, an enabled
+	// TLS listener stays down with an error in its status.
+	TLSCertificate func() (*tls.Certificate, error)
+	// Handshake limits for the TLS listener (SPEC §10.3.5): at most MaxHandshakes
+	// at once (default 256) and MaxHandshakesPerAddr per sender address (8), each
+	// closed after HandshakeTimeout (10 s). They don't count against MaxConns.
+	MaxHandshakes        int
+	MaxHandshakesPerAddr int
+	HandshakeTimeout     time.Duration
+
 	// Holder names the process holding proto ("udp" or "tcp") port, best effort, or
 	// "". Default: the OS lookup (lsof on macOS, /proc on Linux, the IP Helper
 	// tables on Windows).
@@ -91,7 +104,7 @@ type Options struct {
 
 // ListenerStatus is one entry of /api/status.listeners.
 type ListenerStatus struct {
-	Proto  string `json:"proto"` // "udp" or "tcp"
+	Proto  string `json:"proto"` // "udp", "tcp" or "tls"
 	Addr   string `json:"addr"`
 	Port   int    `json:"port"` // the bound port when OK (differs from the config only for port 0)
 	OK     bool   `json:"ok"`
@@ -101,7 +114,7 @@ type ListenerStatus struct {
 
 // Status is the listeners' state for /api/status.
 type Status struct {
-	Listeners []ListenerStatus // enabled listeners, UDP first
+	Listeners []ListenerStatus // enabled listeners: UDP, TCP, then TLS
 
 	UDPRcvbufBytes          int // receive buffer the OS granted (0 if UDP isn't bound)
 	UDPRcvbufRequestedBytes int
@@ -120,6 +133,11 @@ type Status struct {
 	TCPConnsEvicted          int64 // closed to make room for a newcomer (idle longest, the oldest of the biggest source, or its own source's idle longest at the per-source limit)
 	TCPConnsPerSourceRefused int64 // refused at the per-address or per-/64 limit, none of that source's connections being idle enough to evict
 	TCPFrameTimeouts         int64 // closed because a message didn't complete within tcp_frame_timeout
+
+	// TLS handshakes (they're outside TCPConns until they complete).
+	TLSHandshakes      int   // in progress
+	TLSHandshakesBusy  int64 // closed at once: over the handshake limits
+	TLSHandshakeFailed int64 // failed (any other reason) since Start
 }
 
 // Server owns the listeners. Its methods are safe for concurrent use.
@@ -131,9 +149,16 @@ type Server struct {
 	cfg    config.Listeners
 	udp    *udpListener
 	tcp    *tcpListener
+	tls    *tcpListener
 	udpErr *ListenerStatus // set while the enabled UDP listener is down
 	tcpErr *ListenerStatus
+	tlsErr *ListenerStatus
 	closed bool
+
+	pool      *connPool // TCP and TLS connections together
+	tlsStats  *tlsStats
+	tlsBusy   atomic.Int64
+	tlsFailed atomic.Int64
 
 	allow        atomic.Pointer[allowlist]
 	maxSize      atomic.Int64
@@ -176,16 +201,27 @@ func Start(cfg config.Listeners, opts Options) (*Server, error) {
 	if opts.Holder == nil {
 		opts.Holder = PortHolder
 	}
+	if opts.MaxHandshakes <= 0 {
+		opts.MaxHandshakes = DefaultMaxHandshakes
+	}
+	if opts.MaxHandshakesPerAddr <= 0 {
+		opts.MaxHandshakesPerAddr = DefaultMaxHandshakesPerAddr
+	}
+	if opts.HandshakeTimeout <= 0 {
+		opts.HandshakeTimeout = DefaultHandshakeTimeout
+	}
 	al, err := newAllowlist(cfg)
 	if err != nil {
 		return nil, err
 	}
 	s := &Server{
-		opts:    opts,
-		log:     opts.Logger,
-		rejects: newRejects(maxRejectedIPs),
-		kdrops:  &kernelDrops{},
-		stop:    make(chan struct{}),
+		opts:     opts,
+		log:      opts.Logger,
+		rejects:  newRejects(maxRejectedIPs),
+		kdrops:   &kernelDrops{},
+		stop:     make(chan struct{}),
+		pool:     newConnPool(),
+		tlsStats: newTLSStats(maxTLSSenders),
 	}
 	s.allow.Store(al)
 	s.maxSize.Store(int64(maxSizeOf(cfg)))
@@ -196,6 +232,7 @@ func Start(cfg config.Listeners, opts Options) (*Server, error) {
 	s.cfg = cloneListeners(cfg)
 	s.startUDP(&ev)
 	s.startTCP(&ev)
+	s.startTLS(&ev)
 	s.mu.Unlock()
 	ev.flush(s)
 
@@ -217,6 +254,9 @@ func (s *Server) Retry() Status {
 		}
 		if s.cfg.TCP.Enabled && s.tcp == nil {
 			s.startTCP(&ev)
+		}
+		if s.cfg.TLS.Enabled && s.tls == nil {
+			s.startTLS(&ev)
 		}
 	}
 	s.mu.Unlock()
@@ -249,9 +289,7 @@ func (s *Server) Reconfigure(cfg config.Listeners) error {
 	old := s.cfg
 	s.cfg = cloneListeners(cfg)
 	s.allow.Store(al)
-	if s.tcp != nil {
-		s.tcp.closeBlocked(al) // a newly blocked sender's open connections
-	}
+	s.closeBlocked(al) // a newly blocked sender's open TCP and TLS connections
 	s.maxSize.Store(int64(maxSizeOf(cfg)))
 	s.setTCPLimits(cfg)
 
@@ -266,6 +304,10 @@ func (s *Server) Reconfigure(cfg config.Listeners) error {
 	if old.TCP != cfg.TCP {
 		s.stopTCP(&ev)
 		s.startTCP(&ev)
+	}
+	if tlsChanged(old.TLS, cfg.TLS) || (cfg.TLS.Enabled && s.tls == nil) {
+		s.stopTLS(&ev)
+		s.startTLS(&ev)
 	}
 	return nil
 }
@@ -282,6 +324,7 @@ func (s *Server) Close() error {
 	s.closed = true
 	s.stopUDP(&ev)
 	s.stopTCP(&ev)
+	s.stopTLS(&ev)
 	close(s.stop)
 	s.mu.Unlock()
 	s.wg.Wait()
@@ -304,6 +347,8 @@ func (s *Server) Status() Status {
 		TCPConnsPerSourceRefused: s.perSourceRefused.Load(),
 		TCPFrameTimeouts:         s.frameCuts.Load(),
 		KernelDropsVisible:       kernelDropsSupported,
+		TLSHandshakesBusy:        s.tlsBusy.Load(),
+		TLSHandshakeFailed:       s.tlsFailed.Load(),
 	}
 	if s.cfg.UDP.Enabled {
 		switch {
@@ -320,6 +365,15 @@ func (s *Server) Status() Status {
 			st.Listeners = append(st.Listeners, s.tcp.status())
 		case s.tcpErr != nil:
 			st.Listeners = append(st.Listeners, *s.tcpErr)
+		}
+	}
+	if s.cfg.TLS.Enabled {
+		switch {
+		case s.tls != nil:
+			st.Listeners = append(st.Listeners, s.tls.status())
+			st.TLSHandshakes = s.tls.tls.inProgress()
+		case s.tlsErr != nil:
+			st.Listeners = append(st.Listeners, *s.tlsErr)
 		}
 	}
 	if kernelDropsSupported {

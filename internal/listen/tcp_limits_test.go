@@ -357,10 +357,11 @@ func trackTable(maxConns, perAddr, perPrefix int) *tcpListener {
 		opts:    Options{MaxConns: maxConns, EvictIdle: time.Hour, Clock: func() time.Time { return fixedNow }, Logger: quiet},
 		log:     quiet,
 		rejects: newRejects(maxRejectedIPs),
+		pool:    newConnPool(),
 	}
 	s.perSource.Store(int64(perAddr))
 	s.perPrefix.Store(int64(perPrefix))
-	return &tcpListener{srv: s, conns: map[*tconn]struct{}{}, perAddr: map[netip.Addr]int{}, perGroup: map[netip.Prefix]int{}}
+	return &tcpListener{srv: s, proto: "tcp", connPool: s.pool}
 }
 
 var pipeEpoch = time.Now()

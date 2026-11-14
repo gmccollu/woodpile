@@ -44,24 +44,41 @@ import (
 // the first probe with a reset.
 var tcpKeepAlive = net.KeepAliveConfig{Enable: true, Idle: 15 * time.Second, Interval: 15 * time.Second, Count: 9}
 
-type tcpListener struct {
-	srv   *Server
-	ln    *net.TCPListener
-	addr  string // as configured
-	bound netip.AddrPort
-
+// connPool is the connection table the TCP and TLS listeners share (SPEC
+// §10.3.5): MaxConns, the per-address and per-/64 limits and eviction count both
+// together. A TLS connection joins it only once its handshake completes.
+type connPool struct {
 	mu       sync.Mutex
 	conns    map[*tconn]struct{}
 	perAddr  map[netip.Addr]int   // open connections per sender address
 	perGroup map[netip.Prefix]int // per source group: the IPv4 address, or the IPv6 /64
 	seq      uint64               // last accept number handed out
-	closing  bool
-	wg       sync.WaitGroup // the accept loop and every connection
+}
+
+func newConnPool() *connPool {
+	return &connPool{conns: map[*tconn]struct{}{}, perAddr: map[netip.Addr]int{}, perGroup: map[netip.Prefix]int{}}
+}
+
+// tcpListener is the TCP listener, or with tls set the TLS one (tls.go).
+type tcpListener struct {
+	srv   *Server
+	ln    *net.TCPListener
+	addr  string // as configured
+	bound netip.AddrPort
+	proto string // "tcp" or "tls"
+
+	*connPool // shared with the other stream listener; its mu guards closing too
+
+	tls     *tlsState // nil for plain TCP
+	closing bool
+	wg      sync.WaitGroup // the accept loop, every connection and (TLS) every handshake
 }
 
 // tconn is one open connection.
 type tconn struct {
-	c       net.Conn
+	c       net.Conn // what serve reads: the TCP connection, or the TLS one over it
+	raw     net.Conn // the TCP connection, closed directly so a TLS close writes nothing back
+	owner   *tcpListener
 	from    netip.Addr
 	addr    netip.Addr   // from without a zone, for the per-address count
 	group   netip.Prefix // sourceKey(from)
@@ -74,6 +91,10 @@ type tconn struct {
 }
 
 func listenTCP(s *Server, ln config.Listener) (*tcpListener, error) {
+	return listenStream(s, ln, "tcp", nil)
+}
+
+func listenStream(s *Server, ln config.Listener, proto string, ts *tlsState) (*tcpListener, error) {
 	ap, err := bindAddr(ln)
 	if err != nil {
 		return nil, err
@@ -87,9 +108,9 @@ func listenTCP(s *Server, ln config.Listener) (*tcpListener, error) {
 		ln:       l,
 		addr:     ln.Addr,
 		bound:    l.Addr().(*net.TCPAddr).AddrPort(),
-		conns:    map[*tconn]struct{}{},
-		perAddr:  map[netip.Addr]int{},
-		perGroup: map[netip.Prefix]int{},
+		proto:    proto,
+		connPool: s.pool,
+		tls:      ts,
 	}
 	t.wg.Add(1)
 	go t.accept()
@@ -97,7 +118,7 @@ func listenTCP(s *Server, ln config.Listener) (*tcpListener, error) {
 }
 
 func (t *tcpListener) status() ListenerStatus {
-	return ListenerStatus{Proto: "tcp", Addr: t.addr, Port: int(t.bound.Port()), OK: true}
+	return ListenerStatus{Proto: t.proto, Addr: t.addr, Port: int(t.bound.Port()), OK: true}
 }
 
 // sourceKey is a connection's source group: the IPv4 address, or the IPv6 /64.
@@ -128,7 +149,7 @@ func (t *tcpListener) accept() {
 				backoff = time.Second
 			}
 			if time.Since(lastLog) > time.Minute {
-				t.srv.log.Warn("listen: TCP accept error", "err", err, "retry_in", backoff)
+				t.srv.log.Warn("listen: accept error", "proto", t.proto, "err", err, "retry_in", backoff)
 				lastLog = time.Now()
 			}
 			time.Sleep(backoff)
@@ -145,6 +166,10 @@ func (t *tcpListener) accept() {
 			c.Close()
 			continue
 		}
+		if t.tls != nil {
+			t.handshake(c, from) // joins the pool once it completes (tls.go)
+			continue
+		}
 		tc := newTconn(c, from, time.Now())
 		if !t.track(tc) {
 			c.Close()
@@ -155,7 +180,7 @@ func (t *tcpListener) accept() {
 }
 
 func newTconn(c net.Conn, from netip.Addr, now time.Time) *tconn {
-	tc := &tconn{c: c, from: from, addr: from.Unmap().WithZone(""), group: sourceKey(from), connAt: now}
+	tc := &tconn{c: c, raw: c, from: from, addr: from.Unmap().WithZone(""), group: sourceKey(from), connAt: now}
 	tc.last.Store(now.UnixNano())
 	return tc
 }
@@ -171,6 +196,7 @@ func (t *tcpListener) track(tc *tconn) bool {
 	if t.closing {
 		return false
 	}
+	tc.owner = t
 	now := time.Now()
 	overAddr := t.perAddr[tc.addr] >= int(s.perSource.Load())
 	overPrefix := tc.addr.Is6() && t.perGroup[tc.group] >= int(s.perPrefix.Load())
@@ -246,7 +272,7 @@ func (t *tcpListener) oldestOfBiggest(newcomer netip.Prefix) *tconn {
 func (t *tcpListener) evictLocked(victim *tconn, why string) {
 	s := t.srv
 	victim.cut.Store(true)
-	victim.c.Close()
+	victim.raw.Close()
 	t.removeLocked(victim)
 	if s.evicted.Add(1)%1000 == 1 {
 		s.log.Warn("listen: TCP connection limit reached; closing a connection", "limit", s.opts.MaxConns,
@@ -291,7 +317,7 @@ func (t *tcpListener) longestIdle(now time.Time) *tconn {
 	return best
 }
 
-func (t *tcpListener) removeLocked(tc *tconn) {
+func (t *connPool) removeLocked(tc *tconn) {
 	if _, ok := t.conns[tc]; !ok {
 		return
 	}
@@ -302,7 +328,9 @@ func (t *tcpListener) removeLocked(tc *tconn) {
 	if t.perGroup[tc.group]--; t.perGroup[tc.group] <= 0 {
 		delete(t.perGroup, tc.group)
 	}
-	t.srv.conns.Add(-1)
+	if tc.owner != nil {
+		tc.owner.srv.conns.Add(-1)
+	}
 }
 
 func (t *tcpListener) untrack(tc *tconn) {
@@ -314,7 +342,7 @@ func (t *tcpListener) untrack(tc *tconn) {
 
 func (t *tcpListener) serve(tc *tconn) {
 	defer t.untrack(tc)
-	defer tc.c.Close()
+	defer tc.raw.Close() // for TLS, no close_notify: these senders never read (SPEC §10.3.5)
 	fr := &frameReader{c: tc.c, idle: &t.srv.idleTimeout, frameTimeout: &t.srv.frameTimeout, last: &tc.last, inFrame: &tc.inFrame}
 	r := syslog.NewStreamReader(fr, int(t.srv.maxSize.Load()))
 	for {
@@ -337,34 +365,45 @@ func (t *tcpListener) serve(tc *tconn) {
 		if t.srv.deliver(msg, tc.from, truncated) == RejectBlocked {
 			return // blocked since it connected: close it
 		}
+		if t.tls != nil {
+			t.srv.tlsStats.delivered(tc.addr)
+		}
 		fr.frameDone(r.Buffered() > 0)
 	}
 }
 
-// closeBlocked closes the open connections whose sender al blocks, each counted
-// once as a refusal. Their partial messages aren't stored.
-func (t *tcpListener) closeBlocked(al *allowlist) {
-	now := t.srv.opts.Clock().UTC()
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	for c := range t.conns {
+// closeBlocked closes the open TCP and TLS connections whose sender al blocks,
+// each counted once as a refusal. Their partial messages aren't stored.
+func (s *Server) closeBlocked(al *allowlist) {
+	now := s.opts.Clock().UTC()
+	p := s.pool
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for c := range p.conns {
 		if al.isBlocked(c.from) && !c.blocked.Swap(true) {
-			c.c.Close()
-			t.srv.rejects.add(c.from, now, 1, RejectBlocked)
+			c.raw.Close()
+			s.rejects.add(c.from, now, 1, RejectBlocked)
 		}
 	}
 }
 
-// close stops accepting, closes every connection and waits for their goroutines.
+// close stops accepting, closes this listener's connections (and, for TLS, its
+// handshakes in progress) and waits for their goroutines. The other listener's
+// connections in the shared pool are left alone.
 func (t *tcpListener) close() {
 	t.mu.Lock()
 	t.closing = true
 	t.ln.Close()
 	for c := range t.conns {
-		c.cut.Store(true)
-		c.c.Close()
+		if c.owner == t {
+			c.cut.Store(true)
+			c.raw.Close()
+		}
 	}
 	t.mu.Unlock()
+	if t.tls != nil {
+		t.tls.closeHandshakes()
+	}
 	t.wg.Wait()
 }
 
