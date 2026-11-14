@@ -124,6 +124,12 @@ const probe = {
   },
   /** Simulates a request that has the cookie but not the header (e.g. another app on this host). */
   cookieOnly: false,
+  /** Drops every summary's running counts, so the next cursor gets "This summary expired". */
+  expireSummaries(): void {
+    expireSummaries();
+  },
+  /** Summary requests answered "expired", for the restart check. */
+  expiredSummaries: 0,
   /**
    * Sends `n` of a named message (gen.ts SPECIAL) now, from the first sending device of its
    * kind, so a check needn't wait for a rare message by chance. Returns how many were sent.
@@ -1424,7 +1430,10 @@ function summaryRoute(u: URLSearchParams, now: number): Response {
   if (cur) {
     const [cid, seq, s2] = cur.split('.');
     const got = summaries.get(cid);
-    if (!got || now - got.used > SUMMARY_TTL || String(got.seq) !== seq) return err(400, 'This summary expired; start it again.');
+    if (!got || now - got.used > SUMMARY_TTL || String(got.seq) !== seq) {
+      probe.expiredSummaries++;
+      return err(400, 'This summary expired; start it again.');
+    }
     if (s2 !== sig) return err(400, 'The cursor belongs to a different summary: keep every parameter the same as on the first request.');
     id = cid;
     st = got;

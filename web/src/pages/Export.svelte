@@ -21,9 +21,11 @@
   import { router } from '../lib/router.svelte';
   import { scopeFromQuery, sevFromQuery, type Scope } from '../lib/scope';
   import { fieldsFromQuery, noFields, splitList, type FieldFilters } from '../lib/fields';
+  import { extrasFromQuery, facKeys, hasExtras, modeFromQuery, noExtras, type Extras, type Mode } from '../lib/events';
   import { deviceName, groupSize, live, ungroupedCount } from '../lib/status.svelte';
   import { SEVERITIES } from '../lib/severity';
   import DevicePicker from '../components/DevicePicker.svelte';
+  import ModeSwitch from '../components/ModeSwitch.svelte';
   import Icon from '../components/Icon.svelte';
   import SeverityChips from '../components/SeverityChips.svelte';
   import TimeRange from '../components/TimeRange.svelte';
@@ -35,9 +37,11 @@
   let range = $state<Range>(defaultRange());
   let sev = $state<SevKey[]>([...ALL_SEVS]);
   let q = $state('');
-  let regex = $state(false);
+  let mode = $state<Mode>('text');
   let cs = $state(false);
   let fields = $state<FieldFilters>(noFields());
+  /** Facility and the exclude forms of device, program/tag and host: set only from Events' field panel. */
+  let extras = $state<Extras>(noExtras());
   let fromSearch = $state(false);
 
   $effect(() => {
@@ -48,9 +52,10 @@
     range = rangeFromQuery(p);
     sev = sevFromQuery(p);
     q = p.get('q') ?? '';
-    regex = p.get('re') === '1';
+    mode = modeFromQuery(p);
     cs = p.get('cs') === '1';
     fields = fieldsFromQuery(p);
+    extras = extrasFromQuery(p);
     fromSearch = true;
   });
 
@@ -86,11 +91,16 @@
       to,
       severities: sev,
       q: q.trim(),
-      regex,
+      regex: mode === 'regex',
+      syntax: mode === 'terms' ? 'terms' : 'text',
       case: cs,
       app: splitList(fields.app),
       host: splitList(fields.host),
       exclude: fields.exclude,
+      facilities: facKeys(extras.fac),
+      exclude_devices: extras.xdev,
+      exclude_app: extras.xapp,
+      exclude_host: extras.xhost,
     };
   }
 
@@ -99,7 +109,7 @@
   let estError = $state('');
   let estBusy = $state(false);
   $effect(() => {
-    const key = JSON.stringify({ scope, range, sev, q, regex, cs, fields, e: formError });
+    const key = JSON.stringify({ scope, range, sev, q, mode, cs, fields, extras, e: formError });
     void key;
     if (formError) {
       est = null;
@@ -254,6 +264,21 @@
     if (f.app?.length) bits.push(`program: ${f.app.join(', ')}`);
     if (f.host?.length) bits.push(`host: ${f.host.join(', ')}`);
     if (f.exclude) bits.push(`not “${f.exclude}”`);
+    if (f.syntax === 'terms' && (f.q || f.exclude)) bits.push('terms');
+    const x = extrasText({ fac: (f.facilities ?? []).map(String), xdev: f.exclude_devices ?? [], xapp: f.exclude_app ?? [], xhost: f.exclude_host ?? [] });
+    if (x) bits.push(x);
+    return bits.join(' · ');
+  }
+
+  const FAC = ['kern', 'user', 'mail', 'daemon', 'auth', 'syslog', 'lpr', 'news', 'uucp', 'cron', 'authpriv', 'ftp', 'ntp', 'audit', 'alert', 'clock',
+    'local0', 'local1', 'local2', 'local3', 'local4', 'local5', 'local6', 'local7'];
+  /** "facility: local7 · not device: edge-fw-02 · not program/tag: kernel" */
+  function extrasText(e: Extras): string {
+    const bits: string[] = [];
+    if (e.fac.length) bits.push(`facility: ${e.fac.map((v) => (v === 'none' || v === 'unknown' ? v : (FAC[Number(v)] ?? v))).join(', ')}`);
+    if (e.xdev.length) bits.push(`not device: ${e.xdev.map(deviceName).join(', ')}`);
+    if (e.xapp.length) bits.push(`not program/tag: ${e.xapp.join(', ')}`);
+    if (e.xhost.length) bits.push(`not host: ${e.xhost.join(', ')}`);
     return bits.join(' · ');
   }
   const STATE: Record<string, string> = { queued: 'Queued', building: 'Building', ready: 'Ready', failed: 'Failed', expired: 'Expired' };
@@ -288,10 +313,10 @@
           id="exq"
           class="field w-auto min-w-0 grow basis-40 font-mono"
           bind:value={q}
-          placeholder={regex ? 'Regular expression (RE2)' : 'Optional text'}
+          placeholder={mode === 'regex' ? 'Regular expression (RE2)' : mode === 'terms' ? 'Optional terms, e.g. deny NOT 10.0.0.1' : 'Optional text'}
           spellcheck="false"
         />
-        <button type="button" class="toggle" aria-pressed={regex} onclick={() => (regex = !regex)} title="Regular expression (RE2 syntax)">.* Regex</button>
+        <ModeSwitch bind:value={mode} />
         <button type="button" class="toggle" aria-pressed={cs} onclick={() => (cs = !cs)} title="Match upper and lower case exactly">Aa Case</button>
       </div>
       <div class="row">
@@ -314,10 +339,18 @@
           id="exex"
           class="field w-auto min-w-0 grow basis-40 font-mono"
           bind:value={fields.exclude}
-          placeholder={regex ? 'Optional regular expression to leave out' : 'Optional text to leave out'}
+          placeholder={mode === 'regex' ? 'Optional regular expression to leave out' : mode === 'terms' ? 'Optional terms to leave out' : 'Optional text to leave out'}
           spellcheck="false"
         />
       </div>
+
+      {#if hasExtras(extras)}
+        <div class="row">
+          <span class="lbl">Also</span>
+          <span class="min-w-0 grow text-[13.5px]">{extrasText(extras)}</span>
+          <button type="button" class="ghost-btn" onclick={() => (extras = noExtras())} title="Drop these filters from the export">Clear</button>
+        </div>
+      {/if}
 
       <div class="estimate" aria-live="polite">
         {#if formError}

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { MOCK_PASSWORD, expireSession, mock, restartFirstRun, sendFirstMessage, setFleetSize, setLanAuth } from './server.svelte';
+  import { MOCK_PASSWORD, expireSession, expireSummaries, mock, restartFirstRun, sendFirstMessage, setFleetSize, setLanAuth } from './server.svelte';
   import { loadSession } from '../session.svelte';
   import { refreshDevices, refreshStatus } from '../status.svelte';
   import { go } from '../router.svelte';
@@ -63,6 +63,8 @@
         </label>
         <label class="row"><input type="checkbox" bind:checked={mock.deviceLimit} onchange={() => refreshStatus()} /> New senders refused (device limit)</label>
         <label class="row"><input type="checkbox" bind:checked={mock.slowScan} /> Slow search scans (partial pages)</label>
+        <label class="row"><input type="checkbox" bind:checked={mock.slowSummary} /> Slow field counts (partial summaries)</label>
+        <button class="ghost-btn" onclick={expireSummaries}>Expire running field counts</button>
         <label class="row"><input type="checkbox" bind:checked={mock.exportFail} /> Exports fail at 40 %</label>
         <label class="row"><input type="checkbox" checked={mock.lan} onchange={lan} /> LAN mode with auth</label>
         <div class="row presets">
