@@ -72,10 +72,11 @@ design), [docs/api.md](docs/api.md) (the UI's API), [CONTRIBUTING.md](CONTRIBUTI
 
 ## Known issues
 
-As of 1.0.0 (details in the [CHANGELOG](CHANGELOG.md)):
+As of 1.1.0 (details in the [CHANGELOG](CHANGELOG.md)):
 
 - The installers aren't code-signed yet, so Windows SmartScreen and macOS Gatekeeper ask once.
 - On Windows and macOS the OS doesn't expose kernel UDP drops, so the UI says that instead of showing 0.
+- On non-English Windows the "TLS firewall rule is off" banner doesn't appear; `woodshed tls on` still turns the rule on.
 
 ## Features
 
