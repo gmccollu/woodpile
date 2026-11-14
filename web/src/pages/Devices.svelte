@@ -244,8 +244,9 @@
               {/if}
               {#if rowError[d.id]}<div class="mt-1 text-[12.5px] text-bad-fg" role="alert">{rowError[d.id]}</div>{/if}
             </td>
-            <td class="whitespace-nowrap">
-              <span class="font-mono text-[13px]">{d.ip}</span>
+            <!-- The TLS badge goes under the IP when the column is tight, so the row's actions keep their one line. -->
+            <td><span class="ipcell">
+              <span class="font-mono text-[13px] whitespace-nowrap">{d.ip}</span>
               {#if d.tls}
                 {@const h = tlsHealth(d.tls)}
                 <button
@@ -258,7 +259,7 @@
                   {h === 'failing' ? 'TLS failing' : h === 'some' ? `TLS · ${num(d.tls.failures_24h)} failed` : 'TLS'}
                 </button>
               {/if}
-            </td>
+            </span></td>
             <td class="min-w-[120px]">
               {#if editing?.id === d.id && editing.field === 'group'}
                 <input
@@ -283,7 +284,7 @@
             <td class="text-right whitespace-nowrap tabular-nums">{rate(d.msgs_per_min)}</td>
             <td class="text-right whitespace-nowrap tabular-nums">{num(d.total_msgs)}</td>
             <td class="text-right whitespace-nowrap tabular-nums">{bytes(d.bytes_on_disk)}</td>
-            <td class="text-right">
+            <td class="acts text-right whitespace-nowrap">
               <button
                 class="ghost-btn whitespace-nowrap"
                 disabled={saving === d.id}
@@ -413,9 +414,19 @@
     color: inherit;
     cursor: pointer;
   }
+  /* Hide starts with its icon, so an inline-flex baseline would sit it higher than Block. */
+  .acts .ghost-btn {
+    vertical-align: middle;
+  }
+  .ipcell {
+    display: inline-flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 8px;
+  }
   .tls {
-    margin-left: 8px;
     padding: 1px 8px;
+    white-space: nowrap;
     border-radius: 999px;
     border: 1px solid var(--input-border);
     background: var(--chip);
@@ -424,7 +435,6 @@
     font-size: 11.5px;
     font-weight: 600;
     cursor: pointer;
-    vertical-align: 1px;
   }
   .tls.some,
   .tls.failing {
