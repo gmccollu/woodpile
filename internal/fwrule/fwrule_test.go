@@ -120,6 +120,7 @@ type fakeLinux struct {
 }
 
 func (f *fakeLinux) run(name string, args ...string) (string, error) {
+	name = filepath.Base(name) // the code runs /usr/sbin/ufw etc. when it exists
 	f.calls = append(f.calls, name+" "+strings.Join(args, " "))
 	switch name {
 	case "ufw":

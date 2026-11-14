@@ -62,6 +62,23 @@ func Exec(name string, args ...string) (string, error) {
 	return s, nil
 }
 
+// linuxTool returns ufw's or firewall-cmd's path from the system directories, so
+// `woodshed tls on`, which runs as root, never runs a same-named program found
+// earlier on PATH. It falls back to the bare name (PATH) only when none exists.
+func linuxTool(name string) string {
+	for _, dir := range []string{"/usr/sbin", "/sbin", "/usr/bin", "/bin"} {
+		if p := filepath.Join(dir, name); isFile(p) {
+			return p
+		}
+	}
+	return name
+}
+
+func isFile(p string) bool {
+	fi, err := os.Stat(p)
+	return err == nil && fi.Mode().IsRegular()
+}
+
 // Netsh is netsh's path (System32, never a netsh.exe found on PATH).
 func Netsh() string {
 	root := os.Getenv("SystemRoot")
@@ -242,12 +259,12 @@ func writeRecord(dataDir string, r Record) error {
 }
 
 func ufwActive(run Runner) bool {
-	out, err := run("ufw", "status")
+	out, err := run(linuxTool("ufw"), "status")
 	return err == nil && strings.Contains(out, "Status: active")
 }
 
 func firewalldRunning(run Runner) bool {
-	out, err := run("firewall-cmd", "--state")
+	out, err := run(linuxTool("firewall-cmd"), "--state")
 	return err == nil && strings.TrimSpace(out) == "running"
 }
 
@@ -271,7 +288,7 @@ func LinuxOpen(run Runner, dataDir string, port int) (string, error) {
 	}
 	switch {
 	case ufwActive(run):
-		out, err := run("ufw", "allow", p)
+		out, err := run(linuxTool("ufw"), "allow", p)
 		if err != nil {
 			return "", err
 		}
@@ -283,13 +300,13 @@ func LinuxOpen(run Runner, dataDir string, port int) (string, error) {
 		}
 		return "Opened " + p + " in ufw.", writeRecord(dataDir, rec)
 	case firewalldRunning(run):
-		if _, err := run("firewall-cmd", "--permanent", "--query-port="+p); err == nil {
+		if _, err := run(linuxTool("firewall-cmd"), "--permanent", "--query-port="+p); err == nil {
 			return "firewalld already allows " + p + "; left as it is.", nil
 		}
-		if _, err := run("firewall-cmd", "--permanent", "--add-port="+p); err != nil {
+		if _, err := run(linuxTool("firewall-cmd"), "--permanent", "--add-port="+p); err != nil {
 			return "", err
 		}
-		if _, err := run("firewall-cmd", "--reload"); err != nil {
+		if _, err := run(linuxTool("firewall-cmd"), "--reload"); err != nil {
 			return "", err
 		}
 		if !slices.Contains(rec.Firewalld, p) {
@@ -314,7 +331,7 @@ func LinuxClose(run Runner, dataDir string) (string, error) {
 	var errs []error
 	var keep Record
 	for _, p := range rec.Ufw {
-		if _, err := run("ufw", "delete", "allow", p); err != nil {
+		if _, err := run(linuxTool("ufw"), "delete", "allow", p); err != nil {
 			errs = append(errs, err)
 			keep.Ufw = append(keep.Ufw, p)
 			continue
@@ -323,7 +340,7 @@ func LinuxClose(run Runner, dataDir string) (string, error) {
 	}
 	reload := false
 	for _, p := range rec.Firewalld {
-		if _, err := run("firewall-cmd", "--permanent", "--remove-port="+p); err != nil {
+		if _, err := run(linuxTool("firewall-cmd"), "--permanent", "--remove-port="+p); err != nil {
 			errs = append(errs, err)
 			keep.Firewalld = append(keep.Firewalld, p)
 			continue
@@ -332,7 +349,7 @@ func LinuxClose(run Runner, dataDir string) (string, error) {
 		did = append(did, "closed "+p+" in firewalld")
 	}
 	if reload {
-		if _, err := run("firewall-cmd", "--reload"); err != nil {
+		if _, err := run(linuxTool("firewall-cmd"), "--reload"); err != nil {
 			errs = append(errs, err)
 		}
 	}
