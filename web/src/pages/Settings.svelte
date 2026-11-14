@@ -18,6 +18,7 @@
   import { failingNow, noteSave, undo, undoLastSave } from '../lib/undo.svelte';
   import PasswordForm from '../components/PasswordForm.svelte';
   import CopyButton from '../components/CopyButton.svelte';
+  import TlsPanel from '../components/TlsPanel.svelte';
 
   // The form edits friendlier units (GiB, MiB, minutes, one CIDR per line) and converts on save.
   interface Form {
@@ -27,6 +28,14 @@
     tcpEnabled: boolean;
     tcpAddr: string;
     tcpPort: number;
+    tlsEnabled: boolean;
+    tlsAddr: string;
+    tlsPort: number;
+    tlsLegacy: boolean;
+    /** Woodshed's own CA, or the user's certificate and key files. */
+    tlsSource: 'woodshed' | 'file';
+    tlsCertFile: string;
+    tlsKeyFile: string;
     allowlist: string;
     blocklist: string;
     maxDevices: number;
@@ -56,6 +65,8 @@
   let formError = $state('');
   let busy = $state(false);
   let savedAt = $state(0);
+  /** Bumped on every save, so the TLS panel reads the certificate again (the first turn-on creates it). */
+  let saves = $state(0);
   /** Set after a save that changed lan_mode or the UI port: the server restarts at a new address. */
   let moved = $state<{ url: string; lan: boolean; port: number } | null>(null);
   let history = $state<StorageHistoryEntry[] | null>(null);
@@ -79,6 +90,13 @@
       tcpEnabled: s.listeners.tcp.enabled,
       tcpAddr: s.listeners.tcp.addr,
       tcpPort: s.listeners.tcp.port,
+      tlsEnabled: !!s.listeners.tls?.enabled,
+      tlsAddr: s.listeners.tls?.addr ?? '0.0.0.0',
+      tlsPort: s.listeners.tls?.port ?? 6514,
+      tlsLegacy: !!s.listeners.tls?.allow_legacy_tls,
+      tlsSource: s.listeners.tls?.cert_file || s.listeners.tls?.key_file ? 'file' : 'woodshed',
+      tlsCertFile: s.listeners.tls?.cert_file ?? '',
+      tlsKeyFile: s.listeners.tls?.key_file ?? '',
       allowlist: s.listeners.allowlist.join('\n'),
       blocklist: (s.listeners.blocklist ?? []).join('\n'),
       maxDevices: s.listeners.max_devices,
@@ -108,6 +126,19 @@
       listeners: {
         udp: { enabled: f.udpEnabled, addr: f.udpAddr.trim(), port: n(f.udpPort) },
         tcp: { enabled: f.tcpEnabled, addr: f.tcpAddr.trim(), port: n(f.tcpPort) },
+        // Sent only to a server that has the TLS listener (1.1 and later).
+        ...(saved?.listeners.tls
+          ? {
+              tls: {
+                enabled: f.tlsEnabled,
+                addr: f.tlsAddr.trim(),
+                port: n(f.tlsPort),
+                allow_legacy_tls: f.tlsLegacy,
+                cert_file: f.tlsSource === 'file' ? f.tlsCertFile.trim() : '',
+                key_file: f.tlsSource === 'file' ? f.tlsKeyFile.trim() : '',
+              },
+            }
+          : {}),
         allowlist: parseAllowlist(f.allowlist),
         blocklist: parseAllowlist(f.blocklist),
         max_devices: n(f.maxDevices),
@@ -213,14 +244,23 @@
     };
   });
 
-  // Banners and toasts link to a section: #/settings?section=limits or section=blocklist.
-  let scrolled = false;
+  // Banners and toasts link to a section: #/settings?section=limits, blocklist, storage, tls or
+  // tls-failures. Each new link scrolls once, also when this page is already open.
+  let scrolledFor = '';
   $effect(() => {
-    const m = /section=(limits|blocklist|storage)/.exec(router.query);
-    if (scrolled || !form || !m) return;
-    scrolled = true;
+    const m = /section=(limits|blocklist|storage|tls-failures|tls)\b/.exec(router.query);
+    if (!form || !m || scrolledFor === router.query) return;
+    scrolledFor = router.query;
     const id = m[1] === 'limits' ? 'sender-limits' : m[1];
-    requestAnimationFrame(() => document.getElementById(id)?.scrollIntoView({ block: 'start', behavior: 'instant' }));
+    const to = () => document.getElementById(id)?.scrollIntoView({ block: 'start', behavior: 'instant' });
+    requestAnimationFrame(to);
+    // Lists above the section (refused senders, storage history) arrive a moment later and push
+    // it down: land on it again unless the user has scrolled since.
+    const y = { at: -1 };
+    requestAnimationFrame(() => (y.at = scrollY));
+    setTimeout(() => {
+      if (scrollY === y.at) to();
+    }, 700);
   });
 
   // Compared through the form, so key order and lists an older server omits don't count as edits.
@@ -236,6 +276,13 @@
     tcpEnabled: 'TCP listener',
     tcpAddr: 'TCP bind address',
     tcpPort: 'TCP port',
+    tlsEnabled: 'Syslog over TLS',
+    tlsAddr: 'TLS bind address',
+    tlsPort: 'TLS port',
+    tlsLegacy: 'Allow TLS 1.0 and 1.1',
+    tlsSource: 'TLS certificate',
+    tlsCertFile: 'TLS certificate file',
+    tlsKeyFile: 'TLS private key file',
     allowlist: 'Sender allowlist',
     blocklist: 'Blocklist',
     maxDevices: 'Active devices',
@@ -296,6 +343,12 @@
     'listeners.tcp.enabled',
     'listeners.tcp.addr',
     'listeners.tcp.port',
+    'listeners.tls.enabled',
+    'listeners.tls.addr',
+    'listeners.tls.port',
+    'listeners.tls.allow_legacy_tls',
+    'listeners.tls.cert_file',
+    'listeners.tls.key_file',
     'listeners.allowlist',
     'listeners.blocklist',
     'listeners.max_devices',
@@ -367,6 +420,7 @@
         auth.movedTo = url;
       }
       savedAt = Date.now();
+      saves++;
       setTimeout(() => (savedAt = 0), 2500);
       etag = res.etag;
       if (!auth.movedTo) {
@@ -683,6 +737,89 @@
       {/if}
     </section>
 
+    {#if saved?.listeners.tls}
+      <section class="card" id="tls">
+        <h2 class="sec">Syslog over TLS</h2>
+        <p class="hint mt-0">
+          A third listener, for devices that can encrypt their logs on the way (TCP with TLS). It's off until you turn it on. Devices import Woodshed's CA
+          certificate once; a renewed certificate needs nothing on them.
+        </p>
+        <fieldset class="tlsrow">
+          <legend class="sr-only">TLS listener</legend>
+          <label class="flex items-center gap-2 font-semibold sw">
+            <input type="checkbox" bind:checked={form.tlsEnabled} aria-invalid={!!err('listeners.tls.enabled')} aria-describedby="err-listeners.tls.enabled" />
+            Syslog over TLS
+          </label>
+          <label class="lbl grow-1">
+            <span>Bind address</span>
+            <input class="field font-mono" bind:value={form.tlsAddr} aria-invalid={!!err('listeners.tls.addr')} aria-describedby="err-listeners.tls.addr" spellcheck="false" />
+            {@render fieldError('listeners.tls.addr')}
+          </label>
+          <label class="lbl w-40">
+            <span>TLS port</span>
+            <input class="field" type="number" bind:value={form.tlsPort} aria-invalid={!!err('listeners.tls.port')} aria-describedby="err-listeners.tls.port hint-tlsport" />
+            {@render fieldError('listeners.tls.port')}
+          </label>
+          <div class="basis-full">
+            <span class="hint" id="hint-tlsport">Default 6514. Ports below 1024 need the same rights as 514.</span>
+            {@render fieldError('listeners.tls.enabled')}
+          </div>
+        </fieldset>
+        {#if form.tlsEnabled && !saved.listeners.tls.enabled}
+          <div class="lanwarn" role="note">
+            <b>Before you turn on TLS logging on a firewall:</b> some firewalls block traffic through them when a TLS syslog server can't be reached, or its
+            certificate fails, unless an option permits traffic while the log host is down. Check that option first.
+            {#if isWindows}On Windows, also run <code>woodshed tls on</code> once in an administrator prompt, so the firewall lets devices in.{/if}
+          </div>
+        {/if}
+
+        <label class="mt-4 flex items-start gap-3">
+          <input type="checkbox" bind:checked={form.tlsLegacy} aria-invalid={!!err('listeners.tls.allow_legacy_tls')} aria-describedby="hint-legacy err-listeners.tls.allow_legacy_tls" class="mt-1" />
+          <span>
+            <span class="font-semibold">Allow TLS 1.0 and 1.1</span>
+            <span class="hint block" id="hint-legacy">
+              For older senders that can't use TLS 1.2 or 1.3. A banner reminds you while it's on; turn it off once they're updated.
+            </span>
+          </span>
+        </label>
+        {@render fieldError('listeners.tls.allow_legacy_tls')}
+
+        <fieldset class="src mt-4">
+          <legend class="text-[14px] font-semibold">Certificate</legend>
+          <label class="flex items-start gap-2 text-[14px]">
+            <input type="radio" name="tls-source" value="woodshed" bind:group={form.tlsSource} class="mt-1" />
+            <span>Woodshed's own CA <span class="hint">(recommended: devices import one CA certificate, and renewals don't change it)</span></span>
+          </label>
+          <label class="mt-1 flex items-start gap-2 text-[14px]">
+            <input type="radio" name="tls-source" value="file" bind:group={form.tlsSource} class="mt-1" />
+            <span>Your own certificate <span class="hint">(from your CA: a PEM chain and its key)</span></span>
+          </label>
+          {#if form.tlsSource === 'file'}
+            <div class="mt-3 grid gap-4 sm:grid-cols-2">
+              <label class="lbl">
+                <span>TLS certificate file</span>
+                <input class="field font-mono" bind:value={form.tlsCertFile} placeholder="/path/to/fullchain.pem" spellcheck="false" aria-invalid={!!err('listeners.tls.cert_file')} aria-describedby="err-listeners.tls.cert_file" />
+                {@render fieldError('listeners.tls.cert_file')}
+              </label>
+              <label class="lbl">
+                <span>TLS private key file</span>
+                <input class="field font-mono" bind:value={form.tlsKeyFile} placeholder="/path/to/privkey.pem" spellcheck="false" aria-invalid={!!err('listeners.tls.key_file')} aria-describedby="err-listeners.tls.key_file" />
+                {@render fieldError('listeners.tls.key_file')}
+              </label>
+            </div>
+            <p class="hint mt-2 mb-0">
+              Full paths on the machine running Woodshed. The certificate needs the serverAuth extended key usage (or none). Woodshed reads the files again
+              on every save and on Retry.
+            </p>
+          {/if}
+        </fieldset>
+
+        <div class="mt-4">
+          <TlsPanel enabled={saved.listeners.tls.enabled} port={saved.listeners.tls.port} reload={saves} />
+        </div>
+      </section>
+    {/if}
+
     <section class="card">
       <h2 class="sec" id="storage">Storage</h2>
       <p class="hint mt-0">Logs are deleted oldest first when either limit is reached. If the disk runs low, Woodshed deletes more, and never fills it.</p>
@@ -979,8 +1116,44 @@
     border: 1px solid var(--info-border);
     background: var(--info-bg);
   }
-  #storage {
+  #storage,
+  #tls {
     scroll-margin-top: 90px;
+  }
+  .tlsrow {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: 12px 18px;
+    border: 0;
+    border-top: 1px solid var(--divider);
+    padding: 14px 0 4px;
+    margin: 0;
+  }
+  .tlsrow .sw {
+    padding-top: 30px;
+    min-width: 160px;
+  }
+  .tlsrow .grow-1 {
+    flex: 1;
+    min-width: 200px;
+  }
+  .tlsrow .hint {
+    margin: 0;
+  }
+  .src {
+    border: 0;
+    border-top: 1px solid var(--divider);
+    margin: 18px 0 0;
+    padding: 14px 0 0;
+  }
+  .src legend {
+    padding: 0;
+    margin-bottom: 6px;
+  }
+  .lanwarn code {
+    font-family: var(--font-mono);
+    font-size: 12.5px;
   }
   .estimate {
     padding: 10px 14px;

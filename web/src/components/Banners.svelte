@@ -3,6 +3,7 @@
   import { live, refreshStatus } from '../lib/status.svelte';
   import { dismiss, isDismissed, prune } from '../lib/alerts.svelte';
   import { undo, undoLastSave } from '../lib/undo.svelte';
+  import { go, router } from '../lib/router.svelte';
   import Icon from './Icon.svelte';
 
   // The install guide's container notes (raising net.core.rmem_max on the host).
@@ -42,6 +43,15 @@
     }
     return out;
   });
+
+  /** Action tls_renew: open Settings → Syslog over TLS, where Renew is. It never renews by itself. */
+  function openTls() {
+    if (router.route === 'settings' && router.query === 'section=tls') {
+      document.getElementById('tls')?.scrollIntoView({ block: 'start', behavior: 'instant' });
+      return;
+    }
+    go('settings', 'section=tls');
+  }
 
   async function retry() {
     retrying = true;
@@ -88,6 +98,17 @@
           <a class="text-link underline" href={CONTAINERS_DOC} target="_blank" rel="noopener noreferrer">Install guide → Containers</a>.
         </div>
       {/if}
+      {#if b.kind === 'tls_legacy'}
+        <div class="detail-text">
+          Turn it off in <a class="text-link underline" href="#/settings?section=tls">Settings → Syslog over TLS</a>.
+        </div>
+      {/if}
+      {#if b.kind === 'tls_firewall'}
+        <div class="detail-text">
+          Open a Command Prompt or PowerShell with <b>Run as administrator</b>. The command is also in
+          <a class="text-link underline" href="#/settings?section=tls">Settings → Syslog over TLS</a>.
+        </div>
+      {/if}
       {#if b.kind === 'listener_bind'}
         {#each lines as ln (ln.key)}
           <div class="detail-text" data-holder>
@@ -107,6 +128,9 @@
         <button class="pill-btn" onclick={undoLastSave} disabled={undo.busy}>
           <Icon name="retry" size={15} />{undo.busy ? 'Undoing…' : 'Undo last save'}
         </button>
+      {/if}
+      {#if b.action === 'tls_renew'}
+        <button class="pill-btn" onclick={openTls}>Open TLS settings</button>
       {/if}
       {#if b.action === 'retry_listeners'}
         <button class={b.kind === 'listener_bind' && undo.saved ? 'ghost-btn' : 'pill-btn'} onclick={retry} disabled={retrying}>
