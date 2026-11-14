@@ -49,6 +49,7 @@ func (c Config) validate(goos string, prev *Config) Errors {
 	l := c.Listeners
 	checkListener(e, goos, "listeners.udp", l.UDP)
 	checkListener(e, goos, "listeners.tcp", l.TCP)
+	checkTLSListener(e, goos, l)
 	checkBlocklist(e, l)
 	for i, s := range l.Allowlist {
 		if _, err := parseAllow(s); err != nil {
@@ -86,7 +87,7 @@ func (c Config) validate(goos string, prev *Config) Errors {
 	switch p := c.UI.Port; {
 	case p < 1 || p > 65535:
 		e["ui.port"] = "must be between 1 and 65535"
-	case p == l.UDP.Port || p == l.TCP.Port:
+	case p == l.UDP.Port || p == l.TCP.Port || p == l.TLS.Port:
 		e["ui.port"] = "can't be the same as a syslog listener port"
 	}
 
@@ -111,7 +112,14 @@ func (c Config) validate(goos string, prev *Config) Errors {
 // checkCertPair: ui.cert_file and ui.key_file are both empty, or both absolute
 // paths to existing files.
 func checkCertPair(e Errors, ui UI) {
-	cert, key := strings.TrimSpace(ui.CertFile), strings.TrimSpace(ui.KeyFile)
+	checkFilePair(e, "ui", ui.CertFile, ui.KeyFile, "the self-signed certificate")
+}
+
+// checkFilePair checks a <prefix>.cert_file / <prefix>.key_file pair: both
+// empty (empty names what that means), or both absolute paths to readable
+// files.
+func checkFilePair(e Errors, prefix, certPath, keyPath, empty string) {
+	cert, key := strings.TrimSpace(certPath), strings.TrimSpace(keyPath)
 	if cert == "" && key == "" {
 		return
 	}
@@ -121,7 +129,7 @@ func checkCertPair(e Errors, ui UI) {
 	check := func(k, p, other, what string) {
 		switch {
 		case p == "":
-			e[k] = "is required when " + other + " is set (or leave both empty for the self-signed certificate)"
+			e[k] = "is required when " + other + " is set (or leave both empty for " + empty + ")"
 		case !isAbs(p):
 			e[k] = "must be an absolute path"
 		default:
@@ -134,8 +142,8 @@ func checkCertPair(e Errors, ui UI) {
 			}
 		}
 	}
-	check("ui.cert_file", cert, "key_file", "certificate")
-	check("ui.key_file", key, "cert_file", "key")
+	check(prefix+".cert_file", cert, "key_file", "certificate")
+	check(prefix+".key_file", key, "cert_file", "key")
 }
 
 func checkListener(e Errors, goos, key string, ln Listener) {

@@ -61,6 +61,8 @@ type Config struct {
 type Listeners struct {
 	UDP Listener `toml:"udp" json:"udp" comment:"Syslog over UDP. addr 0.0.0.0 (or ::) listens on every interface, IPv4 and IPv6."`
 	TCP Listener `toml:"tcp" json:"tcp" comment:"Syslog over TCP (octet-counted or newline-framed, detected per message)."`
+	// TLS is syslog over TLS (tls.go), off by default.
+	TLS TLSListener `toml:"tls" json:"tls" comment:"Syslog over TLS (RFC 5425), TCP 6514 by default. Off until you turn it on."`
 	// Allowlist holds IPs or CIDRs; empty accepts every sender.
 	Allowlist []string `toml:"allowlist" json:"allowlist" comment:"Accept messages only from these IPs or CIDRs, e.g. [\"192.0.2.0/24\", \"2001:db8::1\"]. Empty accepts everyone."`
 	// Blocklist holds IPs or CIDRs whose messages are refused; it wins over the
@@ -126,6 +128,7 @@ func Default() Config {
 		Listeners: Listeners{
 			UDP:             Listener{Enabled: true, Addr: DefaultListenAddr, Port: DefaultSyslogPort},
 			TCP:             Listener{Enabled: true, Addr: DefaultListenAddr, Port: DefaultSyslogPort},
+			TLS:             TLSListener{Addr: DefaultListenAddr, Port: DefaultTLSPort},
 			Allowlist:       []string{},
 			Blocklist:       []string{},
 			UDPRcvbufBytes:  DefaultUDPRcvbufBytes,
