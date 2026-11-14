@@ -27,6 +27,7 @@ type run struct {
 	ex           *matcher        // nil: no exclude
 	fields       *fieldMatcher   // nil: no app or host filter
 	sevs         hub.SeveritySet // 0: all
+	facs         FacilitySet     // 0: all
 
 	need int // results still wanted (bounds the compressed-file ring)
 	// cacheKey is the search's parameters and range, for the caches ("": don't cache).
@@ -51,6 +52,11 @@ type run struct {
 
 	unesc []byte
 	msg   model.Message // fields' scratch parse
+
+	// sum is set for a summary scan (sumscan.go): every match goes to it as
+	// it's found, and a compressed-file pass that runs out of budget keeps its
+	// reader for the next request instead of starting again from the top.
+	sum *sumCollect
 }
 
 // expired reports whether the budget or the request is over.
@@ -89,14 +95,24 @@ func (r *run) check(line []byte) (int64, []byte, bool) {
 	if !ok || ms < r.fromMs || ms >= r.toMs {
 		return 0, nil, false
 	}
-	if r.sevs != 0 || r.m.kind != matchAll || r.ex != nil || r.fields != nil {
+	if r.sevs != 0 || r.facs != 0 || r.m.kind != matchAll || r.ex != nil || r.fields != nil {
 		raw := esc
 		if bytes.IndexByte(esc, '\\') >= 0 {
 			r.unesc = logfile.Unescape(r.unesc[:0], esc)
 			raw = r.unesc
 		}
-		if r.sevs != 0 && !r.sevs.Has(Severity(raw)) {
-			return 0, nil, false
+		if r.sevs != 0 || r.facs != 0 {
+			p := PRI(raw)
+			sev, fac := model.Unknown, model.Unknown
+			if p >= 0 {
+				sev, fac = p&7, p>>3
+			}
+			if r.sevs != 0 && !r.sevs.Has(sev) {
+				return 0, nil, false
+			}
+			if r.facs != 0 && !r.facs.Has(fac) {
+				return 0, nil, false
+			}
 		}
 		if !r.m.match(raw) {
 			return 0, nil, false
@@ -495,6 +511,9 @@ func (s *stream) passDesc(r *run, fi *fileInfo) error {
 	if hi < 0 {
 		hi = s.re
 	}
+	if r.sum != nil {
+		return s.sumPass(r, fi, lo, hi)
+	}
 	key := passKey{fi.ID, r.cacheKey}
 	if r.cacheKey != "" && s.hint == 0 {
 		ent := r.e.passes.get(key, lo, hi)
@@ -625,7 +644,7 @@ func (r *run) prefetch() bool {
 			defer wg.Done()
 			for j := range work {
 				c := &run{e: r.e, ctx: r.ctx, deadline: r.deadline, now: r.now, fromMs: r.fromMs, toMs: r.toMs, desc: true,
-					m: r.m, ex: r.ex, fields: r.fields, sevs: r.sevs, need: r.need, cacheKey: r.cacheKey, ringBytes: r.ringBytes}
+					m: r.m, ex: r.ex, fields: r.fields, sevs: r.sevs, facs: r.facs, need: r.need, cacheKey: r.cacheKey, ringBytes: r.ringBytes}
 				fi := &j.fi
 				o, err := r.e.open(r.ctx, fi)
 				if err != nil {

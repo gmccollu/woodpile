@@ -66,6 +66,14 @@ type ManifestFilters struct {
 	App        []string `json:"app"`     // program/tag values; [] = all
 	Host       []string `json:"host"`    // header hostnames; [] = all
 	Exclude    string   `json:"exclude"` // "" = nothing excluded
+	// 1.1 (docs/api.md): the data type, the q/exclude syntax, facilities and the
+	// exclude forms of devices, app and host.
+	Type           string   `json:"type"`            // "syslog"
+	Syntax         string   `json:"syntax"`          // "text" | "terms"
+	Facilities     []any    `json:"facilities"`      // [] = all; ["none"] = nothing
+	ExcludeDevices []string `json:"exclude_devices"` // [] = none excluded
+	ExcludeApp     []string `json:"exclude_app"`
+	ExcludeHost    []string `json:"exclude_host"`
 }
 
 // ManifestFile is one log file in the zip.
@@ -275,7 +283,10 @@ func (m *Manager) build(ctx context.Context, e *entry) (buildResult, error) {
 		Request: ManifestReq{From: info.From, To: info.To, Devices: devs, Filters: ManifestFilters{
 			Devices: nonNil(info.Named), Group: info.Filters.Group, Ungrouped: info.Filters.Ungrouped, Severities: SeverityList(info.Filters.Severities),
 			Q: info.Filters.Q, Regex: info.Filters.Regex, Case: info.Filters.Case,
-			App: nonNil(info.Filters.Apps), Host: nonNil(info.Filters.Hosts), Exclude: info.Filters.Exclude}},
+			App: nonNil(info.Filters.Apps), Host: nonNil(info.Filters.Hosts), Exclude: info.Filters.Exclude,
+			Type: "syslog", Syntax: syntaxName(info.Filters.Terms), Facilities: info.Filters.Facilities.List(),
+			ExcludeDevices: nonNil(info.Filters.ExcludeDevices), ExcludeApp: nonNil(info.Filters.ExcludeApps),
+			ExcludeHost: nonNil(info.Filters.ExcludeHosts)}},
 		Files: nonNil(files), Lines: res.lines, Gaps: nonNil(gaps), GapsNote: GapsNote,
 		EventsFile: "woodshed-events.log", Events: len(inRange),
 	}
@@ -318,6 +329,13 @@ func nonNil[T any](s []T) []T {
 		return []T{}
 	}
 	return s
+}
+
+func syntaxName(terms bool) string {
+	if terms {
+		return "terms"
+	}
+	return "text"
 }
 
 func readme(info Info) string {
@@ -371,6 +389,9 @@ func filterLines(f Filters) []string {
 		if f.Regex {
 			bits = append(bits, "regular expression")
 		}
+		if f.Terms {
+			bits = append(bits, "boolean terms")
+		}
 		if f.Case {
 			bits = append(bits, "case-sensitive")
 		} else {
@@ -385,14 +406,30 @@ func filterLines(f Filters) []string {
 		}
 		out = append(out, "Severities: "+strings.Join(sev, ", "))
 	}
+	if f.Facilities != 0 {
+		var fac []string
+		for _, v := range f.Facilities.List() {
+			fac = append(fac, fmt.Sprint(v))
+		}
+		out = append(out, "Facilities: "+strings.Join(fac, ", "))
+	}
 	if f.Q != "" {
 		out = append(out, fmt.Sprintf("Text: %q%s", f.Q, how()))
 	}
 	if len(f.Apps) > 0 {
 		out = append(out, "Program/tag: "+strings.Join(f.Apps, ", "))
 	}
+	if len(f.ExcludeApps) > 0 {
+		out = append(out, "Program/tag left out: "+strings.Join(f.ExcludeApps, ", "))
+	}
 	if len(f.Hosts) > 0 {
 		out = append(out, "Host: "+strings.Join(f.Hosts, ", "))
+	}
+	if len(f.ExcludeHosts) > 0 {
+		out = append(out, "Host left out: "+strings.Join(f.ExcludeHosts, ", "))
+	}
+	if len(f.ExcludeDevices) > 0 {
+		out = append(out, "Devices left out: "+strings.Join(f.ExcludeDevices, ", "))
 	}
 	if f.Exclude != "" {
 		out = append(out, fmt.Sprintf("Exclude: %q%s", f.Exclude, how()))

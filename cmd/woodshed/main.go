@@ -12,8 +12,9 @@ import (
 var (
 	version = "0.0.0-dev"
 	commit  = "none"
-	// releasesURL is shown on the About page; empty until the project has a public home.
-	releasesURL = ""
+	// releasesURL is the releases page: the About page links to it, and the
+	// update check's banner links to a release on it (SPEC §10.2).
+	releasesURL = "https://github.com/gmccollu/woodshed/releases"
 )
 
 const usage = `usage: woodshed [<command> [flags]]
@@ -31,6 +32,7 @@ commands:
   set-password    set the UI password (for servers without a browser)
   lan-mode        turn LAN mode on or off (HTTPS on the network, with a login)
   tls             syslog over TLS: on, off, renew the certificate, status
+  update-check    turn the daily update check on or off (or back to asking)
   reset-password  remove the UI password and turn LAN mode off
   send            send test messages to a syslog server
   bench           measure sustained throughput
@@ -58,6 +60,7 @@ func init() {
 		{"set-password", cmdSetPassword},
 		{"lan-mode", cmdLANMode},
 		{"tls", cmdTLS},
+		{"update-check", cmdUpdateCheck},
 		{"reset-password", cmdResetPassword},
 		{"send", cmdSend},
 		{"bench", cmdBench},

@@ -8,6 +8,7 @@ import (
 	"github.com/gmccollu/woodshed/internal/peer"
 	"io"
 	"log/slog"
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"net/netip"
@@ -29,18 +30,43 @@ import (
 var quiet = slog.New(slog.NewTextHandler(io.Discard, nil))
 
 // freePort returns a port that is free for both UDP and TCP on 127.0.0.1.
+//
+// Windows hands out ephemeral ports in sequence, and a run of them can sit inside
+// the other protocol's excluded port range (seen on the windows-11-arm runner:
+// 50 TCP ports in a row with UDP refused on each). So the tries alternate between
+// an ephemeral UDP port (then TCP on the same number) and a random port below the
+// ephemeral range (UDP and TCP both).
 func freePort(t *testing.T) int {
 	t.Helper()
-	for range 50 {
-		l, err := net.Listen("tcp", "127.0.0.1:0")
-		if err != nil {
-			t.Fatal(err)
-		}
-		port := l.Addr().(*net.TCPAddr).Port
+	both := func(port int) bool {
 		u, err := net.ListenPacket("udp", fmt.Sprintf("127.0.0.1:%d", port))
+		if err != nil {
+			return false
+		}
+		defer u.Close()
+		l, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+		if err != nil {
+			return false
+		}
 		l.Close()
-		if err == nil {
+		return true
+	}
+	for i := range 1000 {
+		if i%2 == 0 {
+			u, err := net.ListenPacket("udp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			port := u.LocalAddr().(*net.UDPAddr).Port
+			l, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
 			u.Close()
+			if err == nil {
+				l.Close()
+				return port
+			}
+			continue
+		}
+		if port := 20000 + rand.IntN(20000); both(port) {
 			return port
 		}
 	}

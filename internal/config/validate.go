@@ -103,6 +103,9 @@ func (c Config) validate(goos string, prev *Config) Errors {
 	if q.OfflineAfterSeconds < 1 {
 		e["quiet.offline_after_seconds"] = "must be at least 1"
 	}
+	if !ValidUpdateCheck(c.Updates.Check) {
+		e["updates.check"] = `must be "ask", "on" or "off"`
+	}
 	if len(e) == 0 {
 		return nil
 	}

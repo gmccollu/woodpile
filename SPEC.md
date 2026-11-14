@@ -378,7 +378,7 @@ product or a SIEM. Each new data type has to fit that rule (decided 2026-11-11).
 ## 10. 1.1 design (draft, 2026-11-13)
 
 Three features: Events v2 (§10.1), the opt-in update check (§10.2) and the TLS syslog listener (§10.3). Owner decisions are marked **(decided)**; the delegated calls are
-listed in §10.4. The API contract is in `docs/api.md` → "1.1 (planned)".
+listed in §10.4. The API contract is in `docs/api.md` (each feature's own section).
 
 ### 10.1 Events v2
 
@@ -664,7 +664,8 @@ If there's a newer version, it shows a banner that links to that version's relea
 - A new module-wide static check: only an allowlist of packages may use the client-side network and process APIs that
   `TestNoClientNetworkAPIs` forbids, namely `internal/updatecheck` plus the packages that use them today
   (`internal/loadgen` for `woodshed send` and `bench`, `internal/peer` for loopback to the local Woodshed, and the OS
-  helpers in `internal/listen`, `internal/service` and `cmd/woodshed`). Adding a package to it is a reviewed change.
+  helpers in `internal/listen`, `internal/service`, `internal/fwrule` (the TLS listener's host-firewall rule, §10.3.6;
+  added at the TLS merge, TLS decision 11) and `cmd/woodshed`). Adding a package to it is a reviewed change.
   The releases host appears in no other package.
 - A new runtime test, `TestOnlyUpdateCheckDials` in `internal/server`. It runs the real server with a fake clock, the
   default transport and resolver hooked as in `TestNoHandlerDialsOut`, and the checker's dialer pointed at a local TLS
@@ -680,7 +681,7 @@ If there's a newer version, it shows a banner that links to that version's relea
   - Bad responses (a redirect, 1 MiB + 1 byte, not JSON, an off-site `html_url`, no release) give an error in
     Settings, no banner, and no retry beyond the one.
 
-**Doc wording.** Apply this in the PR that ships the checker, not before. While 1.0 is the latest release, its docs
+**Doc wording** (applied in the PR that ships the checker, build 2026-11-13). Apply this in the PR that ships the checker, not before. While 1.0 is the latest release, its docs
 have to keep saying that it makes no outbound connections, and SECURITY.md's policy covers the latest release.
 Editing them on main now would make them wrong for 1.0 users, so the exact wording is here instead.
 
@@ -911,7 +912,7 @@ The service account can't change the host firewall, and shouldn't be able to. So
   and ask a running service to apply it (or say it isn't running). `status` prints the listener, the fingerprints,
   the expiry and the last failures.
 
-#### 10.3.7 API (docs/api.md → "1.1 (planned)")
+#### 10.3.7 API (docs/api.md → "TLS syslog listener")
 `GET /api/tls` (state, fingerprints, expiry, the firewall hint), `POST /api/tls/renew` (`{"new_ca": false}`),
 `GET /api/tls/ca.pem` and `ca.der`, `GET /api/tls/failures`, a `tls` object on each device in `/api/devices`,
 `listeners.tls` in `/api/settings`, the listener in `/api/status`, and the banners `tls_legacy`,
@@ -1033,8 +1034,80 @@ Answers to the TLS questions:
 6. Client-certificate verification (`client_ca`) comes later, if asked for.
 7. The installers' `WOODSHED_UPDATE_CHECK` pass-through: an acceptance item, below.
 
-**Decided (build, 2026-11-13)**, the smallest choices the TLS build had to make where §10.3 and docs/api.md left
-room:
+Update check, **decided (build, 2026-11-13)** (the smallest choice where §10.2 or docs/api.md left it open):
+1. A release build, which may check and ask: a SemVer version that isn't 0.0.0, with no build metadata, and a
+   prerelease part, if any, like a real tag's (`rc1`, `rc.1`, `beta2`, `alpha`). A `git describe` version
+   (`1.0.0-5-gabc1234-dirty`), a CI snapshot (`1.0.1-snapshot.abc1234`) and `-dev`, `-ci` or `-dirty` builds never
+   check or ask.
+2. `main.releasesURL` is now `https://github.com/gmccollu/woodshed/releases` (it was empty "until the project has a
+   public home"), so release builds have a `releases_url`; the About page links to it too.
+3. `html_url`: exactly `releases_url + "/tag/" + tag_name` gives that link; empty or anything else under
+   `releases_url` gives `releases_url`; anything outside `releases_url` (another host, or a look-alike such as
+   `…/releases.evil.example/…`) is the "off-site `html_url`" of the tests: a `bad_json` error and no banner.
+4. A considered entry whose `tag_name` isn't a version, or a `stable` entry with a prerelease version (a
+   `prerelease` one without), is `bad_json`. A response whose `Content-Type` isn't `application/json` is `bad_json`.
+5. Turning it on checks 5–30 s later. **Check now** while a check is running counts that one.
+6. After a restart within 24 h of a check, the next is exactly 24 h after it, even when that check failed (a
+   pending retry isn't kept across a restart).
+7. `latest` is `null` whenever `check` isn't `"on"` (still asking, too), not only after turning it off.
+8. `GET /api/settings` always has `updates`; a `PUT` without it keeps the setting (1.0 clients and scripts).
+9. `POST /api/updates/check` answers `202` with no body, and `409` in a build that can't check as well.
+   `POST /api/updates/dismiss` with a `version` that isn't one is a `400`.
+10. The request is HTTP/1.1 and its connection is closed after each check, without Go's `DisableKeepAlives`,
+    which would add a fifth header (`Connection: close`).
+11. Error messages are Woodshed's own; an HTTP status shows its number and Go's text, never the server's.
+12. `woodshed update-check` accepts any case and surrounding spaces; an invalid value exits 2 and changes nothing.
+    With no config yet it writes one with the defaults a server would use there, owned like its folder (the folder
+    must exist). `--no-restart` is for the installers, which run it before they start or restart the service.
+13. The update banners are in the run-state file too, so `woodshed status` lists them; it also has an `Updates`
+    line (the setting and the last check).
+14. The MSI runs it through WixQuietExec (its output goes to the install log) with `Return="ignore"`, before
+    `StartServices`. The pkg's and the deb/rpm scripts print the warning and carry on.
+
+Events v2, **decided (build, 2026-11-13)**: small calls made while building §10.1, where the contract was silent.
+1. Terms grammar: inside a phrase, a backslash before anything other than `"` or `\` is itself (`"C:\temp"` is
+   `C:\temp`). A phrase followed directly by a word (`"a"b`) is two terms. Character positions count code points; the
+   4 KiB limit counts UTF-8 bytes. The checks run in this order: length, quotes and empty phrases, the 32-term count,
+   then structure and nesting; a missing operand names the first operator affected (`a AND OR b` names AND). A terms
+   `exclude` with no terms (only spaces) excludes nothing.
+2. The field panel groups host and program/tag values the way their filters match: ignoring case, and a leading `%`
+   for program/tag. The row shows the first spelling seen, so a value's count is what clicking it returns.
+   `filterable` is also false for a value with surrounding blanks and for a program/tag ending in `*` (the filter
+   would read it as a prefix).
+3. `distinct` counts the values with a count in `[counted_from, to)`.
+4. A summary cursor is good for one request: each response issues the next one. Reusing an older cursor, or a request
+   that was cancelled mid-scan, gets the "expired" 400, so counts are never added twice.
+5. The index histogram uses the per-minute stats for a bucket (clipped to `[from, to)`) that is whole minutes and
+   starts in the last 24 h, and the minute and hourly stats together for one that is whole hours, at least 1 h, and
+   starts in the last 7 days. Anything else (a bucket cut off a minute boundary by `from` or `to`, or older data) comes
+   from the checkpoints and may be `approx`. A device's oldest-file bucket is spread from its checkpoints, which for a
+   quiet device (one checkpoint per file) makes that bucket rough.
+6. Presets in the UI resolve to `to` = now rounded up to the whole minute, `from` = `to` − preset, on Events and Export,
+   so the default 1 h view is on whole minutes (§10.1.2).
+7. Summary parameters: `top` above 50 and `budget_ms` above 10,000 are clamped (as search clamps `limit`); `order` and
+   `limit` are ignored; `histogram=false` leaves the `histogram` key out; an unknown `fields` key is a 400
+   `fields: unknown field "x".`
+8. Saved searches: IDs are `ss_` and 8 hex digits; the ETag is `"<id>.<version>"`; `If-Match: *` is treated as no
+   `If-Match`. A missing `query.range` is `{"last": "24h"}` (search's default range); `syntax` defaults to `text` and
+   `order` to `desc`. `last` is 1–7 digits and `m`, `h` or `d`. Terms with regex is reported on `query.syntax`.
+   `missing_group` is true when no non-hidden device is in the group (those are the only ones the group searches).
+9. The UI's 60 s auto-continue counts the summed `elapsed_ms` of the summary responses, not wall time. Cancel on the
+   results also stops the summary; the panel keeps its counts and offers **Count the rest**.
+10. Field panel clicks: including a value takes it out of the matching exclude list and the other way round;
+    including a device while a group is picked switches to that device; excluding the last value of a closed field
+    sends `none`. A drag on the histogram snaps to bucket edges and stays inside the current range; a click zooms into
+    one bucket.
+11. A saved relative range that isn't one of the presets (say `30m`) opens as a custom range ending now; saving it
+    again makes it absolute.
+12. Export's README.txt names the new filters in plain words ("Facilities: …", "Program/tag left out: …",
+    "Devices left out: …", "boolean terms").
+13. A summary keeps each compressed file's paused pass (its open reader) in its server-side state, at most 8 per
+    summary, so a long range over gzipped days decompresses each byte once across requests. They close with the
+    state (complete, evicted, expired after 10 min, or cancelled). Up to 4 streams (half the CPUs) decompress in
+    parallel within the request's budget.
+
+TLS, **decided (build, 2026-11-13)**: the smallest choices the TLS build had to make where §10.3 and docs/api.md
+left room:
 1. The MSI creates the TLS rule through a custom action (`woodshed-aclfix --tls-firewall ensure|remove`, the same
    `internal/fwrule` code as `woodshed install`), not `fw:FirewallException`. The WiX extension can create a rule
    disabled, but its uninstall step deletes the rule, and a major upgrade removes the old product before the new one
@@ -1067,6 +1140,8 @@ room:
    gaps include the TLS listener's.
 10. `woodshed send --proto tls` uses port 6514 unless `--port` is given and needs `--ca FILE` (PEM or DER) or
     `--insecure`; `woodshed bench --proto all` includes TLS.
+11. `internal/fwrule` joins §10.2's allowlist of packages that may use process APIs (`os/exec`): it runs only the host
+    firewall's own programs (netsh, ufw, firewall-cmd) and never opens a network connection.
 
 **Acceptance items for the 1.1 build** (the install smoke tests confirm each, or the design changes before release):
 - The WiX firewall extension in use can ship the TLS 6514 rule present but disabled, and an upgrade keeps its state.

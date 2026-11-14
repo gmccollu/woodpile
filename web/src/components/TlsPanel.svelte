@@ -1,7 +1,7 @@
 <script lang="ts">
   // Settings → Syslog over TLS, the part that comes from GET /api/tls rather than the form:
   // the CA and certificate, downloads, Renew and Replace CA, the firewall hint and the
-  // failed handshakes (docs/api.md → 1.1 (planned) → TLS syslog listener).
+  // failed handshakes (docs/api.md → TLS syslog listener).
   import { ApiError, downloadCa, getTls, getTlsFailures, renewTls, type CaFormat, type TlsFailure, type TlsState } from '../lib/api';
   import { ago, dateTime, num } from '../lib/format';
   import { deviceName, live, refreshStatus } from '../lib/status.svelte';

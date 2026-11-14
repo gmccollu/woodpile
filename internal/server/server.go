@@ -32,6 +32,7 @@ import (
 	"github.com/gmccollu/woodshed/internal/peer"
 	"github.com/gmccollu/woodshed/internal/search"
 	"github.com/gmccollu/woodshed/internal/store"
+	"github.com/gmccollu/woodshed/internal/updatecheck"
 )
 
 // DefaultShutdownTimeout bounds the whole shutdown. It stays under the 20 s the
@@ -56,6 +57,10 @@ type Options struct {
 	// FindPeer looks for another running Woodshed (default peer.Find, which asks
 	// the OS service manager). Tests replace it.
 	FindPeer func(context.Context, peer.Options) (peer.Info, bool)
+
+	// updateTesting points the update check at a test server, on a fake clock
+	// (tests in this package only; nothing else can set it).
+	updateTesting *updatecheck.TestHooks
 }
 
 // Server is an opened Woodshed service. Call Run once.
@@ -189,6 +194,12 @@ func Open(cfgPath string, opts Options) (*Server, error) {
 		exports: s.exports,
 	})
 	s.be.peers.find = opts.FindPeer
+	// The update check: nothing touches the network unless updates.check is "on"
+	// in a release build (SPEC §10.2).
+	s.be.updates = updatecheck.New(updatecheck.Options{
+		Version: opts.Version, ReleasesURL: opts.ReleasesURL, DataDir: dataDir,
+		Check: cfg.Updates.Check, Logger: log, Testing: opts.updateTesting,
+	})
 	s.be.tlsc = newTLSSide(dataDir, cfg.Listeners.TLS, time.Now, func() []string { return s.be.config().UI.ExtraHostnames })
 	// Turned on in the config (by `woodshed tls on`, or by hand) while stopped:
 	// the CA and the certificate are made now. A failure shows on the listener.
@@ -226,13 +237,7 @@ func Open(cfgPath string, opts Options) (*Server, error) {
 // (woodshed-data in the config file's folder), so `woodshed run --config
 // ./x/woodshed.toml` is self-contained. LoadConfig doesn't validate.
 func LoadConfig(path string) (config.Config, bool, error) {
-	def := config.Default()
-	if !samePath(path, config.DefaultConfigPath()) {
-		// woodshed-data next to the config, never the config's folder itself:
-		// `--config /etc/woodshed.toml` must not make /etc the data folder (review M2).
-		def.Storage.DataDir = filepath.Join(filepath.Dir(path), "woodshed-data")
-	}
-	c, created, err := config.LoadOrCreate(path, def)
+	c, created, err := config.LoadOrCreate(path, NewConfigFor(path))
 	if err != nil {
 		if errors.Is(err, os.ErrPermission) {
 			return c, false, fmt.Errorf("%w (run as the service's user or an administrator, or pass --config)", err)
@@ -240,6 +245,18 @@ func LoadConfig(path string) (config.Config, bool, error) {
 		return c, false, err
 	}
 	return c, created, nil
+}
+
+// NewConfigFor is the config LoadConfig creates at a missing path (it writes
+// nothing).
+func NewConfigFor(path string) config.Config {
+	def := config.Default()
+	if !samePath(path, config.DefaultConfigPath()) {
+		// woodshed-data next to the config, never the config's folder itself:
+		// `--config /etc/woodshed.toml` must not make /etc the data folder (review M2).
+		def.Storage.DataDir = filepath.Join(filepath.Dir(path), "woodshed-data")
+	}
+	return def
 }
 
 func samePath(a, b string) bool {
@@ -343,6 +360,13 @@ func (s *Server) Run(ctx context.Context) error {
 		s.be.watchRetention(stateStop)
 	}()
 
+	updCtx, updCancel := context.WithCancel(context.Background())
+	updDone := make(chan struct{})
+	go func() {
+		defer close(updDone)
+		s.be.updates.Run(updCtx)
+	}()
+
 	select {
 	case <-ctx.Done():
 	case err := <-apiDone:
@@ -351,9 +375,11 @@ func (s *Server) Run(ctx context.Context) error {
 		apiDone <- err
 	}
 	log.Info("shutting down")
+	updCancel() // a check in flight is cancelled
 	close(stateStop)
 	<-stateDone
 	<-retentionDone
+	<-updDone
 	return s.shutdown(ln, apiCancel, apiDone)
 }
 

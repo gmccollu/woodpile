@@ -55,6 +55,7 @@ type Config struct {
 	Storage   Storage   `toml:"storage" json:"storage"`
 	UI        UI        `toml:"ui" json:"ui"`
 	Quiet     Quiet     `toml:"quiet" json:"quiet"`
+	Updates   Updates   `toml:"updates" json:"updates"`
 }
 
 // Listeners configures the syslog listeners and the sender allowlist.
@@ -122,6 +123,23 @@ type Quiet struct {
 	OfflineAfterSeconds int `toml:"offline_after_seconds" json:"offline_after_seconds" comment:"and offline (red) after this many."`
 }
 
+// Update check settings (SPEC §10.2).
+const (
+	UpdateCheckAsk = "ask" // the default: the UI asks once
+	UpdateCheckOn  = "on"
+	UpdateCheckOff = "off"
+)
+
+// Updates configures the opt-in update check (SPEC §10.2).
+type Updates struct {
+	Check string `toml:"check" json:"check" comment:"Check for new Woodshed versions once a day: \"ask\" (the default: ask once in the UI), \"on\" or \"off\". It fetches one public file and sends nothing about this server."`
+}
+
+// ValidUpdateCheck reports whether v is a value updates.check accepts.
+func ValidUpdateCheck(v string) bool {
+	return v == UpdateCheckAsk || v == UpdateCheckOn || v == UpdateCheckOff
+}
+
 // Default returns the default configuration for this OS.
 func Default() Config {
 	return Config{
@@ -149,8 +167,9 @@ func Default() Config {
 			RetentionBytes: DefaultRetentionBytes,
 			PartBytes:      DefaultPartBytes,
 		},
-		UI:    UI{Port: DefaultUIPort, ExtraHostnames: []string{}, TrustedHosts: []string{}},
-		Quiet: Quiet{QuietAfterSeconds: DefaultQuietAfterSeconds, OfflineAfterSeconds: DefaultOfflineAfterSeconds},
+		UI:      UI{Port: DefaultUIPort, ExtraHostnames: []string{}, TrustedHosts: []string{}},
+		Quiet:   Quiet{QuietAfterSeconds: DefaultQuietAfterSeconds, OfflineAfterSeconds: DefaultOfflineAfterSeconds},
+		Updates: Updates{Check: UpdateCheckAsk},
 	}
 }
 

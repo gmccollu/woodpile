@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 )
@@ -56,12 +57,17 @@ func (s *Server) backendError(w http.ResponseWriter, r *http.Request, err error)
 // data and oversized bodies. It writes the error response itself and returns
 // false on failure.
 func decodeJSON(w http.ResponseWriter, r *http.Request, v any) bool {
+	return decodeJSONLimit(w, r, v, maxBody)
+}
+
+// decodeJSONLimit is decodeJSON with its own body size limit.
+func decodeJSONLimit(w http.ResponseWriter, r *http.Request, v any, limit int64) bool {
 	ct := r.Header.Get("Content-Type")
 	if ct != "" && !strings.HasPrefix(strings.ToLower(strings.TrimSpace(ct)), "application/json") {
 		writeError(w, http.StatusUnsupportedMediaType, "The request body must be JSON (Content-Type: application/json).")
 		return false
 	}
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBody))
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, limit))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(v); err != nil {
 		var mbe *http.MaxBytesError
@@ -162,6 +168,10 @@ func (s *Server) apiRoutes() *http.ServeMux {
 
 	// Search and exports.
 	mux.Handle("/api/search", methods{http.MethodGet: s.getSearch})
+	mux.Handle("/api/search/schema", methods{http.MethodGet: s.getSchema})
+	mux.Handle("/api/search/summary", methods{http.MethodGet: s.getSummary})
+	mux.Handle("/api/saved-searches", methods{http.MethodGet: s.listSaved, http.MethodPost: s.createSaved})
+	mux.Handle("/api/saved-searches/{id}", methods{http.MethodGet: s.getSaved, http.MethodPut: s.putSaved, http.MethodDelete: s.deleteSaved})
 	mux.Handle("/api/context", methods{http.MethodGet: s.getContext})
 	mux.Handle("/api/exports", methods{http.MethodGet: s.listExports, http.MethodPost: s.postExport})
 	mux.Handle("/api/exports/estimate", methods{http.MethodPost: s.postEstimate})
@@ -209,6 +219,11 @@ func (s *Server) apiRoutes() *http.ServeMux {
 		}
 		writeJSON(w, http.StatusOK, es)
 	}})
+
+	// The update check.
+	mux.Handle("/api/updates", methods{http.MethodGet: s.getUpdates, http.MethodPut: s.putUpdates})
+	mux.Handle("/api/updates/check", methods{http.MethodPost: s.postUpdateCheck})
+	mux.Handle("/api/updates/dismiss", methods{http.MethodPost: s.postUpdateDismiss})
 
 	// Auth.
 	mux.Handle("/api/session", methods{http.MethodGet: s.getSession})
@@ -275,6 +290,13 @@ func checkLabel(v string) string {
 func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 	var in Settings
 	if !decodeJSON(w, r, &in) {
+		return
+	}
+	if u := in.Updates; u != nil && u.Check != "ask" && u.Check != "on" && u.Check != "off" {
+		writeJSON(w, http.StatusBadRequest, errorBody{
+			Error:  "Some settings need fixing.",
+			Errors: map[string]string{"updates.check": `Must be "ask", "on" or "off".`},
+		})
 		return
 	}
 	// LAN mode needs a password first (SPEC §5). The backend can't know: the
@@ -350,6 +372,72 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		s.log.Info("api: UI settings changed; restarting the UI server", "lan_mode", next.LANMode, "port", next.Port)
 		s.Reconfigure(next)
 	}
+}
+
+func (s *Server) getUpdates(w http.ResponseWriter, r *http.Request) {
+	u, err := s.backend.Updates(r.Context())
+	if err != nil {
+		s.backendError(w, r, err)
+		return
+	}
+	u.normalize()
+	writeJSON(w, http.StatusOK, u)
+}
+
+// putUpdates is the banner's Turn on / No thanks and the Settings switch:
+// "on" or "off" only ("ask" is for Settings).
+func (s *Server) putUpdates(w http.ResponseWriter, r *http.Request) {
+	var in UpdatesSettings
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	if in.Check != "on" && in.Check != "off" {
+		writeJSON(w, http.StatusBadRequest, errorBody{
+			Error:  `check must be "on" or "off".`,
+			Errors: map[string]string{"check": `Must be "on" or "off".`},
+		})
+		return
+	}
+	u, err := s.backend.SetUpdateCheck(r.Context(), in.Check)
+	if err != nil {
+		s.requestOrBackendError(w, r, err, "")
+		return
+	}
+	u.normalize()
+	writeJSON(w, http.StatusOK, u)
+}
+
+func (s *Server) postUpdateCheck(w http.ResponseWriter, r *http.Request) {
+	err := s.backend.CheckUpdatesNow(r.Context())
+	var ra *RetryAfterError
+	switch {
+	case err == nil:
+		w.Header().Set("Cache-Control", "no-store")
+		w.WriteHeader(http.StatusAccepted)
+	case errors.Is(err, ErrUpdateCheckOff):
+		writeError(w, http.StatusConflict, "The update check is off. Turn it on first.")
+	case errors.As(err, &ra):
+		secs := max(int((ra.After+time.Second-1)/time.Second), 1)
+		w.Header().Set("Retry-After", strconv.Itoa(secs))
+		writeError(w, http.StatusTooManyRequests, ra.Msg)
+	default:
+		s.backendError(w, r, err)
+	}
+}
+
+func (s *Server) postUpdateDismiss(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Version string `json:"version"`
+	}
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	if err := s.backend.DismissUpdate(r.Context(), in.Version); err != nil {
+		s.requestOrBackendError(w, r, err, "")
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // settingsResponse is the PUT /api/settings body: the saved settings, plus

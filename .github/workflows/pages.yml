@@ -44,10 +44,10 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Check the site (download picking, contrast)
+      - name: Check the site (download picking, the releases.json contract, contrast)
         working-directory: site
         run: |
-          node --test test/download.test.mjs
+          node --test test/download.test.mjs test/releases.test.mjs
           node tools/contrast.mjs
 
       - name: Stage the files to publish

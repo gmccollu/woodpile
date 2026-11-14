@@ -6,7 +6,13 @@
 
 .DESCRIPTION
   -Mode msi     installs -Msi (v1), checks it, upgrades to -UpgradeMsi (v2), uninstalls keeping
-                the data, reinstalls and uninstalls with DELETE_LOGS=1.
+                the data, reinstalls and uninstalls with DELETE_LOGS=1, then installs -Msi fresh
+                with WOODSHED_UPDATE_CHECK=off and uninstalls it with DELETE_LOGS=1.
+                WOODSHED_UPDATE_CHECK (SPEC §10.2, an acceptance item in §10.4): v1 asks (check =
+                "ask", and the update_prompt banner when GET /api/updates says the build can check:
+                a snapshot or dev build can't, by the product's own rule), the upgrade sets off, the reinstall's invalid
+                value is ignored with the reason in the install log, and the fresh install writes
+                the config before the service's first start (and the service can save over it).
   -Mode manual  `woodshed install` / `uninstall` with -Binary (no package), the same checks.
   -Mode legacy  the rename from Woodpile: installs -OldMsi (the last Woodpile release candidate),
                 checks that -Binary's `woodshed install` refuses beside it, installs -Msi over it
@@ -46,6 +52,8 @@ $Exe = Join-Path $env:ProgramFiles "Woodshed\woodshed.exe"
 $Ui = "http://127.0.0.1:8514"
 $ServiceSid = "S-1-5-80-246480601-2135328064-241538422-929878615-662582935"
 $script:passes = 0
+
+$Cfg = Join-Path $Data "woodshed.toml"
 
 function Say($m) { Write-Host "`n==> $m" }
 function Ok($m) { $script:passes++; Write-Host "PASS $m" }
@@ -267,6 +275,25 @@ function Check-Gone {
 function Check-DataKept { if (-not (Test-Path (Join-Path $Data "logs"))) { Die "$Data\logs was deleted" }; Ok "$Data kept" }
 function Check-DataGone { if (Test-Path $Data) { Die "$Data still exists" }; Ok "$Data deleted" }
 
+# updates.check from the config ("" when the file or the key is missing).
+function Get-UpdateCheck {
+    if (-not (Test-Path $Cfg)) { return "" }
+    $t = Get-Content -Raw $Cfg
+    if ($t -match '(?ms)^\[updates\]\s*$.*?^check\s*=\s*[''"](\w+)[''"]') { return $Matches[1] }
+    return ""
+}
+# The update banner kinds in /api/status.
+# Whether this build can check for updates: the product's own rule, from GET /api/updates.
+function Test-CanCheck { return [bool](Invoke-RestMethod "$Ui/api/updates").available }
+function Get-UpdateBanners {
+    $st = Invoke-RestMethod "$Ui/api/status"
+    return @($st.banners | Where-Object { $_.kind -like "update_*" } | ForEach-Object { $_.kind })
+}
+function Want-UpdateCheck([string]$want, [string]$why) {
+    $got = Get-UpdateCheck
+    if ($got -ne $want) { Die "$($why): updates.check is '$got', want '$want'" }
+}
+
 function Refuses([string]$want, [string]$exe, [string[]]$a) {
     $out = & $exe @a 2>&1 | Out-String
     if ($LASTEXITCODE -eq 0) { Die "$exe $($a -join ' ') should have refused: $out" }
@@ -281,6 +308,14 @@ switch ($Mode) {
         $st = Check-Running
         Check-TlsRule $false
         $v1 = $st.version
+        Want-UpdateCheck "ask" "a fresh install without WOODSHED_UPDATE_CHECK"
+        if (Test-CanCheck) {
+            if (@(Get-UpdateBanners) -notcontains "update_prompt") { Die "no update_prompt banner with check = ask (version $v1 can check)" }
+            Ok "without WOODSHED_UPDATE_CHECK a fresh install asks: check = ask and the update_prompt banner (version $v1)"
+        } else {
+            if (@(Get-UpdateBanners).Count -ne 0) { Die "version $v1 can't check but shows update banners: $(Get-UpdateBanners)" }
+            Ok "without WOODSHED_UPDATE_CHECK: check = ask; version $v1 can't check (GET /api/updates: available = false), so no banner"
+        }
         $r1 = New-RunId
         Send-Traffic $Exe $r1
         Check-EventLog
@@ -291,12 +326,15 @@ switch ($Mode) {
         Restart-Woodshed
         Still-There $r1 "a restart"
 
-        Say "major upgrade to $UpgradeMsi"
-        Install-Msi $UpgradeMsi (Join-Path $Logs "upgrade-v2.log")
+        Say "major upgrade to $UpgradeMsi with WOODSHED_UPDATE_CHECK=off"
+        Install-Msi $UpgradeMsi (Join-Path $Logs "upgrade-v2.log") @("WOODSHED_UPDATE_CHECK=off")
         $st = Check-Running
         Wait-Tls $true | Out-Null
         Check-TlsRule $true
         Ok "the upgrade kept the TLS rule enabled (and the listener on)"
+        Want-UpdateCheck "off" "WOODSHED_UPDATE_CHECK=off on the upgrade"
+        if (@(Get-UpdateBanners).Count -ne 0) { Die "update banners with check = off: $(Get-UpdateBanners)" }
+        Ok "ACCEPTANCE: the MSI property WOODSHED_UPDATE_CHECK=off reached woodshed update-check on an upgrade; no banner"
         if ($st.version -eq $v1) { Die "still version $v1 after the upgrade" }
         $products = @(Get-CimInstance Win32_Product -Filter "Name='Woodshed'")
         if ($products.Count -ne 1) { Die "$($products.Count) Woodshed products installed after the upgrade" }
@@ -315,11 +353,29 @@ switch ($Mode) {
         if (Test-Path $Exe) { Die "$Exe is still there" }
         Still-There $r1 "the uninstall"
 
-        Say "reinstall over the kept data, then uninstall with DELETE_LOGS=1"
-        Install-Msi $UpgradeMsi (Join-Path $Logs "reinstall.log")
+        Say "reinstall over the kept data with WOODSHED_UPDATE_CHECK=bogus, then uninstall with DELETE_LOGS=1"
+        $relog = Join-Path $Logs "reinstall.log"
+        Install-Msi $UpgradeMsi $relog @("WOODSHED_UPDATE_CHECK=bogus")
         Wait-Up | Out-Null
+        Want-UpdateCheck "off" "an invalid WOODSHED_UPDATE_CHECK"
+        if ((Get-Content -Raw $relog) -notmatch "isn't on, off or ask") { Die "the install log doesn't say why WOODSHED_UPDATE_CHECK=bogus was ignored" }
+        Ok "an invalid WOODSHED_UPDATE_CHECK is ignored: the install succeeded, check is still off, the install log says why"
         Still-There $r1 "the reinstall"
         Uninstall-Msi $UpgradeMsi (Join-Path $Logs "uninstall-delete.log") @("DELETE_LOGS=1")
+        Check-Gone
+        Check-DataGone
+
+        Say "a fresh install with WOODSHED_UPDATE_CHECK=off: the config is there before the first start"
+        Install-Msi $Msi (Join-Path $Logs "install-fresh-off.log") @("WOODSHED_UPDATE_CHECK=off")
+        Check-Running | Out-Null
+        Want-UpdateCheck "off" "WOODSHED_UPDATE_CHECK=off on a fresh install"
+        if (@(Get-UpdateBanners).Count -ne 0) { Die "update banners after a fresh install with check = off: $(Get-UpdateBanners)" }
+        $settings = (Invoke-WebRequest -UseBasicParsing "$Ui/api/settings").Content
+        $r = Invoke-WebRequest -UseBasicParsing -Method Put -ContentType "application/json" -Body $settings "$Ui/api/settings"
+        if ($r.StatusCode -ne 200) { Die "the service couldn't save settings over the config the installer wrote ($($r.StatusCode))" }
+        Want-UpdateCheck "off" "a settings save"
+        Ok "ACCEPTANCE: the MSI property on a fresh install: check = off before the first start, no banner, and the service saves over it"
+        Uninstall-Msi $Msi (Join-Path $Logs "uninstall-fresh.log") @("DELETE_LOGS=1")
         Check-Gone
         Check-DataGone
     }

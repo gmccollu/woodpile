@@ -7,6 +7,24 @@ and versions follow [Semantic Versioning](https://semver.org/). Release notes on
 ## [1.1.0] - unreleased
 
 ### Added
+- Opt-in update check: asks once, off unless you turn it on, one GET of the public releases file a day, never
+  installs anything.
+- `woodshed update-check on|off|ask` sets it from the command line, and silent installs set it with
+  `WOODSHED_UPDATE_CHECK` (an MSI property; an environment variable for the pkg, deb and rpm). See
+  [docs/install.md](docs/install.md#the-update-check-on-many-machines).
+- Events has a field panel beside the results: the top devices, severities, facilities, hosts and programs/tags for
+  the current search, with exact counts over a stated span. Click a value to filter on it, Alt-click or "−" to leave
+  it out.
+- A histogram above the results shows the matches over time. Drag across it to zoom into a range; Back zooms out.
+  Unfiltered searches draw it straight from the index, so it's instant.
+- Text | Terms | Regex: Terms mode takes words and "quoted phrases" with AND, OR, NOT and parentheses. Text mode and
+  every existing link keep their 1.0 meaning.
+- Saved searches: save, open, rename and delete named searches, shared by everyone who can open the UI. They're kept
+  in `index.db`, and `woodshed reindex` keeps them.
+- New filters on search and export: facility, and leaving out devices, programs/tags or hosts. Exports record them in
+  `manifest.json` and `README.txt`.
+- API: `GET /api/search/summary`, `GET /api/search/schema`, `/api/saved-searches`, and the `type`, `syntax`,
+  `facilities`, `exclude_devices`, `exclude_app` and `exclude_host` parameters ([docs/api.md](docs/api.md)).
 - Syslog over TLS (RFC 5425) on TCP 6514, off until you turn it on in **Settings → Listeners → Syslog over TLS** or
   with `woodshed tls on`. TLS 1.2 and 1.3 with modern cipher suites; an option allows TLS 1.0 and 1.1 for older
   senders. Everything after the handshake works as TCP does: the same framing, limits, storage and device identity.
@@ -26,7 +44,10 @@ and versions follow [Semantic Versioning](https://semver.org/). Release notes on
 - The install guide, user guide and FAQ cover TLS, and warn that some firewalls block traffic while a TCP or TLS log
   host is unreachable or its certificate fails.
 
-## [1.0.1] - unreleased
+### Changed
+- The 15 min, 1 h, 24 h and 7 d presets end at the next whole minute, so their time buckets line up.
+
+## [1.0.1] - 2026-11-14
 
 ### Fixed
 - TCP connections are now kept open for 24 hours without a message, not 10 minutes, so senders that don't notice a

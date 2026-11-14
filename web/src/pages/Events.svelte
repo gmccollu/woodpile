@@ -1,5 +1,22 @@
 <script lang="ts">
-  import { ApiError, ALL_SEVS, getContext, search, type SearchParams, type SearchResult, type SevKey } from '../lib/api';
+  import {
+    ApiError,
+    ALL_SEVS,
+    getContext,
+    getSavedSearch,
+    getSchema,
+    getSummary,
+    search,
+    SUMMARY_EXPIRED,
+    type DataType,
+    type FieldDescriptor,
+    type SavedSearch,
+    type SearchParams,
+    type SearchResult,
+    type SevKey,
+    type SummaryParams,
+    type SummaryResponse,
+  } from '../lib/api';
   import { bytes, num, stamp } from '../lib/format';
   import { matcher } from '../lib/highlight';
   import { prefs } from '../lib/prefs.svelte';
@@ -7,11 +24,39 @@
   import { go, router, setQuery } from '../lib/router.svelte';
   import { allScope, scopeFromQuery, scopeLabel, scopeParams, scopeToQuery, sevFromQuery, sevToQuery, type Scope } from '../lib/scope';
   import { addToList, fieldsFromQuery, fieldsToQuery, noFields, splitList, type FieldFilters } from '../lib/fields';
+  import {
+    addItem,
+    appKey,
+    differsFromSaved,
+    domainChips,
+    domainExclude,
+    domainInclude,
+    domainRemove,
+    extrasFromQuery,
+    extrasToQuery,
+    facKeys,
+    formOfSaved,
+    hostKey,
+    modeFromQuery,
+    modeToQuery,
+    noExtras,
+    removeItem,
+    savedQueryOf,
+    type Chip,
+    type EventsForm,
+    type Extras,
+    type Mode,
+  } from '../lib/events';
+  import { termsError } from '../lib/terms';
   import { sevClass, sevLabel } from '../lib/severity';
   import { deviceName } from '../lib/status.svelte';
   import { splitRaw } from '../lib/syslog';
   import DevicePicker from '../components/DevicePicker.svelte';
+  import FieldPanel from '../components/FieldPanel.svelte';
+  import Histogram from '../components/Histogram.svelte';
   import Icon from '../components/Icon.svelte';
+  import ModeSwitch from '../components/ModeSwitch.svelte';
+  import SavedMenu from '../components/SavedMenu.svelte';
   import SeverityChips from '../components/SeverityChips.svelte';
   import TimeRange from '../components/TimeRange.svelte';
   import LogText from '../components/LogText.svelte';
@@ -22,21 +67,46 @@
   const HOST_MAX = 28;
   /** The Host and Program/tag columns fit their longest value, up to this many characters. */
   const FIELD_MAX = 24;
+  /** The field panel keeps counting for this much scanning per query, then offers "Count the rest" (SPEC §10.1.1). */
+  const COUNT_FOR_MS = 60_000;
 
   // ----- the form -----
   let q = $state('');
-  let regex = $state(false);
+  let mode = $state<Mode>('text');
   let cs = $state(false);
   let scope = $state<Scope>(allScope());
   let range = $state<Range>(defaultRange());
   let sev = $state<SevKey[]>([...ALL_SEVS]);
   let order = $state<'desc' | 'asc'>('desc');
   let fields = $state<FieldFilters>(noFields());
+  let extras = $state<Extras>(noExtras());
   let showRaw = $state(false);
+
+  // ----- the saved search the form was opened from (SPEC §10.1.4) -----
+  let savedCur = $state<SavedSearch | null>(null);
+  let savedEtag = $state('');
+  let savedNote = $state('');
+
+  const form = (): EventsForm => ({
+    q,
+    mode,
+    cs,
+    scope: $state.snapshot(scope),
+    range: $state.snapshot(range),
+    sev: [...sev],
+    order,
+    app: fields.app,
+    host: fields.host,
+    exclude: fields.exclude,
+    extras: $state.snapshot(extras),
+  });
+  const changed = $derived(!!savedCur && differsFromSaved(form(), savedCur.query));
 
   // ----- the search behind the results (frozen, so "Load more" sends the same parameters) -----
   let active = $state<SearchParams | null>(null);
   let activeScope = $state<Scope>(allScope());
+  let activeMode = $state<Mode>('text');
+  let activeExtras = $state<Extras>(noExtras());
   let results = $state.raw<SearchResult[]>([]);
   let seen = new Set<string>();
   let cursor = $state('');
@@ -49,29 +119,63 @@
   let ctrl: AbortController | null = null;
   let gen = 0;
 
+  // ----- the field panel and histogram: one summary for the active search -----
+  let schema = $state<DataType | null>(null);
+  let summary = $state.raw<SummaryResponse | null>(null);
+  let sumStatus = $state<'idle' | 'running' | 'paused' | 'done' | 'error'>('idle');
+  let sumError = $state('');
+  let sumCursor = '';
+  let sumCtrl: AbortController | null = null;
+  let sumGen = 0;
+
+  getSchema()
+    .then((s) => (schema = s.types.find((t) => t.default) ?? s.types[0] ?? null))
+    .catch((x) => (sumError = `Couldn't load the field list: ${(x as Error).message}`));
+
   function toQuery(): string {
     const p = new URLSearchParams();
     if (q) p.set('q', q);
-    if (regex) p.set('re', '1');
+    modeToQuery(mode, p);
     if (cs) p.set('cs', '1');
     scopeToQuery(scope, p);
     rangeToQuery(range, p);
     sevToQuery(sev, p);
     fieldsToQuery(fields, p);
+    extrasToQuery(extras, p);
     if (order === 'asc') p.set('order', 'asc');
+    if (savedCur) p.set('saved', savedCur.id);
     return p.toString();
   }
 
   function fromQuery(s: string) {
     const p = new URLSearchParams(s);
     q = p.get('q') ?? '';
-    regex = p.get('re') === '1';
+    mode = modeFromQuery(p);
     cs = p.get('cs') === '1';
     scope = scopeFromQuery(p);
     range = rangeFromQuery(p);
     sev = sevFromQuery(p);
     fields = fieldsFromQuery(p);
+    extras = extrasFromQuery(p);
     order = p.get('order') === 'asc' ? 'asc' : 'desc';
+    const id = p.get('saved') ?? '';
+    if (!id) {
+      savedCur = null;
+      savedEtag = '';
+    } else if (id !== savedCur?.id) loadSaved(id);
+  }
+
+  /** A link with saved=<id> (bookmarked, or Back): the URL carries the parameters; this fetches the name and ETag. */
+  async function loadSaved(id: string) {
+    try {
+      const { saved, etag } = await getSavedSearch(id);
+      savedCur = saved;
+      savedEtag = etag;
+      savedNote = '';
+    } catch (x) {
+      savedCur = null;
+      savedNote = x instanceof ApiError && x.status === 404 ? 'That saved search was deleted; this is a copy of its search.' : (x as Error).message;
+    }
   }
 
   // A bookmarked or shared link (#/events?q=…, or the old #/search?q=…) runs straight away.
@@ -97,23 +201,57 @@
     if (status === 'running') status = 'cancelled';
   }
 
+  function cancelSummary() {
+    sumCtrl?.abort();
+    sumGen++;
+  }
+
+  /** The Cancel button stops both scans; the field panel keeps what it counted and offers the rest. */
+  function cancelAll() {
+    cancel();
+    if (sumStatus === 'running') {
+      cancelSummary();
+      sumStatus = summary?.next_cursor ? 'paused' : 'idle';
+    }
+  }
+
   async function run(e?: SubmitEvent) {
     e?.preventDefault();
     cancel();
-    qError = exError = rangeError = error = '';
+    cancelSummary();
+    qError = exError = rangeError = error = sumError = '';
     const { from, to } = resolveRange(range);
     if (!from || !to || !(Date.parse(from) < Date.parse(to))) {
       rangeError = '"From" must be before "To".';
       status = 'error';
       return;
     }
+    if (mode === 'terms') {
+      // The server says the same; checking here puts the message under the box at once.
+      qError = termsError(q);
+      exError = termsError(fields.exclude);
+      if (qError || exError) {
+        status = 'error';
+        active = null;
+        results = [];
+        cursor = '';
+        summary = null;
+        sumStatus = 'idle';
+        lastRun = toQuery();
+        setQuery(lastRun);
+        return;
+      }
+    }
     lastRun = toQuery();
     setQuery(lastRun);
     activeScope = $state.snapshot(scope);
+    activeMode = mode;
+    activeExtras = $state.snapshot(extras);
     active = {
       q,
-      regex,
+      regex: mode === 'regex',
       case: cs,
+      syntax: mode === 'terms' ? 'terms' : undefined,
       ...scopeParams(scope),
       from,
       to,
@@ -121,6 +259,10 @@
       app: splitList(fields.app),
       host: splitList(fields.host),
       exclude: fields.exclude,
+      facilities: facKeys(extras.fac),
+      exclude_devices: [...extras.xdev],
+      exclude_app: [...extras.xapp],
+      exclude_host: [...extras.xhost],
       order,
       limit: PAGE,
     };
@@ -128,6 +270,9 @@
     seen = new Set();
     cursor = '';
     scanned = { bytes: 0, files: 0 };
+    summary = null;
+    sumCursor = '';
+    countSummary();
     await fetchPage();
   }
 
@@ -156,13 +301,68 @@
       if (my !== gen || (x as Error).name === 'AbortError') return;
       status = 'error';
       const m = (x as Error).message;
-      if (x instanceof ApiError && x.status === 400 && m.startsWith('exclude: ')) exError = m.slice('exclude: '.length);
-      else if (x instanceof ApiError && x.status === 400 && active.regex && /regexp|regular expression/i.test(m)) qError = m;
+      const bad = x instanceof ApiError && x.status === 400;
+      if (bad && m.startsWith('exclude: ')) exError = m.slice('exclude: '.length);
+      else if (bad && active.regex && /regexp|regular expression/i.test(m)) qError = m;
+      else if (bad && active.syntax === 'terms' && / at character \d+|Too many terms|nested deeper|longer than 4 KiB/.test(m)) qError = m;
       else error = m;
     }
   }
 
-  const hl = $derived(active ? matcher(active.q, !!active.regex, !!active.case) : null);
+  /**
+   * The field panel and histogram: asks with the cursor while the summary is partial, for up
+   * to COUNT_FOR_MS of scanning, then stops and offers "Count the rest" (SPEC §10.1.5). Each
+   * response carries the running totals, so it just replaces what's shown. A summary whose
+   * counts the server dropped (400, expired) starts again once.
+   */
+  async function countSummary() {
+    if (!active) return;
+    cancelSummary();
+    const my = sumGen;
+    const c = new AbortController();
+    sumCtrl = c;
+    sumStatus = 'running';
+    sumError = '';
+    const { order: _o, limit: _l, cursor: _c, ...base } = active;
+    const params: SummaryParams = base;
+    let scannedMs = 0;
+    let restarted = false;
+    try {
+      for (;;) {
+        let res: SummaryResponse;
+        try {
+          res = await getSummary({ ...params, cursor: sumCursor || undefined }, c.signal);
+        } catch (x) {
+          if (x instanceof ApiError && x.status === 400 && x.message === SUMMARY_EXPIRED && !restarted) {
+            restarted = true;
+            sumCursor = '';
+            continue;
+          }
+          throw x;
+        }
+        if (my !== sumGen) return;
+        summary = res;
+        sumCursor = res.next_cursor;
+        scannedMs += res.elapsed_ms;
+        if (!(res.partial && res.next_cursor)) {
+          sumStatus = 'done';
+          return;
+        }
+        if (scannedMs >= COUNT_FOR_MS) {
+          sumStatus = 'paused';
+          return;
+        }
+      }
+    } catch (x) {
+      if (my !== sumGen || (x as Error).name === 'AbortError') return;
+      sumStatus = 'error';
+      const m = (x as Error).message;
+      // The results show a query error under the box; the panel only points there.
+      sumError = x instanceof ApiError && x.status === 400 ? `Counts unavailable: ${m}` : m;
+    }
+  }
+
+  const hl = $derived(active ? matcher(active.q, !!active.regex, !!active.case, active.syntax === 'terms') : null);
   const hostCh = $derived.by(() => {
     let w = 8;
     for (const id of new Set(results.map((r) => r.device_id))) w = Math.max(w, deviceName(id).length);
@@ -180,9 +380,174 @@
   /** Clicking a Host or Program/tag value narrows the search to it. */
   function narrow(e: Event, kind: 'host' | 'app', v: string) {
     e.stopPropagation();
-    if (kind === 'host') fields.host = addToList(fields.host, v);
-    else fields.app = addToList(fields.app, v);
+    if (kind === 'host') {
+      fields.host = addToList(fields.host, v);
+      extras.xhost = removeItem(extras.xhost, v, hostKey);
+    } else {
+      fields.app = addToList(fields.app, v);
+      extras.xapp = removeItem(extras.xapp, v, appKey);
+    }
     run();
+  }
+
+  // ----- the field panel's clicks: by the schema's parameter names -----
+  const domainOf = (f: FieldDescriptor) => (f.domain ?? []).map((d) => d.value);
+  const sevStrings = () => (sev.length === ALL_SEVS.length ? [] : sev.length ? sev.map(String) : ['none']);
+  const sevFromStrings = (v: string[]): SevKey[] =>
+    !v.length ? [...ALL_SEVS] : v.includes('none') ? [] : ALL_SEVS.filter((k) => v.includes(String(k)));
+  const removeFromList = (s: string, v: string, key: (x: string) => string) => removeItem(splitList(s), v, key).join(', ');
+
+  function pick(f: FieldDescriptor, value: string, exclude: boolean) {
+    const param = exclude && f.exclude_param ? f.exclude_param : f.param;
+    switch (param) {
+      case 'devices':
+        scope = { mode: 'devices', group: '', devices: scope.mode === 'devices' ? addItem(scope.devices, value) : [value] };
+        extras.xdev = removeItem(extras.xdev, value);
+        break;
+      case 'exclude_devices':
+        extras.xdev = addItem(extras.xdev, value);
+        if (scope.mode === 'devices' && scope.devices.includes(value) && scope.devices.length > 1) scope.devices = removeItem(scope.devices, value);
+        break;
+      case 'host':
+        fields.host = addToList(fields.host, value);
+        extras.xhost = removeItem(extras.xhost, value, hostKey);
+        break;
+      case 'exclude_host':
+        extras.xhost = addItem(extras.xhost, value, hostKey);
+        fields.host = removeFromList(fields.host, value, hostKey);
+        break;
+      case 'app':
+        fields.app = addToList(fields.app, value);
+        extras.xapp = removeItem(extras.xapp, value, appKey);
+        break;
+      case 'exclude_app':
+        extras.xapp = addItem(extras.xapp, value, appKey);
+        fields.app = removeFromList(fields.app, value, appKey);
+        break;
+      case 'severities':
+        sev = sevFromStrings(exclude ? domainExclude(sevStrings(), domainOf(f), value) : domainInclude(sevStrings(), value));
+        break;
+      case 'facilities':
+        extras.fac = exclude ? domainExclude(extras.fac, domainOf(f), value) : domainInclude(extras.fac, value);
+        break;
+      default:
+        return; // a parameter this page doesn't know (a later data type)
+    }
+    run();
+  }
+
+  /** Whether a value is in the active search's filters ("in"), left out ("out"), or neither. */
+  function valueState(f: FieldDescriptor, value: string): 'in' | 'out' | '' {
+    switch (f.param) {
+      case 'devices':
+        if (activeExtras.xdev.includes(value)) return 'out';
+        return activeScope.mode === 'devices' && activeScope.devices.includes(value) ? 'in' : '';
+      case 'host':
+        if (active?.exclude_host?.some((x) => hostKey(x) === hostKey(value))) return 'out';
+        return active?.host?.some((x) => hostKey(x) === hostKey(value)) ? 'in' : '';
+      case 'app':
+        if (active?.exclude_app?.some((x) => appKey(x) === appKey(value))) return 'out';
+        return active?.app?.some((x) => appKey(x) === appKey(value)) ? 'in' : '';
+      case 'severities': {
+        const s = active?.severities ?? [...ALL_SEVS];
+        return s.length === ALL_SEVS.length ? '' : s.map(String).includes(value) ? 'in' : 'out';
+      }
+      case 'facilities': {
+        const s = activeExtras.fac;
+        return !s.length ? '' : s.includes(value) ? 'in' : 'out';
+      }
+    }
+    return '';
+  }
+
+  /** The active filters the panel can set, as chips; a click removes one and searches again. */
+  const chips = $derived.by((): Chip[] => {
+    if (!schema) return [];
+    const out: Chip[] = [];
+    const desc = (k: string) => schema!.fields.find((f) => f.param === k || f.exclude_param === k);
+    const label = (k: string, v: string) => desc(k)?.domain?.find((d) => d.value === v)?.label ?? v;
+    const chip = (key: string, text: string, title: string, excluded: boolean, remove: () => void) =>
+      out.push({ key, text, title, excluded, remove: () => (remove(), run()) });
+    if (scope.mode === 'devices')
+      for (const d of scope.devices)
+        chip(`dev:${d}`, deviceName(d), `Device ${d}`, false, () => {
+          const rest = removeItem(scope.devices, d);
+          scope = rest.length ? { ...scope, devices: rest } : allScope();
+        });
+    for (const d of extras.xdev) chip(`xdev:${d}`, `not ${deviceName(d)}`, `Leaving out device ${d}`, true, () => (extras.xdev = removeItem(extras.xdev, d)));
+    for (const h of splitList(fields.host)) chip(`host:${h}`, h, `Host ${h}`, false, () => (fields.host = removeFromList(fields.host, h, hostKey)));
+    for (const h of extras.xhost) chip(`xhost:${h}`, `not ${h}`, `Leaving out host ${h}`, true, () => (extras.xhost = removeItem(extras.xhost, h)));
+    for (const a of splitList(fields.app)) chip(`app:${a}`, a, `Program/tag ${a}`, false, () => (fields.app = removeFromList(fields.app, a, appKey)));
+    for (const a of extras.xapp) chip(`xapp:${a}`, `not ${a}`, `Leaving out program/tag ${a}`, true, () => (extras.xapp = removeItem(extras.xapp, a)));
+    const fd = desc('facilities');
+    if (fd)
+      for (const c of domainChips(extras.fac, domainOf(fd)))
+        chip(`fac:${c.value}`, `${c.included ? '' : 'not '}${label('facilities', c.value)}`, `Facility ${label('facilities', c.value)}`, !c.included, () => (extras.fac = domainRemove(extras.fac, domainOf(fd), c.value, c.included)));
+    const sd = desc('severities');
+    if (sd)
+      for (const c of domainChips(sevStrings(), domainOf(sd)))
+        chip(`sev:${c.value}`, `${c.included ? '' : 'not '}${label('severities', c.value)}`, `Severity ${label('severities', c.value)}`, !c.included, () => (sev = sevFromStrings(domainRemove(sevStrings(), domainOf(sd), c.value, c.included))));
+    return out;
+  });
+
+  /** A drag across the histogram: the new range goes into the URL as a new history entry, so Back zooms out. */
+  function zoom(from: string, to: string) {
+    range = { preset: 'custom', from, to };
+    go('events', toQuery());
+  }
+
+  // ----- saved searches -----
+  function openSaved(s: SavedSearch) {
+    const f = formOfSaved(s.query);
+    q = f.q;
+    mode = f.mode;
+    cs = f.cs;
+    scope = f.scope;
+    range = f.range;
+    sev = f.sev;
+    order = f.order;
+    fields = { app: f.app, host: f.host, exclude: f.exclude };
+    extras = f.extras;
+    savedCur = s;
+    savedNote = '';
+    savedEtag = '';
+    getSavedSearch(s.id).then((r) => savedCur?.id === s.id && (savedEtag = r.etag)).catch(() => {});
+    go('events', toQuery());
+  }
+
+  function onSaved(s: SavedSearch, etag: string) {
+    savedCur = s;
+    savedNote = '';
+    savedEtag = etag;
+    if (!etag) getSavedSearch(s.id).then((r) => savedCur?.id === s.id && (savedEtag = r.etag)).catch(() => {});
+    // The URL gains saved=<id> without searching again.
+    lastRun = toQuery();
+    setQuery(lastRun);
+  }
+
+  function onDeleted(id: string) {
+    if (savedCur?.id !== id) return;
+    savedCur = null;
+    savedEtag = '';
+    lastRun = toQuery();
+    setQuery(lastRun);
+  }
+
+  /** The link that opens a saved search: its parameters and saved=<id>. */
+  function linkOf(s: SavedSearch): string {
+    const f = formOfSaved(s.query);
+    const p = new URLSearchParams();
+    if (f.q) p.set('q', f.q);
+    modeToQuery(f.mode, p);
+    if (f.cs) p.set('cs', '1');
+    scopeToQuery(f.scope, p);
+    rangeToQuery(f.range, p);
+    sevToQuery(f.sev, p);
+    fieldsToQuery({ app: f.app, host: f.host, exclude: f.exclude }, p);
+    extrasToQuery(f.extras, p);
+    if (f.order === 'asc') p.set('order', 'asc');
+    p.set('saved', s.id);
+    return `${location.origin}${location.pathname}${location.search}#/events?${p.toString()}`;
   }
 
   // ----- context panel -----
@@ -245,9 +610,10 @@
     p.set('to', active.to!);
     sevToQuery(active.severities ?? [...ALL_SEVS], p);
     if (active.q) p.set('q', active.q);
-    if (active.regex) p.set('re', '1');
+    modeToQuery(activeMode, p);
     if (active.case) p.set('cs', '1');
     fieldsToQuery({ app: (active.app ?? []).join(','), host: (active.host ?? []).join(','), exclude: active.exclude ?? '' }, p);
+    extrasToQuery(activeExtras, p);
     go('export', p.toString());
   }
 
@@ -257,21 +623,57 @@
       openContext(ref);
     }
   }
+
+  const placeholder = $derived(
+    mode === 'regex'
+      ? 'Regular expression (RE2), e.g. deny (tcp|udp)'
+      : mode === 'terms'
+        ? 'Terms, e.g. deny AND (tcp OR udp) NOT 10.0.0.1'
+        : 'Browse every stored message; type to filter',
+  );
 </script>
 
 <div class="space-y-4">
   <form class="card space-y-3" onsubmit={run} role="search" aria-labelledby="ev-title">
-    <div>
-      <h1 id="ev-title" class="m-0 text-xl font-bold tracking-tight">Events</h1>
-      <p class="mt-1 mb-0 text-[13.5px] text-muted">Every stored message, including older compressed days. Leave the text empty to browse; filter by text, program/tag, host, device, time and severity.</p>
+    <div class="flex items-start gap-3">
+      <div class="min-w-0 grow">
+        <h1 id="ev-title" class="m-0 text-xl font-bold tracking-tight">Events</h1>
+        <p class="mt-1 mb-0 text-[13.5px] text-muted">Every stored message, including older compressed days. Leave the text empty to browse; filter by text, program/tag, host, device, time and severity, or click a value in Fields.</p>
+      </div>
+      <SavedMenu
+        current={savedCur}
+        etag={savedEtag}
+        query={() => savedQueryOf(form())}
+        {changed}
+        {linkOf}
+        onopen={openSaved}
+        onsaved={onSaved}
+        ondeleted={onDeleted}
+      />
     </div>
+    {#if savedCur || savedNote}
+      <div class="savedline" aria-live="polite">
+        {#if savedCur}
+          <span>Saved search <b>{savedCur.name}</b></span>
+          {#if changed}<span class="badge" title="The form differs from the saved search; Saved, then Save, updates it">changed</span>{/if}
+          {#if savedCur.missing_devices.length}
+            <span class="missing">
+              Devices no longer known:
+              {#each savedCur.missing_devices as d, i (d)}{i ? ', ' : ''}<s title="No longer known; the search runs with the rest">{d}</s>{/each}
+              {savedCur.missing_devices.length === (savedCur.query.devices?.length ?? 0) ? '(so it matches nothing)' : '(the search runs with the rest)'}
+            </span>
+          {/if}
+          {#if savedCur.missing_group}<span class="missing">Group <s>{savedCur.query.group}</s> has no devices any more, so it matches nothing</span>{/if}
+        {:else}<span class="text-muted">{savedNote}</span>{/if}
+      </div>
+    {/if}
     <div class="flex flex-wrap items-start gap-2">
       <div class="grow basis-80">
         <label class="sr-only" for="sq">Search text</label>
         <input
           id="sq"
           class="field font-mono"
-          placeholder={regex ? 'Regular expression (RE2), e.g. deny (tcp|udp)' : 'Browse every stored message; type to filter'}
+          {placeholder}
           bind:value={q}
           spellcheck="false"
           autocomplete="off"
@@ -280,7 +682,7 @@
         />
         {#if qError}<p id="sq-err" class="ferr" role="alert">{qError}</p>{/if}
       </div>
-      <button type="button" class="toggle" aria-pressed={regex} onclick={() => (regex = !regex)} title="Regular expression (RE2 syntax)">.* Regex</button>
+      <ModeSwitch bind:value={mode} />
       <button type="button" class="toggle" aria-pressed={cs} onclick={() => (cs = !cs)} title="Match upper and lower case exactly">Aa Case</button>
       <button type="submit" class="pill-btn px-5 py-2"><Icon name="search" size={15} />Search</button>
     </div>
@@ -311,13 +713,13 @@
         <span class="flab">Exclude</span>
         <input
           class="field font-mono"
-          placeholder={regex ? 'Regular expression to leave out' : 'Text to leave out'}
+          placeholder={mode === 'regex' ? 'Regular expression to leave out' : mode === 'terms' ? 'Terms to leave out' : 'Text to leave out'}
           bind:value={fields.exclude}
           spellcheck="false"
           autocomplete="off"
           aria-invalid={!!exError}
           aria-describedby="ex-err"
-          title="Lines matching this are left out. Regex and Case apply here too."
+          title="Lines matching this are left out. Terms, Regex and Case apply here too."
         />
         {#if exError}<span id="ex-err" class="ferr" role="alert">{exError}</span>{/if}
       </label>
@@ -334,37 +736,70 @@
     <div class="sevbar"><SeverityChips bind:value={sev} label="Search severities" /></div>
   </form>
 
-  <section class="log-panel res flex flex-col overflow-hidden" aria-label="Results">
-    <div class="bar flex flex-wrap items-center gap-2 px-[18px] py-2.5 font-sans text-[13px]">
-      <b class="text-white">Results</b>
-      <span class="text-log-dim" aria-live="polite">
-        {#if status === 'idle'}Leave the text empty to browse every stored message, or type to filter.
-        {:else if active}
-          {num(results.length)} line{results.length === 1 ? '' : 's'}{cursor ? '+' : ''} · {scopeLabel(activeScope)} · {stamp(
-            active.from!,
-            prefs.utc,
-          )} → {stamp(active.to!, prefs.utc)}{prefs.utc ? ' UTC' : ''}
+  <div class="evgrid">
+  {#if schema}
+    <FieldPanel
+      fields={schema.fields}
+      {summary}
+      status={sumStatus}
+      error={sumError}
+      utc={prefs.utc}
+      {chips}
+      state={valueState}
+      onpick={pick}
+      oncontinue={countSummary}
+    />
+  {:else if sumError}
+    <aside class="log-panel fp-err" aria-label="Field values"><p class="m-0 p-4 font-sans text-[13px] text-[var(--sev-err)]" role="alert">{sumError}</p></aside>
+  {/if}
+  <section class="log-panel res flex min-w-0 flex-col overflow-hidden" aria-label="Results">
+    <!-- Two rows, so the buttons stay on the first line beside the field panel: the title and the buttons, then
+         what the results are and how much was scanned. -->
+    <div class="bar px-[18px] py-2.5 font-sans text-[13px]">
+      <div class="flex flex-wrap items-center gap-2">
+        <b class="text-white">Results</b>
+        <span class="grow"></span>
+        {#if status === 'running'}<button type="button" class="tail-btn" onclick={cancelAll}>Cancel</button>{/if}
+        <button type="button" class="tail-btn" aria-pressed={prefs.wrap} onclick={() => (prefs.wrap = !prefs.wrap)}>Wrap</button>
+        <button type="button" class="tail-btn" aria-pressed={showRaw} onclick={() => (showRaw = !showRaw)} title="Show the PRI and syslog header too">Raw</button>
+        <button
+          type="button"
+          class="tail-btn"
+          onclick={exportThese}
+          disabled={!active || !results.length}
+          title="Open Export with these devices, range, severities, text, program/tag, host, facility and exclude filters"
+        >
+          <Icon name="export" size={14} />Export these results
+        </button>
+      </div>
+      <div class="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5">
+        <span class="text-log-dim" aria-live="polite">
+          {#if status === 'idle'}Leave the text empty to browse every stored message, or type to filter.
+          {:else if active}
+            {num(results.length)} line{results.length === 1 ? '' : 's'}{cursor ? '+' : ''} · {scopeLabel(activeScope)} · {stamp(
+              active.from!,
+              prefs.utc,
+            )} → {stamp(active.to!, prefs.utc)}{prefs.utc ? ' UTC' : ''}
+          {/if}
+        </span>
+        {#if status === 'running'}
+          <span class="scan" role="status"><span class="spin" aria-hidden="true"></span>Scanned {bytes(scanned.bytes)} in {num(scanned.files)} file{scanned.files === 1 ? '' : 's'}…</span>
+        {:else if status !== 'idle'}
+          <span class="text-log-dim">Scanned {bytes(scanned.bytes)} in {num(scanned.files)} file{scanned.files === 1 ? '' : 's'}</span>
         {/if}
-      </span>
-      <span class="grow"></span>
-      {#if status === 'running'}
-        <span class="scan" role="status"><span class="spin" aria-hidden="true"></span>Scanned {bytes(scanned.bytes)} in {num(scanned.files)} file{scanned.files === 1 ? '' : 's'}…</span>
-        <button type="button" class="tail-btn" onclick={cancel}>Cancel</button>
-      {:else if status !== 'idle'}
-        <span class="text-log-dim">Scanned {bytes(scanned.bytes)} in {num(scanned.files)} file{scanned.files === 1 ? '' : 's'}</span>
-      {/if}
-      <button type="button" class="tail-btn" aria-pressed={prefs.wrap} onclick={() => (prefs.wrap = !prefs.wrap)}>Wrap</button>
-      <button type="button" class="tail-btn" aria-pressed={showRaw} onclick={() => (showRaw = !showRaw)} title="Show the PRI and syslog header too">Raw</button>
-      <button
-        type="button"
-        class="tail-btn"
-        onclick={exportThese}
-        disabled={!active || !results.length}
-        title="Open Export with these devices, range, severities, text, program/tag, host and exclude"
-      >
-        <Icon name="export" size={14} />Export these results
-      </button>
+      </div>
     </div>
+
+    {#if active}
+      <Histogram
+        hist={summary?.histogram ?? null}
+        from={active.from!}
+        to={active.to!}
+        utc={prefs.utc}
+        busy={sumStatus === 'running'}
+        onselect={zoom}
+      />
+    {/if}
 
     <div
       class="logview fields res-body overflow-auto px-[18px] py-2"
@@ -382,7 +817,7 @@
       {#if error}
         <p class="m-0 py-6 text-center font-sans text-[var(--sev-err)]" role="alert">{error}</p>
       {:else if qError || exError}
-        <p class="m-0 py-6 text-center font-sans text-log-dim">Fix the regular expression above and search again.</p>
+        <p class="m-0 py-6 text-center font-sans text-log-dim">{mode === 'terms' ? 'Fix the terms above and search again.' : 'Fix the regular expression above and search again.'}</p>
       {:else if status === 'running' && !results.length}
         <p class="m-0 py-6 text-center font-sans text-log-dim">Searching…</p>
       {:else if (status === 'done' || status === 'cancelled') && !results.length}
@@ -436,6 +871,7 @@
       {/if}
     </div>
   </section>
+  </div>
 </div>
 
 {#if ctx}
@@ -483,6 +919,48 @@
 {/if}
 
 <style>
+  .evgrid {
+    display: grid;
+    gap: 16px;
+    align-items: start;
+  }
+  @media (min-width: 1100px) {
+    .evgrid {
+      grid-template-columns: 17.5rem minmax(0, 1fr);
+    }
+    .evgrid > :global(.fp) {
+      position: sticky;
+      top: 16px;
+      max-height: calc(100vh - 32px);
+    }
+  }
+  @media (max-width: 1099px) {
+    .evgrid > :global(.fp) {
+      order: 2;
+    }
+  }
+  .savedline {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 10px;
+    font-size: 13px;
+  }
+  .badge {
+    padding: 1px 8px;
+    border-radius: 999px;
+    background: var(--warn-bg);
+    border: 1px solid var(--warn-border);
+    color: var(--warn-fg);
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .missing {
+    color: var(--muted);
+  }
+  .missing s {
+    font-family: var(--font-mono);
+  }
   .toggle {
     display: inline-flex;
     align-items: center;

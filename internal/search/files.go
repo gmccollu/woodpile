@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gmccollu/woodshed/internal/index"
@@ -90,6 +91,9 @@ type opened struct {
 	f     *os.File
 	file  index.File // the row it was opened as (Path and Compressed as found on disk)
 	ahead *aheadReader
+	// inflated counts the bytes decompressed from this file (the engine's
+	// counter, for tests).
+	inflated *atomic.Int64
 }
 
 func (o *opened) Close() error {
@@ -242,7 +246,7 @@ func (e *Engine) tryOpen(rel string, row index.File, cps []index.Checkpoint) (*o
 	if err != nil {
 		return nil, err
 	}
-	o := &opened{f: f, file: row}
+	o := &opened{f: f, file: row, inflated: &e.inflated}
 	o.file.Path = rel
 	o.file.Compressed = strings.HasSuffix(rel, ".gz")
 	if len(cps) > 0 && cps[0].Offset == 0 {
@@ -282,9 +286,13 @@ func (o *opened) reader(off int64) (io.Reader, error) {
 	if _, err := o.f.Seek(0, io.SeekStart); err != nil {
 		return nil, err
 	}
-	zr, err := gzip.NewReader(o.f)
+	gz, err := gzip.NewReader(o.f)
 	if err != nil {
 		return nil, err
+	}
+	var zr io.Reader = gz
+	if o.inflated != nil {
+		zr = &countReader{r: gz, n: o.inflated}
 	}
 	if off > 0 {
 		if _, err := io.CopyN(io.Discard, zr, off); err != nil {
@@ -295,6 +303,18 @@ func (o *opened) reader(off int64) (io.Reader, error) {
 		}
 	}
 	return zr, nil
+}
+
+// countReader adds the bytes read through it to n.
+type countReader struct {
+	r io.Reader
+	n *atomic.Int64
+}
+
+func (c *countReader) Read(p []byte) (int, error) {
+	k, err := c.r.Read(p)
+	c.n.Add(int64(k))
+	return k, err
 }
 
 // size is the current length of a plain file.

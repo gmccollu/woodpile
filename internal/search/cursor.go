@@ -61,7 +61,9 @@ func (q *Query) binding() []byte {
 	flag(q.Ungrouped)
 	flag(q.Asc)
 	str(q.Exclude)
-	for _, list := range [][]string{q.Apps, q.Hosts} {
+	flag(q.Terms)
+	num(int64(q.Facilities))
+	for _, list := range [][]string{q.Apps, q.Hosts, q.ExcludeApps, q.ExcludeHosts, q.ExcludeDevices} {
 		vs := sortedUnique(list)
 		num(int64(len(vs)))
 		for _, v := range vs {

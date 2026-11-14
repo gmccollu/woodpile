@@ -197,6 +197,9 @@ reached.`, stderr)
 		uiRows(w, cfg, status.UICertFingerprint)
 		statusTLSRows(w, cfg, nil)
 		w.row("Data", status.DataDir)
+		if cfgErr == nil {
+			updateRows(w, cfg, status.Version)
+		}
 		bannerRows(w, status.Banners)
 		return 0
 	case errors.Is(apiErr, errNeedsLogin):
@@ -219,6 +222,9 @@ reached.`, stderr)
 		uiRows(w, cfg, rs.UI.CertFingerprint)
 		statusTLSRows(w, cfg, &rs)
 		w.row("Data", cfg.Storage.DataDir)
+		if cfgErr == nil {
+			updateRows(w, cfg, rs.Version)
+		}
 		bannerRows(w, rs.Banners)
 		return 0
 	}

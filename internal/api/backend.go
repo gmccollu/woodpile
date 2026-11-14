@@ -88,6 +88,35 @@ type Backend interface {
 	// the cursor, the resolved range) comes back as a *RequestError.
 	Search(ctx context.Context, r SearchRequest) (SearchPage, error)
 
+	// SearchSchema serves GET /api/search/schema: the data types and their
+	// field-panel fields.
+	SearchSchema(ctx context.Context) ([]SearchType, error)
+
+	// Summary serves GET /api/search/summary: one response of a field-panel
+	// and histogram summary. What only the backend can check (the query, the
+	// bucket, the cursor, an expired summary) is a *RequestError.
+	Summary(ctx context.Context, r SummaryRequest) (SummaryPage, error)
+
+	// SavedSearches serves GET /api/saved-searches: every saved search of a
+	// type, sorted by name ignoring case, with MissingDevices and MissingGroup
+	// worked out now.
+	SavedSearches(ctx context.Context, typ string) ([]SavedSearch, error)
+	// SavedSearch serves GET /api/saved-searches/{id}: ErrNotFound for an
+	// unknown id.
+	SavedSearch(ctx context.Context, id string) (SavedSearch, error)
+	// CreateSavedSearch serves POST /api/saved-searches. A query /api/search
+	// would refuse is a *ValidationError ("query.q", "query.exclude"); a name in
+	// use a *NameTakenError; one too many ErrSavedSearchLimit.
+	CreateSavedSearch(ctx context.Context, in SavedSearchInput) (SavedSearch, error)
+	// UpdateSavedSearch serves PUT /api/saved-searches/{id}. With ifVersion >
+	// 0 it saves only if the saved search is still at that Version
+	// (ErrSavedSearchChanged). Errors otherwise as for CreateSavedSearch, and
+	// ErrNotFound.
+	UpdateSavedSearch(ctx context.Context, id string, in SavedSearchInput, ifVersion int64) (SavedSearch, error)
+	// DeleteSavedSearch serves DELETE /api/saved-searches/{id}: ErrNotFound
+	// for an unknown id.
+	DeleteSavedSearch(ctx context.Context, id string) error
+
 	// Context serves GET /api/context: before and after are 0-500. An invalid
 	// ref is a *RequestError, a ref whose file is gone ErrNotFound.
 	Context(ctx context.Context, ref string, before, after int) (ContextPage, error)
@@ -115,6 +144,24 @@ type Backend interface {
 	// DeleteExport serves DELETE /api/exports/{id}: it cancels a queued or
 	// building export, or deletes a ready one. ErrNotFound for an unknown id.
 	DeleteExport(ctx context.Context, id string) error
+
+	// Updates serves GET /api/updates: the update check's state (SPEC §10.2).
+	Updates(ctx context.Context) (UpdateInfo, error)
+
+	// SetUpdateCheck serves PUT /api/updates: it writes updates.check ("on" or
+	// "off", checked by this package) to the config like a settings save, and
+	// returns the new state.
+	SetUpdateCheck(ctx context.Context, check string) (UpdateInfo, error)
+
+	// CheckUpdatesNow serves POST /api/updates/check: ErrUpdateCheckOff unless
+	// updates.check is "on" (or the build can't check), a *RetryAfterError
+	// within a minute of the last one.
+	CheckUpdatesNow(ctx context.Context) error
+
+	// DismissUpdate serves POST /api/updates/dismiss: it hides the
+	// update_available banner for version, for everyone. A version that isn't
+	// one is a *RequestError.
+	DismissUpdate(ctx context.Context, version string) error
 
 	// RecordEvent adds one of the HTTP layer's own events to the service event
 	// log (the one exported as woodshed-events.log): UI start and bind errors,
@@ -195,10 +242,11 @@ type Listener struct {
 
 // Banner is a message the UI shows at the top of every page.
 type Banner struct {
-	Kind   string `json:"kind"`   // listener_bind, writes_paused, low_disk, … (docs/api.md)
-	Level  string `json:"level"`  // error, warn, info
-	Text   string `json:"text"`   //
-	Action string `json:"action"` // "" or "retry_listeners"
+	Kind   string `json:"kind"`          // listener_bind, writes_paused, low_disk, … (docs/api.md)
+	Level  string `json:"level"`         // error, warn, info
+	Text   string `json:"text"`          //
+	Action string `json:"action"`        // "", "retry_listeners", "update_choice" or "update_dismiss"
+	URL    string `json:"url,omitempty"` // a link for the banner (update_available: the release page)
 }
 
 // ---- GET /api/stats ----
@@ -293,6 +341,14 @@ type Settings struct {
 	Storage   StorageSettings   `json:"storage"`
 	UI        UISettings        `json:"ui"`
 	Quiet     QuietSettings     `json:"quiet"`
+	// Updates is always in GET. A PUT without it (a 1.0 client or script)
+	// leaves updates.check as it is.
+	Updates *UpdatesSettings `json:"updates,omitempty"`
+}
+
+// UpdatesSettings holds the update check setting.
+type UpdatesSettings struct {
+	Check string `json:"check"` // "ask", "on" or "off"
 }
 
 // ListenersSettings holds the syslog listener settings.
@@ -349,6 +405,54 @@ type QuietSettings struct {
 	QuietAfterSeconds   int `json:"quiet_after_seconds"`
 	OfflineAfterSeconds int `json:"offline_after_seconds"`
 }
+
+// ---- /api/updates ----
+
+// UpdateInfo is the body of GET /api/updates (and of PUT's answer).
+type UpdateInfo struct {
+	Check            string         `json:"check"`     // "ask", "on" or "off"
+	Available        bool           `json:"available"` // false in a build that can't check
+	URL              string         `json:"url"`       // the releases file
+	Current          string         `json:"current"`
+	LastCheck        *time.Time     `json:"last_check"`  // nil until the first check
+	LastResult       string         `json:"last_result"` // "", "ok" or "error"
+	LastError        string         `json:"last_error"`
+	LastErrorKind    string         `json:"last_error_kind"`
+	NextCheck        *time.Time     `json:"next_check"` // nil unless check is "on"
+	Latest           *LatestRelease `json:"latest"`     // nil until a check succeeds, and after turning it off
+	UpdateAvailable  bool           `json:"update_available"`
+	DismissedVersion string         `json:"dismissed_version"`
+}
+
+// LatestRelease is the newest release this build would offer.
+type LatestRelease struct {
+	Version    string `json:"version"`
+	Prerelease bool   `json:"prerelease"`
+	URL        string `json:"url"` // the release page
+}
+
+func (u *UpdateInfo) normalize() {
+	if u.LastCheck != nil {
+		t := u.LastCheck.UTC()
+		u.LastCheck = &t
+	}
+	if u.NextCheck != nil {
+		t := u.NextCheck.UTC()
+		u.NextCheck = &t
+	}
+}
+
+// ErrUpdateCheckOff is CheckUpdatesNow's answer while updates.check isn't
+// "on", or in a build that can't check (409).
+var ErrUpdateCheckOff = errors.New("the update check is off")
+
+// RetryAfterError is a 429 with a Retry-After header.
+type RetryAfterError struct {
+	After time.Duration
+	Msg   string
+}
+
+func (e *RetryAfterError) Error() string { return e.Msg }
 
 // ---- GET /api/storage/history ----
 

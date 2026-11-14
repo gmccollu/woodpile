@@ -4,6 +4,14 @@
 # package); then the rename: the last Woodpile release candidate's package, and this one
 # installed over it (OLD_RELEASE below). The checks live in scripts/smoke/.
 #
+# The 1.1 acceptance item for WOODSHED_UPDATE_CHECK (SPEC §10.4) runs inside those steps: the
+# MSI property on an upgrade, a reinstall (an invalid value) and a fresh install (windows.ps1
+# -Mode msi, x64 and arm64); `sudo VAR=value apt-get install` for the deb and VAR=value dnf
+# (as root in the container) for the rpm, which must reach the install scripts (unix.sh deb|rpm);
+# and `sudo VAR=value installer -pkg` for the pkg, where whether macOS installer passes it
+# through is reported as a PASS or an ::warning:: annotation, and the documented fallback (a
+# pre-seeded woodshed.toml) is checked either way (unix.sh pkg).
+#
 # Syslog over TLS (1.1) on every OS: `woodshed tls on`, 1,000 messages over TLS from another
 # process (checking the downloaded CA), `woodshed tls off`. On Windows also the 1.1 acceptance
 # items: the MSI and `woodshed install` ship the "Woodshed syslog (TLS 6514)" rule disabled,

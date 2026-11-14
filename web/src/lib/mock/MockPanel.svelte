@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { MOCK_PASSWORD, expireSession, mock, restartFirstRun, sendFirstMessage, setFleetSize, setLanAuth } from './server.svelte';
+  import { MOCK_PASSWORD, expireSession, expireSummaries, mock, restartFirstRun, sendFirstMessage, setFleetSize, setLanAuth, updates } from './server.svelte';
   import { loadSession } from '../session.svelte';
   import { live, refreshDevices, refreshStatus } from '../status.svelte';
   import { go } from '../router.svelte';
@@ -77,8 +77,18 @@
         </label>
         <label class="row"><input type="checkbox" bind:checked={mock.deviceLimit} onchange={() => refreshStatus()} /> New senders refused (device limit)</label>
         <label class="row"><input type="checkbox" bind:checked={mock.slowScan} /> Slow search scans (partial pages)</label>
+        <label class="row"><input type="checkbox" bind:checked={mock.slowSummary} /> Slow field counts (partial summaries)</label>
+        <button class="ghost-btn" onclick={expireSummaries}>Expire running field counts</button>
         <label class="row"><input type="checkbox" bind:checked={mock.exportFail} /> Exports fail at 40 %</label>
         <label class="row"><input type="checkbox" checked={mock.lan} onchange={lan} /> LAN mode with auth</label>
+        <label class="row">
+          Update checks find
+          <select class="field" bind:value={updates.result}>
+            <option value="newer">1.2.0 is out</option>
+            <option value="latest">this is the latest</option>
+            <option value="error">a TLS error</option>
+          </select>
+        </label>
         <div class="row presets">
           <button class="ghost-btn" onclick={expire} disabled={!mock.lan || !mock.loggedIn}>Expire session</button>
         </div>
@@ -108,6 +118,7 @@
         <p class="hint">TLS 1.0/1.1 banner: tick "Allow TLS 1.0 and 1.1" in Settings and save.</p>
         <p class="hint">Mock password: <code>{MOCK_PASSWORD}</code>. Ten wrong tries lock logins for 15 min.</p>
         <p class="hint">Settings validation: try port 70000, a bad CIDR, or offline &lt; quiet.</p>
+        <p class="hint">The update check needs <code>?mock_updates=ask</code> (or on, off): a release build.</p>
       </div>
     {/if}
   </div>

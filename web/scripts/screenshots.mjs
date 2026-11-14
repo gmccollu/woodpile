@@ -8,7 +8,8 @@
 //
 // CHROME=/path/to/chrome, BASE=http://host:port and OUT=/some/dir override the defaults.
 // Shots with a `check` also assert behaviour (a JS expression that must be true),
-// and `noshot` entries are checks only, so this doubles as a UI smoke test.
+// and `noshot` entries are checks only, so this doubles as a UI smoke test. A `clip`
+// (a CSS selector) captures just that element, wherever it is on the page.
 import { spawn } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -882,7 +883,7 @@ const SHOTS = [
     wait: 2000,
     act: `if (__btn('Export these results').disabled) throw new Error('export disabled for a regex search'); __btn('Export these results').click();`,
     after: 1500,
-    check: `document.querySelector('#exq').value === 'deny (tcp|udp)' && __btn('.* Regex').getAttribute('aria-pressed') === 'true'
+    check: `document.querySelector('#exq').value === 'deny (tcp|udp)' && __btn('Regex').getAttribute('aria-pressed') === 'true'
       && __btn('Aa Case').getAttribute('aria-pressed') === 'true' && /Up to [\\d,]+ lines/.test(document.body.innerText)`,
   },
   {
@@ -977,6 +978,216 @@ const SHOTS = [
     check: `(() => { const b = JSON.parse(window.__woodshedMock.lastExportBody || '{}');
       return location.hash.startsWith('#/export?') && document.querySelector('#exapp').value === '%FW-*' && document.querySelector('#exhost').value === 'edge-fw-01'
         && document.querySelector('#exex').value === 'denied' && b.app?.[0] === '%FW-*' && b.host?.[0] === 'edge-fw-01' && b.exclude === 'denied'; })()`,
+  },
+  // ---- Events v2: field panel, histogram, Text | Terms | Regex, saved searches (SPEC §10.1) ----
+  // With the field panel beside the results (1,100 px and wider), "Export these results" stays on the Results
+  // bar's first line, next to the title.
+  ...[1100, 1400].map((w) => ({
+    name: `events2-results-bar-${w}-light`,
+    mode: 'light',
+    w,
+    url: '/?mock_panel=0#/events?q=deny&r=24h',
+    wait: 3500,
+    check: `(() => { const bar = document.querySelector('section[aria-label=Results] .bar'); const title = bar.querySelector('b');
+      const exp = [...bar.querySelectorAll('button')].find((b) => b.textContent.includes('Export these results'));
+      const fp = document.querySelector('aside.fp'); const res = document.querySelector('section[aria-label=Results]');
+      return !!exp && Math.abs(exp.getBoundingClientRect().top - title.getBoundingClientRect().top) < 12
+        && fp.getBoundingClientRect().right <= res.getBoundingClientRect().left && bar.innerText.includes('Scanned'); })()`,
+  })),
+  ...both({
+    name: 'events2-panel',
+    url: '/?mock_panel=0#/events?r=1h',
+    wait: 3500,
+    check: `(() => { const fp = document.querySelector('aside.fp'); const heads = [...fp.querySelectorAll('h3')].map((h) => h.textContent.trim().split(/\\s{2,}|\\d/)[0].trim());
+      return heads.join('|') === 'Device|Severity|Facility|Host|Program/tag' && fp.querySelectorAll('li.row button.val').length > 10
+        && fp.innerText.includes('Counted all of') && !fp.innerText.includes('≈')
+        && document.querySelector('.histwrap').innerText.includes('from the index') && document.querySelectorAll('.hist .bar').length === 60; })()`,
+  }),
+  ...both({
+    name: 'events2-histogram-partial',
+    url: '/?mock_panel=0&mock_slow_summary=1#/events?q=deny&r=24h',
+    wait: 2500,
+    check: `document.querySelectorAll('.hist .bar.pending').length > 10 && document.querySelectorAll('.hist .bar .fill:not(.hatch)').length > 0
+      && /Counted .+–.+ of .+–.+/.test(document.querySelector('aside.fp').innerText) && !document.querySelector('aside.fp').innerText.includes('Counted all') && document.querySelector('.histwrap').innerText.includes('not counted yet')`,
+  }),
+  ...both({
+    name: 'events2-count-the-rest',
+    url: '/?mock_panel=0&mock_slow_summary=1&mock_latency=20#/events?q=deny&r=24h',
+    wait: 9000,
+    check: `!!__btn('Count the rest') && document.querySelector('aside.fp').innerText.includes('Counting stopped after 60 s of scanning')`,
+  }),
+  {
+    name: 'events2-count-the-rest-continues',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0&mock_slow_summary=1&mock_latency=20#/events?q=deny&r=24h',
+    wait: 9000,
+    act: `window.__c0 = document.querySelector('aside.fp').innerText.match(/Counted (\\S+)/)[1]; __btn('Count the rest').click();`,
+    after: 2500,
+    check: `document.querySelector('aside.fp').innerText.match(/Counted (\\S+)/)[1] !== window.__c0`,
+  },
+  {
+    name: 'events2-expired-summary-restarts',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0&mock_slow_summary=1&mock_latency=20#/events?q=deny&r=24h',
+    wait: 2000,
+    act: `window.__woodshedMock.expireSummaries();`,
+    after: 2500,
+    check: `window.__woodshedMock.expiredSummaries === 1 && !document.querySelector('aside.fp [role=alert]') && document.querySelector('aside.fp').innerText.includes('Counting…')`,
+  },
+  {
+    name: 'events2-terms-error-light',
+    mode: 'light',
+    url: '/?mock_panel=0#/events?q=deny%20(tcp&syn=terms&r=1h',
+    wait: 1500,
+    check: `document.querySelector('#sq-err')?.textContent === 'Missing ")" for the "(" at character 6.' && __btn('Terms').getAttribute('aria-pressed') === 'true'`,
+  },
+  {
+    name: 'events2-terms-results-light',
+    mode: 'light',
+    url: '/?mock_panel=0#/events?q=deny%20NOT%20udp&syn=terms&r=24h',
+    wait: 3000,
+    check: `(() => { const rows = [...document.querySelectorAll('.logline.clickable')];
+      return rows.length > 20 && rows.every((r) => /deny/i.test(r.textContent) && !/udp/i.test(r.textContent))
+        && [...document.querySelectorAll('mark.hl')].every((m) => m.textContent.toLowerCase() === 'deny'); })()`,
+  },
+  {
+    name: 'events2-regex-and-terms-switch',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/events?q=deny&r=1h',
+    act: `__btn('Regex').click(); await __tick(); __btn('Terms').click(); await __tick(); document.querySelector('form[role=search]').requestSubmit();`,
+    after: 1500,
+    check: `/[?&]syn=terms(&|$)/.test(location.hash) && !/[?&]re=1/.test(location.hash) && __btn('Regex').getAttribute('aria-pressed') === 'false'`,
+  },
+  ...both({
+    name: 'events2-saved-menu',
+    url: '/?mock_panel=0#/events?r=1h',
+    wait: 2500,
+    act: `[...document.querySelectorAll('button')].find((b) => b.textContent.trim().startsWith('Saved')).click();`,
+    after: 800,
+    check: `(() => { const m = document.querySelector('[role=dialog][aria-label="Saved searches"]');
+      return !!m && m.innerText.includes('Edge denies') && m.innerText.includes('Auth failures') && !!__btn('Save as…'); })()`,
+  }),
+  {
+    name: 'events2-saved-open-missing-light',
+    mode: 'light',
+    url: '/?mock_panel=0#/events?r=1h',
+    wait: 2000,
+    act: `[...document.querySelectorAll('button')].find((b) => b.textContent.trim().startsWith('Saved')).click(); await new Promise((r) => setTimeout(r, 700));
+      [...document.querySelectorAll('[role=dialog] button.open')].find((b) => b.textContent.includes('Auth failures')).click();`,
+    after: 2500,
+    check: `document.querySelector('.savedline s')?.textContent === '10.9.9.9' && document.querySelector('.savedline').innerText.includes('no longer known')
+      && /[?&]saved=ss_/.test(location.hash) && document.querySelector('#sq').value === 'failed' && !document.querySelector('.savedline .badge')`,
+  },
+  {
+    name: 'events2-saved-changed-and-save-as',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/events?r=1h',
+    wait: 2000,
+    act: `const saved = () => [...document.querySelectorAll('button')].find((b) => b.textContent.trim().startsWith('Saved'));
+      saved().click(); await new Promise((r) => setTimeout(r, 700));
+      [...document.querySelectorAll('[role=dialog] button.open')].find((b) => b.textContent.includes('Edge denies')).click();
+      await new Promise((r) => setTimeout(r, 2000));
+      __set(document.querySelector('#sq'), 'deny NOT 10.1.0.255 NOT 10.1.0.254'); await __tick();
+      if (!document.querySelector('.savedline .badge')) throw new Error('no changed badge');
+      saved().click(); await new Promise((r) => setTimeout(r, 700)); __btn('Save as…').click(); await __tick();
+      __set(document.querySelector('#ss-name'), 'Edge denies'); await __tick();
+      document.querySelector('form.nameform').requestSubmit(); await new Promise((r) => setTimeout(r, 700));
+      if (!document.querySelector('#ss-err')?.textContent.includes('already exists')) throw new Error('no name clash');
+      __set(document.querySelector('#ss-name'), '  Edge denies, two gateways  '); await __tick();
+      document.querySelector('form.nameform').requestSubmit();`,
+    after: 1500,
+    check: `document.querySelector('.savedline b')?.textContent === 'Edge denies, two gateways' && !document.querySelector('.savedline .badge')`,
+  },
+  {
+    name: 'events2-click-value-filters',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/events?r=24h',
+    wait: 3000,
+    act: `const sec = [...document.querySelectorAll('aside.fp section')].find((x) => x.querySelector('h3').textContent.startsWith('Host'));
+      const b = sec.querySelector('button.val'); window.__v = b.textContent; b.click();`,
+    after: 2500,
+    check: `(() => { const rows = [...document.querySelectorAll('.logline.clickable')];
+      return __field('Host').value === window.__v && rows.length > 0 && rows.every((r) => r.querySelector('.c.hn').textContent.toLowerCase() === window.__v.toLowerCase())
+        && [...document.querySelectorAll('aside.fp .chip')].some((c) => c.textContent.startsWith(window.__v)); })()`,
+  },
+  {
+    name: 'events2-alt-click-excludes-light',
+    mode: 'light',
+    url: '/?mock_panel=0#/events?r=24h',
+    wait: 3000,
+    act: `const sec = [...document.querySelectorAll('aside.fp section')].find((x) => x.querySelector('h3').textContent.startsWith('Program/tag'));
+      const b = sec.querySelector('button.val'); window.__v = b.textContent; b.dispatchEvent(new MouseEvent('click', { bubbles: true, altKey: true }));`,
+    after: 3000,
+    check: `(() => { const rows = [...document.querySelectorAll('.logline.clickable')]; const k = (x) => x.replace(/^%/, '').toLowerCase();
+      return new URLSearchParams(location.hash.split('?')[1]).get('xapp') === window.__v && rows.length > 0 && rows.every((r) => k(r.querySelector('.c.ap').textContent) !== k(window.__v))
+        && [...document.querySelectorAll('aside.fp .chip.out')].some((c) => c.textContent.startsWith('not ' + window.__v)); })()`,
+  },
+  {
+    name: 'events2-minus-severity-sends-complement',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/events?r=1h',
+    wait: 3000,
+    act: `document.querySelector('aside.fp [aria-label="Leave out info"]').click();`,
+    after: 2500,
+    check: `new URLSearchParams(location.hash.split('?')[1]).get('sev') === '0,1,2,3,4,5,7,unknown'
+      && [...document.querySelectorAll('.logline.clickable .c.s')].every((s) => s.textContent.trim() !== 'info')`,
+  },
+  {
+    name: 'events2-chip-removes-filter',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/events?r=1h&fac=23&xhost=edge-fw-01',
+    wait: 2500,
+    act: `[...document.querySelectorAll('aside.fp .chip')].find((c) => c.textContent.startsWith('not edge-fw-01')).click();`,
+    after: 2000,
+    check: `(() => { const p = new URLSearchParams(location.hash.split('?')[1]); return !p.has('xhost') && p.get('fac') === '23'
+      && [...document.querySelectorAll('aside.fp .chip')].some((c) => c.textContent.startsWith('local7')); })()`,
+  },
+  {
+    name: 'events2-none-row-not-clickable',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/events?r=24h',
+    wait: 3500,
+    check: `(() => { const r = [...document.querySelectorAll('aside.fp li.static')].filter((li) => li.textContent.includes('(none)'));
+      return r.length > 0 && r.every((li) => !li.querySelector('button')); })()`,
+  },
+  {
+    name: 'events2-drag-zooms-and-back',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/events?r=1h',
+    wait: 3000,
+    act: `const h = document.querySelector('.hist'); const r = h.getBoundingClientRect(); const x = (i) => r.left + (i + 0.5) * r.width / 60;
+      const ev = (t, i) => h.dispatchEvent(new PointerEvent(t, { bubbles: true, clientX: x(i), clientY: r.top + 30, pointerId: 1, button: 0 }));
+      ev('pointerdown', 10); ev('pointermove', 15); ev('pointermove', 19); ev('pointerup', 19);
+      await new Promise((res) => setTimeout(res, 2500));
+      const p = new URLSearchParams(location.hash.split('?')[1]);
+      window.__zoom = (Date.parse(p.get('to')) - Date.parse(p.get('from'))) / 60000;
+      window.__bars = document.querySelectorAll('.hist .bar').length;
+      history.back();`,
+    after: 2500,
+    check: `window.__zoom === 10 && window.__bars === 120 && new URLSearchParams(location.hash.split('?')[1]).get('r') === '1h' && !location.hash.includes('from=')`,
+    report: `JSON.stringify({ zoom: window.__zoom, bars: window.__bars, hash: location.hash })`,
+  },
+  {
+    name: 'events2-export-carries-new-filters',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/events?q=deny%20NOT%20udp&syn=terms&r=1h&fac=23&xapp=kernel&xdev=10.1.0.2',
+    wait: 2500,
+    act: `__btn('Export these results').click();`,
+    after: 1500,
+    check: `(() => { const b = JSON.parse(window.__woodshedMock.lastExportBody || '{}');
+      return b.syntax === 'terms' && b.q === 'deny NOT udp' && JSON.stringify(b.facilities) === '[23]' && b.exclude_app?.[0] === 'kernel'
+        && b.exclude_devices?.[0] === '10.1.0.2' && __btn('Terms').getAttribute('aria-pressed') === 'true' && document.body.innerText.includes('not program/tag: kernel'); })()`,
+    report: `window.__woodshedMock.lastExportBody`,
   },
   ...both({
     name: 'dashboard-open-in-events',
@@ -1374,6 +1585,97 @@ const SHOTS = [
     act: `__only('tls');`,
     check: `!!document.querySelector('[data-tls-firewall]') && document.querySelector('[data-tls-firewall]').innerText.includes('woodshed tls on')`,
   },
+
+  // The update check (docs/api.md → Update check): mock_updates makes it a release build.
+  ...both({
+    name: 'banner-update-prompt',
+    url: '/?mock_panel=0&mock_updates=ask#/dashboard',
+    check: `(() => { const b = [...document.querySelectorAll('.banner')].find((x) => x.innerText.includes('Check for new Woodshed versions once a day?'));
+      return !!b && !!__btn('Turn on') && !!__btn('No thanks') && !b.querySelector('.x'); })()`,
+  }),
+  ...both({
+    name: 'banner-update-available',
+    url: '/?mock_panel=0&mock_updates=on#/dashboard',
+    check: `document.body.innerText.includes('Woodshed 1.2.0 is available (this is 1.1.0).')
+      && [...document.querySelectorAll('.banner a')].some((a) => a.href === 'https://github.com/gmccollu/woodshed/releases/tag/v1.2.0')`,
+  }),
+  {
+    name: 'update-turn-on-clears-prompt',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0&mock_updates=ask#/dashboard',
+    act: `__btn('Turn on').click();`,
+    after: 4500,
+    check: `!document.body.innerText.includes('Check for new Woodshed versions') && document.body.innerText.includes('Woodshed 1.2.0 is available')`,
+  },
+  {
+    name: 'update-no-thanks-clears-prompt',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0&mock_updates=ask#/dashboard',
+    act: `__btn('No thanks').click();`,
+    after: 1500,
+    check: `!document.body.innerText.includes('Check for new Woodshed versions') && !document.body.innerText.includes('is available')`,
+  },
+  {
+    name: 'update-dismiss-hides-version',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0&mock_updates=on#/dashboard',
+    act: `document.querySelector('[aria-label="Hide this until a newer version"]').click();`,
+    after: 1500,
+    check: `!document.body.innerText.includes('Woodshed 1.2.0 is available')`,
+  },
+  ...both({
+    name: 'settings-updates',
+    url: '/?mock_panel=0&mock_updates=on#/settings?section=updates',
+    clip: 'section[aria-labelledby="updates"]',
+    check: `(() => { const t = document.querySelector('section[aria-labelledby="updates"]')?.innerText ?? '';
+      return t.includes('Check for new versions once a day') && t.includes('gmccollu.github.io/woodshed/releases.json')
+        && t.includes('Woodshed 1.2.0 is available (this is 1.1.0), checked 3 h ago') && t.includes('Next check') && !!__btn('Check now'); })()`,
+  }),
+  {
+    name: 'settings-updates-check-now-light',
+    mode: 'light',
+    url: '/?mock_panel=0&mock_updates=on&mock_update_result=latest#/settings?section=updates',
+    clip: 'section[aria-labelledby="updates"]',
+    act: `__btn('Check now').click();`,
+    after: 3500,
+    check: `document.querySelector('section[aria-labelledby="updates"]').innerText.includes('OK, 1.1.0 is the latest (checked just now)')`,
+  },
+  {
+    name: 'settings-updates-failed-light',
+    mode: 'light',
+    url: '/?mock_panel=0&mock_updates=on&mock_update_result=error#/settings?section=updates',
+    clip: 'section[aria-labelledby="updates"]',
+    check: `document.querySelector('section[aria-labelledby="updates"]').innerText.includes('Last check failed 3 h ago: TLS certificate not trusted (a proxy that inspects HTTPS?)')`,
+  },
+  {
+    name: 'settings-updates-ask-light',
+    mode: 'light',
+    url: '/?mock_panel=0&mock_updates=ask#/settings?section=updates',
+    clip: 'section[aria-labelledby="updates"]',
+    check: `(() => { const s = document.querySelector('section[aria-labelledby="updates"]'); return s.innerText.includes('Not decided yet')
+      && !s.querySelector('input[type=checkbox]').checked && __btn('Check now').disabled; })()`,
+  },
+  {
+    name: 'settings-updates-dev-build-light',
+    mode: 'light',
+    url: '/?mock_panel=0#/settings?section=updates',
+    clip: 'section[aria-labelledby="updates"]',
+    check: `document.querySelector('section[aria-labelledby="updates"]').innerText.includes('Not available in this build (0.1.0)')
+      && !document.body.innerText.includes('Check for new Woodshed versions')`,
+  },
+  {
+    name: 'settings-update-switch-then-save',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0&mock_updates=on#/settings',
+    act: `document.querySelector('section[aria-labelledby="updates"] input[type=checkbox]').click(); await new Promise((r) => setTimeout(r, 1200));
+      __set(__field('Keep logs for'), '14'); await __tick(); __btn('Save').click();`,
+    after: 1500,
+    check: `!document.body.innerText.includes('changed since you loaded them') && !document.body.innerText.includes('changed elsewhere')`,
+  },
 ].filter((s) => s.name.includes(only));
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -1474,6 +1776,16 @@ try {
       events.length = 0;
       if (s.noshot) {
         console.log(`  ${s.name}: checked`);
+        continue;
+      }
+      if (s.clip) {
+        const r = JSON.parse(
+          await evaluate(`const r = document.querySelector(${JSON.stringify(s.clip)}).getBoundingClientRect();
+            return JSON.stringify({ x: r.left + scrollX - 16, y: r.top + scrollY - 16, width: r.width + 32, height: r.height + 32 });`),
+        );
+        const shot = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true, clip: { ...r, x: Math.max(0, r.x), y: Math.max(0, r.y), scale: 1 } });
+        writeFileSync(join(OUT, `${s.name}.png`), Buffer.from(shot.data, 'base64'));
+        console.log(`  ${s.name}.png (${Math.round(r.width)}x${Math.round(r.height)}, ${s.clip})`);
         continue;
       }
       const height = await evaluate('return Math.ceil(document.documentElement.scrollHeight)');

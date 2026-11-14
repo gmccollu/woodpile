@@ -158,8 +158,21 @@ deleted.
 
 ## Does Woodshed connect to the internet?
 
-No. It makes no outbound connections at all: no telemetry, no update checks. The version is on the **About** page,
-with a link to the releases page if you want to check for a newer one yourself.
+Only if you turn on the update check. The first time you open the UI, Woodshed asks once whether to check for new
+versions once a day. Until you say yes, and after **No thanks**, it makes no outbound connections at all. You can
+change your answer any time in **Settings → Updates**.
+
+When it's on, Woodshed fetches one public file once a day, `https://gmccollu.github.io/woodshed/releases.json`,
+with a plain HTTPS GET: no query string, no cookies, and a User-Agent of just `Woodshed` (no version). Nothing
+about your installation, devices or logs is sent. As with any web request, your DNS server and the site's host
+see your public IP address and the time. It uses `HTTPS_PROXY` and `NO_PROXY` if they're set in the service's
+environment; it doesn't read the system's proxy settings. If a newer version is out, the UI shows a banner with a
+link to its release page. Woodshed never downloads or installs anything itself. Settings shows when it last
+checked and whether that worked.
+
+There's no telemetry. The version is on the **About** page, with a link to the releases page if you'd rather check
+yourself. To decide for many machines at once, set `check = "off"` (or `"on"`) under `[updates]` in
+`woodshed.toml` before the first start. Versions before 1.1 have no update check and make no outbound connections.
 
 ## The "latest release" link gives a 404
 
