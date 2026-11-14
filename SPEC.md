@@ -331,6 +331,22 @@ product or a SIEM. Each new data type has to fit that rule (decided 2026-11-11).
 - **SNMP trap receiver** (UDP 162; v1, v2c, and v3 with user-configured credentials stored like the UI password).
   Traps are stored decoded as text lines, with varbinds and the raw PDU, in the same per-device, per-day files. No
   MIB compiler in the first version; numeric OIDs, plus an optional folder of MIB files for names.
+- **Incident bundle** (owner, 2026-11-14): pick a moment, get the evidence around it.
+  - Started from Events ("Bundle around this" on a line, or a point on the histogram), from Export ("Around a time")
+    and from the CLI: `woodshed bundle --at <time> --before 30m --after 10m [--devices …|--group …] [--out file.zip]`,
+    so a remote helper can ask for one command and one zip.
+  - Window presets: 15 min before / 5 after, 1 h / 15 min, 4 h / 1 h, 24 h / 1 h, or custom; local or UTC input.
+  - Devices: chosen ones, a group, or every device that sent anything in the window.
+  - Before building, Events shows the window (histogram, field panel) so it can be narrowed first.
+  - The zip: one folder per data type (syslog now; traps in 1.2, poll data and reboot markers in 1.3, flows in 2.0),
+    the manifest with SHA-256s, and a `README.txt` summary per device: counts by severity, first and last message,
+    gaps when Woodshed wasn't running, reboots detected, and drops or truncations in the window.
+  - Later, maybe: an offline `timeline.html` in the zip, and a prompt when a device reboots or goes quiet.
+- **Command-line search** (owner, 2026-11-14): `woodshed search "<q>" [--regex|--terms] [--from … --to …|--last 1h]
+  [--devices …] [--severities …] [--app …] [--host …] [--context N] [--json]` prints matching lines to stdout using
+  the same engine as Events (compressed days included, only the files that cover the range). Native on every OS, for
+  headless boxes, scripts and remote sessions; it reads the data folder directly (it needs the same rights as
+  `reindex`), so it works with the UI off or in LAN mode.
 
 ### 1.3
 - **SNMP poller ("OID watcher")**, moved up from 2.0 (owner, 2026-11-13). It collects evidence, so it's small and
