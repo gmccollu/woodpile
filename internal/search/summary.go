@@ -17,9 +17,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/gmccollu/woodshed/internal/hub"
-	"github.com/gmccollu/woodshed/internal/model"
-	"github.com/gmccollu/woodshed/internal/store/logfile"
-	"github.com/gmccollu/woodshed/internal/syslog"
 )
 
 // Summaries: the Events field panel and histogram (GET /api/search/summary,
@@ -268,6 +265,14 @@ type sumState struct {
 
 	used time.Time // for SummaryTTL
 	lru  uint64    // put order, for MaxSummaries
+
+	// kept holds the compressed-file passes paused when a request's budget
+	// ran out; they close with the state. passBlocks counts blocks read by
+	// passes (tests).
+	kept       *keptReaders
+	passBlocks int
+	wall       time.Time   // wall-clock time of the last put, for the reaper
+	reaper     *time.Timer // closes kept readers once the state expires
 }
 
 // summaries keeps the running summaries, least recently used out first.
@@ -285,24 +290,31 @@ func newSummaries() *summaries {
 // take removes and returns the state for id at seq, or nil.
 func (c *summaries) take(id [16]byte, seq uint64, now time.Time) *sumState {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.expireLocked(now)
+	gone := c.expireLocked(now)
 	st := c.byID[id]
-	if st == nil || st.seq != seq {
-		return nil
+	if st != nil && st.seq != seq {
+		st = nil
 	}
-	delete(c.byID, id)
+	if st != nil {
+		delete(c.byID, id)
+	}
+	c.mu.Unlock()
+	for _, s := range gone {
+		s.drop()
+	}
+	if st != nil && st.reaper != nil {
+		st.reaper.Stop()
+	}
 	return st
 }
 
 func (c *summaries) put(st *sumState, now time.Time) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	st.used = now
+	st.used, st.wall = now, time.Now()
 	c.tick++
 	st.lru = c.tick
 	c.byID[st.id] = st
-	c.expireLocked(now)
+	gone := c.expireLocked(now)
 	for len(c.byID) > MaxSummaries {
 		var old *sumState
 		for _, s := range c.byID {
@@ -311,15 +323,47 @@ func (c *summaries) put(st *sumState, now time.Time) {
 			}
 		}
 		delete(c.byID, old.id)
+		gone = append(gone, old)
+	}
+	// The cache is only swept when it's used, so a state left alone closes its
+	// readers on a timer (wall clock).
+	st.reaper = time.AfterFunc(SummaryTTL+time.Second, func() {
+		c.mu.Lock()
+		cur := c.byID[st.id]
+		stale := cur == st && time.Since(st.wall) > SummaryTTL
+		if stale {
+			delete(c.byID, st.id)
+		}
+		c.mu.Unlock()
+		if stale {
+			st.kept.closeAll()
+		}
+	})
+	c.mu.Unlock()
+	for _, s := range gone {
+		s.drop()
 	}
 }
 
-func (c *summaries) expireLocked(now time.Time) {
+// expireLocked removes the states past SummaryTTL and returns them (the
+// caller drops them outside the lock).
+func (c *summaries) expireLocked(now time.Time) []*sumState {
+	var gone []*sumState
 	for id, s := range c.byID {
 		if now.Sub(s.used) > SummaryTTL {
 			delete(c.byID, id)
+			gone = append(gone, s)
 		}
 	}
+	return gone
+}
+
+// drop releases a state that's no longer cached.
+func (st *sumState) drop() {
+	if st.reaper != nil {
+		st.reaper.Stop()
+	}
+	st.kept.closeAll()
 }
 
 // ---- cursor ----
@@ -469,17 +513,21 @@ func (e *Engine) Summary(ctx context.Context, q SummaryQuery) (Summary, error) {
 			scanned, files, err = e.summaryScan(ctx, st, c, deadline)
 			<-e.sums.sem
 			if err != nil {
+				st.drop()
 				return Summary{}, err // the state is dropped: a cancelled scan can't resume
 			}
 		case <-t.C:
 		case <-ctx.Done():
 			t.Stop()
+			st.drop()
 			return Summary{}, ctx.Err()
 		}
 	}
 	out := e.summaryOut(st, top)
 	out.ScannedBytes, out.ScannedFiles, out.Elapsed = scanned, files, time.Since(start)
-	if !st.done {
+	if st.done {
+		st.drop()
+	} else {
 		st.seq++
 		e.sums.put(st, e.now())
 		out.NextCursor = e.encodeSummaryCursor(st)
@@ -489,7 +537,7 @@ func (e *Engine) Summary(ctx context.Context, q SummaryQuery) (Summary, error) {
 }
 
 func (e *Engine) newSummary(ctx context.Context, q SummaryQuery, bind []byte) (*sumState, error) {
-	st := &sumState{bind: bind, wantHist: !q.NoHistogram, sevs: q.Severities, facs: q.Facilities}
+	st := &sumState{bind: bind, wantHist: !q.NoHistogram, sevs: q.Severities, facs: q.Facilities, kept: newKeptReaders()}
 	_, _ = rand.Read(st.id[:])
 	var err error
 	if st.fromMs, st.toMs, err = e.resolveRange(q.Filter); err != nil {
@@ -550,120 +598,6 @@ func (e *Engine) newSummary(ctx context.Context, q SummaryQuery, bind []byte) (*
 		st.countedMs = st.fromMs
 	}
 	return st, nil
-}
-
-// summaryScan advances st's scan until the deadline or the end.
-func (e *Engine) summaryScan(ctx context.Context, st *sumState, c compiled, deadline time.Time) (int64, int, error) {
-	r := &run{e: e, ctx: ctx, deadline: deadline, maxSteps: e.testMaxSteps, now: e.now(), desc: true, m: c.m, ex: c.ex,
-		fields: c.fields, sevs: st.sevs, facs: st.facs, need: 1 << 30, files: map[int64]struct{}{}, ringBytes: math.MaxInt}
-	r.fromMs, r.toMs = st.fromMs, st.toMs
-	devIdx := make(map[string]int32, len(st.devs))
-	for i, d := range st.devs {
-		devIdx[d] = int32(i)
-	}
-	var streams []*stream
-	if st.started {
-		cur, err := e.decodeCursor(st.scanCursor, st.bind)
-		if err != nil {
-			return 0, 0, err
-		}
-		devs := make([]string, len(cur.streams))
-		for i, cs := range cur.streams {
-			devs[i] = cs.dev
-		}
-		files, err := e.filesByDevice(ctx, devs, r.fromMs, r.toMs)
-		if err != nil {
-			return 0, 0, err
-		}
-		for _, cs := range cur.streams {
-			streams = append(streams, cs.resume(files[cs.dev], true))
-		}
-	} else {
-		files, err := e.filesByDevice(ctx, st.devs, r.fromMs, r.toMs)
-		if err != nil {
-			return 0, 0, err
-		}
-		for _, d := range st.devs {
-			s := newStream(d, files[d])
-			s.fi = len(s.files) - 1
-			streams = append(streams, s)
-		}
-		st.started = true
-	}
-	r.streams = streams
-	defer func() {
-		for _, s := range streams {
-			s.close()
-		}
-	}()
-	wantHost := slices.Contains(st.wantFields, FieldHost)
-	wantApp := slices.Contains(st.wantFields, FieldApp)
-	var msg model.Message
-	var unesc []byte
-	cur := int32(0) // the stream whose lines the sink receives
-	r.sink = func(h hit) {
-		raw := h.esc
-		if bytes.IndexByte(raw, '\\') >= 0 {
-			unesc = logfile.Unescape(unesc[:0], raw)
-			raw = unesc
-		}
-		x := held{ms: h.ms, dev: cur, pri: int16(PRI(raw)), host: idNone, app: idNone}
-		if wantHost || wantApp {
-			syslog.Parse(raw, &msg)
-			if wantHost {
-				x.host = st.host.id(msg.Hostname, false)
-			}
-			if wantApp {
-				x.app = st.app.id(msg.App, true)
-			}
-		}
-		st.hold = append(st.hold, x)
-	}
-	if st.holdFlushN == 0 {
-		st.holdFlushN = 4096
-	}
-	for {
-		// Read the stream with the newest unread lines next, so the counted span
-		// grows from to downwards.
-		best, bestKey := -1, int64(0)
-		for i, s := range streams {
-			if s.done {
-				continue
-			}
-			k, _ := s.key(r)
-			if best < 0 || k > bestKey || (k == bestKey && s.dev < streams[best].dev) {
-				best, bestKey = i, k
-			}
-		}
-		if best < 0 {
-			break
-		}
-		if r.steps > 0 && r.expired() {
-			break
-		}
-		r.steps++
-		s := streams[best]
-		cur = devIdx[s.dev]
-		s.step(r)
-		if r.err != nil {
-			return 0, 0, r.err
-		}
-		for s.head() != nil {
-			r.sink(s.pop())
-		}
-		if len(st.hold) >= st.holdFlushN {
-			st.flush(r, streams)
-			st.holdFlushN = max(4096, 2*len(st.hold))
-		}
-	}
-	st.flush(r, streams)
-	st.scanCursor = e.encodeCursor(st.bind, r, streams)
-	if st.scanCursor == "" {
-		st.done = true
-		st.flush(r, nil) // nothing is unread: commit the rest
-		st.countedMs = st.fromMs
-	}
-	return r.scanned, len(r.files), nil
 }
 
 // flush commits the held lines that are newer than every unread line.

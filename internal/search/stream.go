@@ -53,9 +53,10 @@ type run struct {
 	unesc []byte
 	msg   model.Message // fields' scratch parse
 
-	// sink, when set (summaries), receives every match of a compressed-file
-	// pass as it's found, instead of the pass keeping the newest ones.
-	sink func(hit)
+	// sum is set for a summary scan (sumscan.go): every match goes to it as
+	// it's found, and a compressed-file pass that runs out of budget keeps its
+	// reader for the next request instead of starting again from the top.
+	sum *sumCollect
 }
 
 // expired reports whether the budget or the request is over.
@@ -510,22 +511,8 @@ func (s *stream) passDesc(r *run, fi *fileInfo) error {
 	if hi < 0 {
 		hi = s.re
 	}
-	if r.sink != nil {
-		// Every match goes to the sink as the pass reads it, so [lo, reached) is
-		// done even when the budget runs out first: the next pass starts there.
-		_, _, reached, done, err := r.pass(s.cur, fi, lo, hi)
-		if err != nil {
-			return err
-		}
-		if !done {
-			s.pos, s.hint = hi, reached
-			if hi < 0 {
-				s.pos = -1
-			}
-			return nil
-		}
-		s.pos, s.hint = s.rs, 0
-		return nil
+	if r.sum != nil {
+		return s.sumPass(r, fi, lo, hi)
 	}
 	key := passKey{fi.ID, r.cacheKey}
 	if r.cacheKey != "" && s.hint == 0 {
@@ -601,15 +588,6 @@ func (r *run) pass(o *opened, fi *fileInfo, lo, hi int64) (kept []hit, frontier,
 		}
 		r.scanned += int64(len(buf))
 		tmp = r.lines(buf, off, hi, fi, tmp[:0])
-		if r.sink != nil {
-			for _, h := range tmp {
-				r.sink(h)
-			}
-			if hi >= 0 && off+int64(len(buf)) >= hi {
-				break
-			}
-			continue
-		}
 		for _, h := range tmp {
 			h.line = bytes.Clone(h.line)
 			_, h.esc, _ = splitLine(h.line)

@@ -105,6 +105,9 @@ type Engine struct {
 	testHookOpen func(rel string) // called before each file open
 	testMaxSteps int              // >0: a request's budget is this many reads, not Budget
 	prefetches   atomic.Int64     // prefetch runs, for tests
+	inflated     atomic.Int64     // bytes decompressed from .gz files, for tests
+	sumWorkers   int              // >0: parallel compressed passes per summary scan (tests)
+	sumNoKeep    bool             // tests: don't keep paused passes (the old behaviour, for comparison)
 }
 
 // New returns an Engine.
