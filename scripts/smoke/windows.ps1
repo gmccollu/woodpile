@@ -19,6 +19,13 @@
   answers on 8514, 10,000 messages are all on disk exactly once (scripts/verifyseq), the
   Application event log has Woodshed entries, and the data survives restarts, upgrades and
   uninstalls until it's asked to be deleted.
+
+  Syslog over TLS (SPEC §10.3.6, the 1.1 acceptance items): the MSI and `woodshed install` add
+  the rule "Woodshed syslog (TLS 6514)" present but disabled; an MSI upgrade keeps its state
+  (enabled stays enabled); the service, as NT SERVICE\Woodshed, reads the rule's state (GET
+  /api/tls firewall.state, and the tls_firewall banner while the rule is off); `woodshed tls on`
+  enables it and a TLS message from another process arrives (`woodshed send --proto tls --ca`
+  with the downloaded CA); `woodshed tls off` disables it; uninstall removes it.
 #>
 [CmdletBinding()]
 param(
@@ -69,7 +76,9 @@ function Wait-Up {
     for ($i = 0; $i -lt 60; $i++) {
         try {
             $st = Invoke-RestMethod -TimeoutSec 2 "$Ui/api/status"
-            if ($st.listeners.Count -eq 2 -and @($st.listeners | Where-Object { $_.ok -and $_.port -eq 514 }).Count -eq 2) { return $st }
+            $on514 = @($st.listeners | Where-Object { $_.ok -and $_.port -eq 514 -and $_.proto -in "udp", "tcp" }).Count
+            $down = @($st.listeners | Where-Object { -not $_.ok }).Count
+            if ($on514 -eq 2 -and $down -eq 0) { return $st }
         } catch { }
         Start-Sleep 1
     }
@@ -119,6 +128,93 @@ function Check-Running {
     return $st
 }
 
+$TlsRule = "Woodshed syslog (TLS 6514)"
+
+function Check-TlsRule([bool]$enabled, [string]$port = "6514") {
+    $r = Get-NetFirewallRule -DisplayName $TlsRule -ErrorAction SilentlyContinue
+    if (-not $r) { Die "no firewall rule '$TlsRule'" }
+    if (@($r).Count -ne 1) { Die "$(@($r).Count) rules named '$TlsRule'" }
+    if ($r.Direction -ne "Inbound" -or $r.Action -ne "Allow") { Die "'$TlsRule' is $($r.Direction)/$($r.Action)" }
+    $pf = $r | Get-NetFirewallPortFilter
+    if ($pf.Protocol -ne "TCP" -or $pf.LocalPort -ne $port) { Die "'$TlsRule' is $($pf.Protocol) $($pf.LocalPort), not TCP $port" }
+    $app = $r | Get-NetFirewallApplicationFilter
+    if ($app.Program -notlike "*woodshed.exe") { Die "'$TlsRule' is for program $($app.Program)" }
+    $want = if ($enabled) { "True" } else { "False" }
+    if ("$($r.Enabled)" -ne $want) { Die "'$TlsRule' Enabled=$($r.Enabled), want $want" }
+    Ok "firewall rule '$TlsRule': inbound TCP $port for woodshed.exe, enabled=$want"
+}
+
+function Wait-Tls([bool]$on) {
+    for ($i = 0; $i -lt 60; $i++) {
+        try {
+            $st = Invoke-RestMethod -TimeoutSec 2 "$Ui/api/status"
+            $t = @($st.listeners | Where-Object { $_.proto -eq "tls" })
+            if ($on -and $t.Count -eq 1 -and $t[0].ok) { return $st }
+            if (-not $on -and $t.Count -eq 0) { return $st }
+        } catch { }
+        Start-Sleep 1
+    }
+    Die "the TLS listener didn't turn $(if ($on) { 'on' } else { 'off' }) within 60 s"
+}
+
+# Check-Tls: tls on (the rule is enabled), the service reads the rule's state, 1,000 messages
+# over TLS from another process, the banner while the rule is off, tls off.
+function Check-Tls([string]$exe) {
+    Say "syslog over TLS: woodshed tls on, the rule, the service reads its state, a TLS sender"
+    foreach ($f in "tls-ca.pem", "tls-ca-key.pem", "tls-cert.pem", "tls-key.pem") {
+        if (Test-Path (Join-Path $Data $f)) { Die "$f exists before TLS was turned on" }
+    }
+    Ok "no TLS key files before TLS is turned on"
+    $out = & $exe tls on 2>&1 | Out-String
+    Write-Host $out
+    if ($LASTEXITCODE -ne 0) { Die "woodshed tls on exited $LASTEXITCODE" }
+    if ($out -notmatch "Enabled the Windows firewall rule") { Die "tls on didn't enable the rule" }
+    Wait-Tls $true | Out-Null
+    Check-TlsRule $true
+    $svc = Get-CimInstance Win32_Service -Filter "Name='Woodshed'"
+    $tcp = Get-NetTCPConnection -LocalPort 6514 -State Listen -ErrorAction SilentlyContinue | Where-Object OwningProcess -eq $svc.ProcessId
+    if (-not $tcp) { Die "the service doesn't listen on TCP 6514" }
+    $t = Invoke-RestMethod "$Ui/api/tls"
+    if ($t.firewall.state -ne "ok") { Die "GET /api/tls firewall.state = $($t.firewall.state) with the rule on (the service can't read it?)" }
+    # PowerShell 7 turns ISO dates into DateTime values: compare in UTC.
+    if (-not $t.ca -or ([datetime]$t.ca.not_after).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss") -ne "2037-12-31T23:59:59") {
+        Die "the CA: $($t.ca | ConvertTo-Json -Compress)"
+    }
+    Ok "the service (NT SERVICE\Woodshed) reads the rule as ok; CA $($t.ca.sha256.Substring(0, 23))..., ends $($t.ca.not_after)"
+
+    $ca = Join-Path $env:RUNNER_TEMP "woodshed-ca.pem"
+    Invoke-WebRequest -UseBasicParsing "$Ui/api/tls/ca.pem" -OutFile $ca
+    $run = New-RunId
+    Native $exe @("send", "--host", "127.0.0.1", "--proto", "tls", "--ca", $ca, "--count", "1000", "--rate", "2000", "--run", $run)
+    Native $VerifySeq @("-data", $Data, "-run", $run, "-n", "1000", "-wait", "30s")
+    Ok "1,000 of 1,000 sent over TLS (checking the downloaded CA) on disk, no duplicates"
+
+    Say "the rule turned off by hand: the service sees it and shows tls_firewall"
+    Set-NetFirewallRule -DisplayName $TlsRule -Enabled False
+    Restart-Service Woodshed # the state is cached for a minute
+    Wait-Tls $true | Out-Null
+    $t = Invoke-RestMethod "$Ui/api/tls"
+    if ($t.firewall.state -ne "disabled" -or $t.firewall.command -ne "woodshed tls on") { Die "firewall with the rule off: $($t.firewall | ConvertTo-Json -Compress)" }
+    $st = Invoke-RestMethod "$Ui/api/status"
+    $b = @($st.banners | Where-Object { $_.kind -eq "tls_firewall" })
+    if ($b.Count -ne 1 -or $b[0].text -notmatch "woodshed tls on") { Die "no tls_firewall banner: $($st.banners | ConvertTo-Json -Compress)" }
+    Ok "the service read the disabled rule (state disabled) and shows tls_firewall: $($b[0].text)"
+    Native $exe @("tls", "on")
+    Check-TlsRule $true
+
+    $out = & $exe status 2>&1 | Out-String
+    if ($out -notmatch "Syslog TLS: +on, TCP 6514" -or $out -notmatch "TLS CA: +SHA-256 ") { Write-Host $out; Die "woodshed status doesn't show TLS" }
+    Ok "woodshed status shows the TLS listener and its fingerprints"
+}
+
+function Tls-Off([string]$exe) {
+    Native $exe @("tls", "off")
+    Wait-Tls $false | Out-Null
+    Check-TlsRule $false
+    if (-not (Test-Path (Join-Path $Data "tls-ca.pem"))) { Die "tls off deleted the CA" }
+    Ok "woodshed tls off: the listener is off, the rule disabled, the certificate kept"
+}
+
 function New-RunId { -join ((1..8) | ForEach-Object { "{0:x}" -f (Get-Random -Maximum 16) }) }
 
 function Send-Traffic([string]$exe, [string]$run) {
@@ -165,7 +261,8 @@ function Check-Gone {
     foreach ($p in "UDP", "TCP") {
         if (Get-NetFirewallRule -DisplayName "Woodshed syslog ($p 514)" -ErrorAction SilentlyContinue) { Die "firewall rule $p left behind" }
     }
-    Ok "service and firewall rules removed"
+    if (Get-NetFirewallRule -DisplayName $TlsRule -ErrorAction SilentlyContinue) { Die "firewall rule '$TlsRule' left behind" }
+    Ok "service and firewall rules (UDP, TCP and TLS) removed"
 }
 function Check-DataKept { if (-not (Test-Path (Join-Path $Data "logs"))) { Die "$Data\logs was deleted" }; Ok "$Data kept" }
 function Check-DataGone { if (Test-Path $Data) { Die "$Data still exists" }; Ok "$Data deleted" }
@@ -182,11 +279,13 @@ switch ($Mode) {
         Say "msiexec /i $Msi"
         Install-Msi $Msi (Join-Path $Logs "install-v1.log")
         $st = Check-Running
+        Check-TlsRule $false
         $v1 = $st.version
         $r1 = New-RunId
         Send-Traffic $Exe $r1
         Check-EventLog
         Check-Status $Exe
+        Check-Tls $Exe
         Refuses "package already installed" $Exe @("install")
         Refuses "installed by the package" $Exe @("uninstall")
         Restart-Woodshed
@@ -195,11 +294,19 @@ switch ($Mode) {
         Say "major upgrade to $UpgradeMsi"
         Install-Msi $UpgradeMsi (Join-Path $Logs "upgrade-v2.log")
         $st = Check-Running
+        Wait-Tls $true | Out-Null
+        Check-TlsRule $true
+        Ok "the upgrade kept the TLS rule enabled (and the listener on)"
         if ($st.version -eq $v1) { Die "still version $v1 after the upgrade" }
         $products = @(Get-CimInstance Win32_Product -Filter "Name='Woodshed'")
         if ($products.Count -ne 1) { Die "$($products.Count) Woodshed products installed after the upgrade" }
         Ok "upgraded $v1 -> $($st.version), one product registered"
         Still-There $r1 "the upgrade"
+        Tls-Off $Exe
+        Say "a repair (reinstall) keeps the disabled rule disabled"
+        Install-Msi $UpgradeMsi (Join-Path $Logs "repair-v2.log") @("REINSTALL=ALL", "REINSTALLMODE=vomus")
+        Wait-Up | Out-Null
+        Check-TlsRule $false
 
         Say "uninstall keeps the data"
         Uninstall-Msi $UpgradeMsi (Join-Path $Logs "uninstall.log")
@@ -233,6 +340,7 @@ switch ($Mode) {
         Say "the Woodshed MSI over it: msiexec /i $Msi"
         Install-Msi $Msi (Join-Path $Logs "install-over-woodpile.log")
         Check-Running | Out-Null
+        Check-TlsRule $false
         if (Get-Service Woodpile -ErrorAction SilentlyContinue) { Die "the old Woodpile service is still there" }
         if (Get-NetFirewallRule -DisplayName "Woodpile syslog (*)" -ErrorAction SilentlyContinue) { Die "the old firewall rules are still there" }
         if (Test-Path "HKLM:\Software\Woodpile") { Die "the old MSI's registry key is still there" }
@@ -272,6 +380,7 @@ switch ($Mode) {
         if ($installOut -notmatch "removed .*evil-junction") { Die "install didn't say it removed the junction" }
         Ok "install removed a planted junction (and said so), leaving its target alone"
         Check-Running | Out-Null
+        Check-TlsRule $false
         $child = (Get-Acl (Join-Path $Data "logs")).Sddl
         Write-Host "logs ACL: $child"
         if ($child -match ";;;WD\)") { Die "the planted Everyone entry on logs survived the install" }
@@ -284,6 +393,8 @@ switch ($Mode) {
         Send-Traffic $Exe $r1
         Check-EventLog
         Check-Status $Exe
+        Check-Tls $Exe
+        Tls-Off $Exe
         Refuses "already installed" $bin @("install")
         Restart-Woodshed
         Still-There $r1 "a restart"

@@ -4,6 +4,13 @@
 # package); then the rename: the last Woodpile release candidate's package, and this one
 # installed over it (OLD_RELEASE below). The checks live in scripts/smoke/.
 #
+# Syslog over TLS (1.1) on every OS: `woodshed tls on`, 1,000 messages over TLS from another
+# process (checking the downloaded CA), `woodshed tls off`. On Windows also the 1.1 acceptance
+# items: the MSI and `woodshed install` ship the "Woodshed syslog (TLS 6514)" rule disabled,
+# an MSI upgrade and a repair keep its state, and the service account reads it (firewall.state
+# and the tls_firewall banner). On Ubuntu, ufw is turned on first (SMOKE_UFW), and `tls on`
+# then `tls off` must leave its rules as they were.
+#
 # macOS and Windows minutes are expensive, so this runs only:
 #   - on a push to ci/install-smoke: the Linux jobs, plus Windows and macOS when the head
 #     commit's message has [smoke all], [smoke windows] or [smoke macos];
@@ -138,10 +145,11 @@ jobs:
           name: linux-packages
           path: dist
       - run: chmod +x dist/woodshed dist/verifyseq
-      - name: deb (apt install, restart, remove, purge)
+      - name: deb (apt install, restart, TLS with ufw on, remove, purge)
         env:
           VERIFYSEQ: dist/verifyseq
           SMOKE_LOGS: ${{ runner.temp }}/smoke-logs
+          SMOKE_UFW: "1"
         run: scripts/smoke/unix.sh deb dist/*_amd64.deb
       - name: woodshed install / uninstall (no package)
         env:
@@ -235,7 +243,7 @@ jobs:
           go build -o dist/woodshed.exe ./cmd/woodshed
           go build -o dist/verifyseq.exe ./scripts/verifyseq
           Get-ChildItem -Recurse dist
-      - name: msi (install, upgrade, uninstall, DELETE_LOGS)
+      - name: msi (install, TLS rule, upgrade, repair, uninstall, DELETE_LOGS)
         shell: pwsh
         run: ./scripts/smoke/windows.ps1 -Mode msi -Msi (Resolve-Path dist/v1/*.msi) -UpgradeMsi (Resolve-Path dist/v2/*.msi) -Logs "$env:RUNNER_TEMP/smoke-logs"
       - name: woodshed install / uninstall (no package)
@@ -422,7 +430,7 @@ jobs:
       - name: MSI hardening checks (ACL reset over a hostile folder, required privileges)
         shell: pwsh
         run: ./scripts/smoke/msi-hardening.ps1 -Msi (Resolve-Path dist/v0.0.1/*.msi).Path -Logs "$env:RUNNER_TEMP/smoke-logs"
-      - name: msi (install, upgrade, uninstall, DELETE_LOGS)
+      - name: msi (install, TLS rule, upgrade, repair, uninstall, DELETE_LOGS)
         shell: pwsh
         run: ./scripts/smoke/windows.ps1 -Mode msi -Msi (Resolve-Path dist/v0.0.1/*.msi) -UpgradeMsi (Resolve-Path dist/v0.0.2/*.msi) -VerifySeq dist/verifyseq.exe -Logs "$env:RUNNER_TEMP/smoke-logs"
       - name: woodshed install / uninstall (no package)

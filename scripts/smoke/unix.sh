@@ -19,7 +19,12 @@
 # Each mode checks: the service runs as the unprivileged account, holds UDP and TCP 514,
 # the UI answers on 8514, 10,000 messages sent with `woodshed send` are all on disk
 # exactly once (scripts/verifyseq), `woodshed status` works, a restart keeps the data,
-# removal keeps the data, and the delete-logs path deletes it.
+# removal keeps the data, and the delete-logs path deletes it. And syslog over TLS (SPEC
+# §10.3): no key files until `woodshed tls on`, which makes the service create its CA and
+# certificate (owned by the service's account, mode 0600); 1,000 messages sent from another
+# process with `woodshed send --proto tls --ca` (checking the downloaded CA) are on disk
+# exactly once; with SMOKE_UFW=1 on Linux, ufw is turned on first and `tls on` then `tls off`
+# leave its rules as they were.
 # VERIFYSEQ points at a built scripts/verifyseq; SMOKE_LOGS is where logs are collected.
 set -euo pipefail
 
@@ -75,10 +80,10 @@ service_pid() {
 	fi
 }
 
-wait_up() { # the UI answers and both listeners are up
+wait_up() { # the UI answers and every listener is up, UDP and TCP on 514 (and TLS when it's on)
 	for _ in $(seq 60); do
 		if curl -fsS --max-time 2 "$UI/api/status" -o /tmp/status.json 2>/dev/null &&
-			python3 -c 'import json,sys; d=json.load(open("/tmp/status.json")); sys.exit(0 if len(d["listeners"]) == 2 and all(l["ok"] and l["port"] == 514 for l in d["listeners"]) else 1)'; then
+			python3 -c 'import json,sys; d=json.load(open("/tmp/status.json")); ls=d["listeners"]; sys.exit(0 if all(l["ok"] for l in ls) and len([l for l in ls if l["proto"] in ("udp", "tcp") and l["port"] == 514]) == 2 else 1)'; then
 			return 0
 		fi
 		sleep 1
@@ -179,6 +184,74 @@ data_gone() { $SUDO test ! -e "$DATA" || die "$DATA still exists"; ok "$DATA del
 
 run_id() { openssl rand -hex 4; }
 
+file_owner_mode() { # file_owner_mode <path>: "owner mode", read as root
+	if [ "$os" = Darwin ]; then $SUDO stat -f '%Su %Lp' "$1"; else $SUDO stat -c '%U %a' "$1"; fi
+}
+
+tls_check() { # tls_check <woodshed binary>: on, a TLS message from another process, off
+	local bin=$1 run out ufw_before="" ufw_after
+	say "syslog over TLS: woodshed tls on, 1,000 messages over TLS, woodshed tls off"
+	for f in tls-ca.pem tls-ca-key.pem tls-cert.pem tls-key.pem; do
+		$SUDO test ! -e "$DATA/$f" || die "$DATA/$f exists before TLS was turned on"
+	done
+	ok "no TLS key files before TLS is turned on"
+	if [ "$os" = Linux ] && [ "${SMOKE_UFW:-}" = 1 ] && command -v ufw >/dev/null 2>&1; then
+		$SUDO ufw --force enable >/dev/null
+		ufw_before=$($SUDO ufw status | tee "$LOGS/ufw-before.txt")
+	fi
+	out=$($SUDO "$bin" tls on 2>&1) || die "woodshed tls on failed: $out"
+	echo "$out"
+	echo "$out" | grep -q "Turned syslog over TLS on (TCP port 6514)" || die "tls on: unexpected output"
+	echo "$out" | grep -q "Restarted the service" || die "tls on didn't restart the service"
+	for _ in $(seq 60); do
+		curl -fsS --max-time 2 "$UI/api/status" -o /tmp/status.json 2>/dev/null &&
+			python3 -c 'import json,sys; d=json.load(open("/tmp/status.json")); sys.exit(0 if any(l["proto"] == "tls" and l["ok"] and l["port"] == 6514 for l in d["listeners"]) else 1)' && break
+		sleep 1
+	done
+	python3 -c 'import json,sys; d=json.load(open("/tmp/status.json")); sys.exit(0 if any(l["proto"] == "tls" and l["ok"] for l in d["listeners"]) else 1)' ||
+		die "the TLS listener isn't up on 6514: $(cat /tmp/status.json)"
+	wait_up
+	ok "the TLS listener is up on 6514"
+	for f in tls-ca.pem tls-ca-key.pem tls-cert.pem tls-key.pem; do
+		[ "$(file_owner_mode "$DATA/$f")" = "$ACCOUNT 600" ] || die "$DATA/$f is $(file_owner_mode "$DATA/$f"), not $ACCOUNT 600"
+	done
+	ok "the service made its CA and certificate: owned by $ACCOUNT, mode 0600"
+	if [ -n "$ufw_before" ]; then
+		$SUDO ufw status | grep -q "6514/tcp" || die "tls on didn't open 6514/tcp in ufw"
+		ok "tls on opened 6514/tcp in the active ufw"
+	fi
+	curl -fsS "$UI/api/tls/ca.pem" -o /tmp/woodshed-ca.pem || die "GET /api/tls/ca.pem"
+	curl -fsS "$UI/api/tls/ca.der" -o /tmp/woodshed-ca.cer || die "GET /api/tls/ca.der"
+	openssl x509 -in /tmp/woodshed-ca.pem -noout -subject -enddate
+	[ "$(openssl x509 -in /tmp/woodshed-ca.pem -outform DER | openssl dgst -sha256 -r | cut -d' ' -f1)" = \
+		"$(openssl dgst -sha256 -r /tmp/woodshed-ca.cer | cut -d' ' -f1)" ] || die "ca.pem and ca.der differ"
+	openssl x509 -in /tmp/woodshed-ca.pem -noout -enddate | grep -q "Dec 31 23:59:59 2037 GMT" || die "the CA doesn't end at the 2037 cap"
+	ok "the CA downloads as PEM and DER (the same certificate, ending 2037-12-31)"
+	run=$(run_id)
+	woodshed_cmd send --host 127.0.0.1 --proto tls --ca /tmp/woodshed-ca.pem --count 1000 --rate 2000 --run "$run" >/dev/null ||
+		die "woodshed send --proto tls failed"
+	$SUDO "$VERIFYSEQ" -data "$DATA" -run "$run" -n 1000 -wait 30s || die "TLS messages missing on disk"
+	ok "1,000 of 1,000 sent over TLS (checking the downloaded CA) on disk, no duplicates"
+	out=$($SUDO "$bin" status 2>&1) || true # as root: the fingerprints are in the service's data folder
+	echo "$out" | grep -q "Syslog TLS: *on, TCP 6514" || { echo "$out"; die "woodshed status doesn't show TLS on"; }
+	echo "$out" | grep -q "TLS CA: *SHA-256 " || { echo "$out"; die "woodshed status doesn't show the CA fingerprint"; }
+	ok "woodshed status shows the TLS listener and its fingerprints"
+	out=$($SUDO "$bin" tls off 2>&1) || die "woodshed tls off failed: $out"
+	echo "$out"
+	wait_up
+	python3 -c 'import json,sys; d=json.load(open("/tmp/status.json")); sys.exit(1 if any(l["proto"] == "tls" for l in d["listeners"]) else 0)' ||
+		die "the TLS listener is still listed after tls off"
+	ok "woodshed tls off turned the listener off"
+	if [ -n "$ufw_before" ]; then
+		ufw_after=$($SUDO ufw status | tee "$LOGS/ufw-after.txt")
+		[ "$ufw_before" = "$ufw_after" ] || die "ufw rules differ after tls on and off"
+		$SUDO ufw --force disable >/dev/null
+		ok "tls on then off left the ufw rules as they were"
+	fi
+	$SUDO test -e "$DATA/tls-ca.pem" || die "tls off deleted the CA"
+	ok "tls off kept the certificate (devices won't need it again)"
+}
+
 case "$mode" in
 deb | rpm)
 	pm=apt-get
@@ -192,6 +265,7 @@ deb | rpm)
 	curl -fsS "$UI/api/stats" | python3 -c 'import json,sys; d=json.load(sys.stdin); v=d["kernel_dropped_24h"]; print("kernel_dropped_24h", v); sys.exit(0 if isinstance(v, int) else 1)' ||
 		die "kernel_dropped_24h isn't a number on Linux"
 	ok "kernel UDP drops are visible on Linux"
+	tls_check "$(command -v woodshed)"
 	refuses "package already installed" $SUDO "$(command -v woodshed)" install
 	refuses "installed by the package" $SUDO "$(command -v woodshed)" uninstall
 	restart_service
@@ -249,6 +323,7 @@ pkg)
 		$SUDO "$fwtool" --listapps 2>&1
 	} | tee "$LOGS/firewall.txt"
 	ok "application firewall on during the install: state above (no GUI session, so no prompt could show); traffic arrived"
+	tls_check /usr/local/bin/woodshed
 	refuses "package already installed" $SUDO "$(command -v woodshed)" install
 	refuses "installed by the package" $SUDO "$(command -v woodshed)" uninstall
 	restart_service
@@ -286,6 +361,7 @@ manual)
 	r1=$(run_id)
 	traffic "$r1"
 	check_status_cmd
+	tls_check /usr/local/bin/woodshed
 	refuses "already installed" $SUDO "$BIN" install
 	restart_service
 	still_there "$r1" "a restart"
