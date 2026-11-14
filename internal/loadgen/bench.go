@@ -3,10 +3,13 @@ package loadgen
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -21,6 +24,7 @@ import (
 	"github.com/gmccollu/woodshed/internal/model"
 	"github.com/gmccollu/woodshed/internal/store"
 	"github.com/gmccollu/woodshed/internal/store/logfile"
+	"github.com/gmccollu/woodshed/internal/tlscert"
 )
 
 // Defaults for BenchOptions.
@@ -32,7 +36,7 @@ const (
 
 // BenchOptions configures Bench.
 type BenchOptions struct {
-	Proto    string        // "udp" (default) or "tcp"
+	Proto    string        // "udp" (default), "tcp" or "tls"
 	Framing  string        // TCP: "lf" (default) or "octet"
 	Rate     float64       // target messages per second (default 10,000)
 	Duration time.Duration // how long to send (default 30 s)
@@ -89,7 +93,7 @@ func (r BenchResult) OK() bool { return r.Sent > 0 && r.Missing == 0 && r.Duplic
 func (r BenchResult) String() string {
 	var b strings.Builder
 	proto := strings.ToUpper(r.Proto)
-	if r.Proto == "tcp" {
+	if r.Proto == "tcp" || r.Proto == "tls" {
 		proto += " (" + r.Framing + ")"
 	}
 	verdict := "PASS"
@@ -126,7 +130,7 @@ func Bench(ctx context.Context, o BenchOptions) (BenchResult, error) {
 	if o.Proto == "" {
 		o.Proto = "udp"
 	}
-	if o.Proto == "tcp" && o.Framing == "" {
+	if (o.Proto == "tcp" || o.Proto == "tls") && o.Framing == "" {
 		o.Framing = "lf"
 	}
 	if o.Rate <= 0 {
@@ -180,12 +184,33 @@ func Bench(ctx context.Context, o BenchOptions) (BenchResult, error) {
 	var writeErrs atomic.Int64
 	cfg := config.Listeners{UDPRcvbufBytes: o.RcvbufBytes, MaxMessageBytes: config.DefaultMaxMessageBytes}
 	ln := config.Listener{Enabled: true, Addr: "127.0.0.1", Port: 0}
-	if o.Proto == "udp" {
+	var certs *tlscert.Manager
+	var clientTLS *tls.Config
+	switch o.Proto {
+	case "udp":
 		cfg.UDP = ln
-	} else {
+	case "tls":
+		// Woodshed's own CA and certificate, made in the bench's data folder.
+		cfg.TLS = config.TLSListener{Enabled: true, Addr: ln.Addr, Port: 0}
+		certs = tlscert.New(tlscert.Options{DataDir: dir, Identity: func() (tlscert.Identity, error) {
+			return tlscert.Identity{Host: "localhost", Primary: "localhost", Names: []string{"localhost"},
+				IPs: []netip.Addr{netip.MustParseAddr("127.0.0.1")}}, nil
+		}})
+		if _, err := certs.Load(true); err != nil {
+			return res, err
+		}
+		der, err := certs.CADER()
+		if err != nil {
+			return res, err
+		}
+		ca, _ := x509.ParseCertificate(der)
+		pool := x509.NewCertPool()
+		pool.AddCert(ca)
+		clientTLS = &tls.Config{RootCAs: pool, ServerName: "localhost"}
+	default:
 		cfg.TCP = ln
 	}
-	srv, err := listen.Start(cfg, listen.Options{
+	lopts := listen.Options{
 		Logger: o.Logger,
 		Sink: func(m model.Message) {
 			if st.Write(m) != nil {
@@ -193,7 +218,11 @@ func Bench(ctx context.Context, o BenchOptions) (BenchResult, error) {
 			}
 			live.Publish(m)
 		},
-	})
+	}
+	if certs != nil {
+		lopts.TLSCertificate = certs.Certificate
+	}
+	srv, err := listen.Start(cfg, lopts)
 	if err != nil {
 		return res, err
 	}
@@ -204,8 +233,11 @@ func Bench(ctx context.Context, o BenchOptions) (BenchResult, error) {
 		}
 	}()
 	addr, ok := srv.UDPAddr()
-	if o.Proto == "tcp" {
+	switch o.Proto {
+	case "tcp":
 		addr, ok = srv.TCPAddr()
+	case "tls":
+		addr, ok = srv.TLSAddr()
 	}
 	if !ok {
 		ls := srv.Status().Listeners
@@ -218,7 +250,7 @@ func Bench(ctx context.Context, o BenchOptions) (BenchResult, error) {
 	res.UDPRcvbufBytes, res.UDPRcvbufRequestedBytes = stat.UDPRcvbufBytes, stat.UDPRcvbufRequestedBytes
 
 	sres, sendErr := Send(ctx, SendOptions{
-		Addr: addr.String(), Proto: o.Proto, Framing: o.Framing,
+		Addr: addr.String(), Proto: o.Proto, Framing: o.Framing, TLS: clientTLS,
 		Rate: o.Rate, Duration: o.Duration, Size: o.Size, RunID: res.RunID,
 	})
 	res.Sent, res.SendTime, res.AchievedRate, res.Backpressure = int64(sres.Sent), sres.Elapsed, sres.Rate, sres.Backpressure

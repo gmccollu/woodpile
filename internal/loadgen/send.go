@@ -9,11 +9,14 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
 	"net/netip"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -28,8 +31,11 @@ const (
 // SendOptions configures Send.
 type SendOptions struct {
 	Addr    string // host:port of the syslog server
-	Proto   string // "udp" (default) or "tcp"
-	Framing string // TCP only: "lf" (newline, default) or "octet" (RFC 6587 octet counting)
+	Proto   string // "udp" (default), "tcp" or "tls" (syslog over TLS, RFC 5425)
+	Framing string // TCP and TLS: "lf" (newline, default) or "octet" (RFC 6587 octet counting)
+	// TLS is the client configuration for Proto "tls" (ClientTLSConfig makes
+	// one). Required for "tls".
+	TLS *tls.Config
 
 	// Count messages are sent. With Count 0, Rate × Duration are.
 	Count    int
@@ -103,8 +109,12 @@ func (o *SendOptions) defaults() error {
 	case "":
 		o.Proto = "udp"
 	case "udp", "tcp":
+	case "tls":
+		if o.TLS == nil {
+			return errors.New("loadgen: TLS needs a CA certificate to trust (or insecure)")
+		}
 	default:
-		return fmt.Errorf("loadgen: unknown protocol %q (udp or tcp)", o.Proto)
+		return fmt.Errorf("loadgen: unknown protocol %q (udp, tcp or tls)", o.Proto)
 	}
 	switch o.Framing {
 	case "":
@@ -255,6 +265,20 @@ func sendTCP(ctx context.Context, o *SendOptions, res *SendResult) error {
 		return fmt.Errorf("loadgen: %w", err)
 	}
 	defer c.Close()
+	if o.Proto == "tls" {
+		cfg := o.TLS.Clone()
+		if cfg.ServerName == "" {
+			if host, _, err := net.SplitHostPort(o.Addr); err == nil {
+				cfg.ServerName = host
+			}
+		}
+		tc := tls.Client(c, cfg)
+		if err := tc.HandshakeContext(ctx); err != nil {
+			return fmt.Errorf("loadgen: TLS handshake with %s: %w", o.Addr, err)
+		}
+		defer tc.Close() // close_notify, then the connection
+		c = tc
+	}
 	bw := bufio.NewWriterSize(c, 64<<10)
 	p := pacer{start: time.Now(), rate: o.Rate}
 	msg := make([]byte, 0, o.Size+128)
@@ -286,4 +310,32 @@ func sendTCP(ctx context.Context, o *SendOptions, res *SendResult) error {
 		}
 	}
 	return nil
+}
+
+// ClientTLSConfig is a TLS client configuration for sending: it trusts the CA
+// certificate in caFile (PEM or DER) and checks serverName (the address's host
+// when empty), or with insecure checks nothing (for a quick test only).
+func ClientTLSConfig(caFile, serverName string, insecure bool) (*tls.Config, error) {
+	cfg := &tls.Config{ServerName: serverName, MinVersion: tls.VersionTLS12}
+	if insecure {
+		cfg.InsecureSkipVerify = true
+		return cfg, nil
+	}
+	if caFile == "" {
+		return nil, errors.New("loadgen: TLS needs --ca FILE (the CA certificate to trust), or --insecure")
+	}
+	b, err := os.ReadFile(caFile)
+	if err != nil {
+		return nil, fmt.Errorf("loadgen: %w", err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(b) {
+		c, err := x509.ParseCertificate(b)
+		if err != nil {
+			return nil, fmt.Errorf("loadgen: %s holds no PEM or DER certificate", caFile)
+		}
+		pool.AddCert(c)
+	}
+	cfg.RootCAs = pool
+	return cfg, nil
 }

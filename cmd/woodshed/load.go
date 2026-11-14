@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"net"
@@ -25,11 +27,17 @@ message is RFC 5424 and carries a run tag and a sequence number
 Examples:
   woodshed send --message "hello from woodshed"          one message to 127.0.0.1:514 over UDP
   woodshed send --host 192.0.2.10 --proto tcp --count 100
-  woodshed send --port 15514 --rate 200 --duration 60s    a steady stream for a minute`, stderr)
+  woodshed send --port 15514 --rate 200 --duration 60s    a steady stream for a minute
+  woodshed send --host logs-01.example.net --proto tls --ca woodshed-ca.pem
+                                                         over TLS (port 6514), checking the
+                                                         certificate against the downloaded CA`, stderr)
 	host := fs.String("host", "127.0.0.1", "syslog server `host` name or IP")
-	port := fs.Int("port", 514, "syslog server `port`")
-	proto := fs.String("proto", "udp", "`protocol`: udp or tcp")
-	framing := fs.String("framing", "lf", "TCP `framing`: lf (newline) or octet (RFC 6587 octet counting)")
+	port := fs.Int("port", 514, "syslog server `port` (6514 with --proto tls)")
+	proto := fs.String("proto", "udp", "`protocol`: udp, tcp or tls")
+	framing := fs.String("framing", "lf", "TCP and TLS `framing`: lf (newline) or octet (RFC 6587 octet counting)")
+	caFile := fs.String("ca", "", "TLS: the CA certificate `file` to trust (PEM or DER, e.g. Woodshed's woodshed-ca.pem)")
+	insecure := fs.Bool("insecure", false, "TLS: don't check the server's certificate (a quick test only)")
+	serverName := fs.String("server-name", "", "TLS: the `name` to check the certificate for (default: --host)")
 	count := fs.Int("count", 0, "`number` of messages (default 1, or rate x duration)")
 	rate := fs.Float64("rate", 0, "`messages` per second (0: as fast as possible)")
 	duration := fs.Duration("duration", 0, "send at --rate for this `duration` (e.g. 60s), instead of --count")
@@ -50,8 +58,26 @@ Examples:
 		return usageErr(fmt.Errorf("--port %d is out of range (1-65535)", *port))
 	}
 	*proto = strings.ToLower(*proto)
-	if *proto != "udp" && *proto != "tcp" {
-		return usageErr(fmt.Errorf("--proto must be udp or tcp, not %q", *proto))
+	if *proto != "udp" && *proto != "tcp" && *proto != "tls" {
+		return usageErr(fmt.Errorf("--proto must be udp, tcp or tls, not %q", *proto))
+	}
+	portSet := false
+	fs.Visit(func(f *flag.Flag) { portSet = portSet || f.Name == "port" })
+	var tlsCfg *tls.Config
+	if *proto == "tls" {
+		if !portSet {
+			*port = 6514
+		}
+		if *caFile != "" && *insecure {
+			return usageErr(errors.New("give --ca or --insecure, not both"))
+		}
+		cfg, err := loadgen.ClientTLSConfig(*caFile, *serverName, *insecure)
+		if err != nil {
+			return usageErr(errors.New(strings.TrimPrefix(err.Error(), "loadgen: ")))
+		}
+		tlsCfg = cfg
+	} else if *caFile != "" || *insecure || *serverName != "" {
+		return usageErr(errors.New("--ca, --insecure and --server-name are for --proto tls"))
 	}
 	*framing = strings.ToLower(*framing)
 	if *framing != "lf" && *framing != "octet" {
@@ -70,7 +96,7 @@ Examples:
 		*count = 1
 	}
 	o := loadgen.SendOptions{
-		Addr: net.JoinHostPort(*host, strconv.Itoa(*port)), Proto: *proto, Framing: *framing,
+		Addr: net.JoinHostPort(*host, strconv.Itoa(*port)), Proto: *proto, Framing: *framing, TLS: tlsCfg,
 		Count: *count, Rate: *rate, Duration: *duration, Size: *size,
 		Message: *message, Source: *source, Hostname: *hostname,
 		RunID: *runID, FirstSeq: *firstSeq,
@@ -82,7 +108,7 @@ Examples:
 	defer stop()
 	res, err := loadgen.Send(ctx, o)
 	what := strings.ToUpper(*proto)
-	if *proto == "tcp" {
+	if *proto == "tcp" || *proto == "tls" {
 		what += " (" + *framing + ")"
 	}
 	plural := "s"
@@ -120,8 +146,8 @@ for --duration, then read the files back and check that every message arrived
 exactly once. It doesn't touch a running Woodshed or its data.
 
 Exit status: 0 when every message arrived exactly once, 1 otherwise.`, stderr)
-	proto := fs.String("proto", "udp", "`protocol`: udp, tcp or all (udp, tcp lf, tcp octet in turn)")
-	framing := fs.String("framing", "lf", "TCP `framing`: lf or octet")
+	proto := fs.String("proto", "udp", "`protocol`: udp, tcp, tls or all (udp, tcp lf, tcp octet, tls lf in turn)")
+	framing := fs.String("framing", "lf", "TCP and TLS `framing`: lf or octet")
 	rate := fs.Float64("rate", loadgen.DefaultBenchRate, "target `messages` per second")
 	duration := fs.Duration("duration", loadgen.DefaultBenchDuration, "how long to send (a `duration` such as 30s or 10m)")
 	size := fs.Int("size", loadgen.DefaultSize, "approximate message size in `bytes`")
@@ -136,16 +162,16 @@ Exit status: 0 when every message arrived exactly once, 1 otherwise.`, stderr)
 	switch strings.ToLower(*proto) {
 	case "udp":
 		runs = []run{{"udp", ""}}
-	case "tcp":
+	case "tcp", "tls":
 		if *framing != "lf" && *framing != "octet" {
 			fmt.Fprintf(stderr, "woodshed bench: --framing must be lf or octet, not %q\n", *framing)
 			return 2
 		}
-		runs = []run{{"tcp", *framing}}
+		runs = []run{{strings.ToLower(*proto), *framing}}
 	case "all":
-		runs = []run{{"udp", ""}, {"tcp", "lf"}, {"tcp", "octet"}}
+		runs = []run{{"udp", ""}, {"tcp", "lf"}, {"tcp", "octet"}, {"tls", "lf"}}
 	default:
-		fmt.Fprintf(stderr, "woodshed bench: --proto must be udp, tcp or all, not %q\n\n%s", *proto, fs.help())
+		fmt.Fprintf(stderr, "woodshed bench: --proto must be udp, tcp, tls or all, not %q\n\n%s", *proto, fs.help())
 		return 2
 	}
 	if *rate <= 0 || *duration <= 0 {

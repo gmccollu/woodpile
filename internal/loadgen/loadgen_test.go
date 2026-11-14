@@ -17,6 +17,7 @@ import (
 	"github.com/gmccollu/woodshed/internal/listen"
 	"github.com/gmccollu/woodshed/internal/model"
 	"github.com/gmccollu/woodshed/internal/store/logfile"
+	"github.com/gmccollu/woodshed/internal/tlscert"
 )
 
 var quiet = slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -29,24 +30,44 @@ type sink struct {
 func (s *sink) add(m model.Message) { s.mu.Lock(); s.msgs = append(s.msgs, m); s.mu.Unlock() }
 func (s *sink) n() int              { s.mu.Lock(); defer s.mu.Unlock(); return len(s.msgs) }
 
+// caFile is the last TLS listener's CA certificate (PEM).
+var caFile string
+
 func startListener(t *testing.T, proto string) (*listen.Server, *sink, string) {
 	t.Helper()
 	k := &sink{}
 	ln := config.Listener{Enabled: true, Addr: "127.0.0.1"}
 	var cfg config.Listeners
-	if proto == "udp" {
+	opts := listen.Options{Sink: k.add, Logger: quiet}
+	switch proto {
+	case "udp":
 		cfg.UDP = ln
-	} else {
+	case "tls":
+		cfg.TLS = config.TLSListener{Enabled: true, Addr: "127.0.0.1"}
+		m := tlscert.New(tlscert.Options{DataDir: t.TempDir(), Identity: func() (tlscert.Identity, error) {
+			return tlscert.Identity{Host: "localhost", Names: []string{"localhost"}, IPs: []netip.Addr{netip.MustParseAddr("127.0.0.1")}}, nil
+		}})
+		if _, err := m.Load(true); err != nil {
+			t.Fatal(err)
+		}
+		pem, _ := m.CAPEM()
+		caFile = filepath.Join(t.TempDir(), "ca.pem")
+		os.WriteFile(caFile, pem, 0o600)
+		opts.TLSCertificate = m.Certificate
+	default:
 		cfg.TCP = ln
 	}
-	srv, err := listen.Start(cfg, listen.Options{Sink: k.add, Logger: quiet})
+	srv, err := listen.Start(cfg, opts)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { srv.Close() })
 	ap, ok := srv.UDPAddr()
-	if proto == "tcp" {
+	switch proto {
+	case "tcp":
 		ap, ok = srv.TCPAddr()
+	case "tls":
+		ap, ok = srv.TLSAddr()
 	}
 	if !ok {
 		t.Fatal("listener not running")
@@ -66,10 +87,18 @@ func waitN(t *testing.T, k *sink, n int) {
 }
 
 func TestSendFramings(t *testing.T) {
-	for _, tc := range []struct{ proto, framing string }{{"udp", ""}, {"tcp", "lf"}, {"tcp", "octet"}} {
+	for _, tc := range []struct{ proto, framing string }{{"udp", ""}, {"tcp", "lf"}, {"tcp", "octet"}, {"tls", "lf"}, {"tls", "octet"}} {
 		t.Run(tc.proto+"-"+tc.framing, func(t *testing.T) {
 			_, k, addr := startListener(t, tc.proto)
-			res, err := Send(context.Background(), SendOptions{Addr: addr, Proto: tc.proto, Framing: tc.framing, Count: 500, Size: 300, RunID: "r1", FirstSeq: 10})
+			o := SendOptions{Addr: addr, Proto: tc.proto, Framing: tc.framing, Count: 500, Size: 300, RunID: "r1", FirstSeq: 10}
+			if tc.proto == "tls" {
+				cfg, err := ClientTLSConfig(caFile, "", false) // checks 127.0.0.1 against the IP SAN
+				if err != nil {
+					t.Fatal(err)
+				}
+				o.TLS = cfg
+			}
+			res, err := Send(context.Background(), o)
 			if err != nil || res.Sent != 500 {
 				t.Fatalf("Send: %+v %v", res, err)
 			}
@@ -109,6 +138,7 @@ func TestSendErrors(t *testing.T) {
 	for _, o := range []SendOptions{
 		{}, {Addr: "127.0.0.1:1", Proto: "sctp", Count: 1}, {Addr: "127.0.0.1:1", Framing: "crlf", Count: 1},
 		{Addr: "127.0.0.1:1"}, {Addr: "127.0.0.1:1", Count: 1, RunID: "a:b"},
+		{Addr: "127.0.0.1:1", Proto: "tls", Count: 1}, // no TLS config
 	} {
 		if _, err := Send(ctx, o); err == nil {
 			t.Errorf("%+v accepted", o)
@@ -150,7 +180,7 @@ func TestVerify(t *testing.T) {
 }
 
 func TestBenchSmall(t *testing.T) {
-	for _, tc := range []struct{ proto, framing string }{{"udp", ""}, {"tcp", "lf"}, {"tcp", "octet"}} {
+	for _, tc := range []struct{ proto, framing string }{{"udp", ""}, {"tcp", "lf"}, {"tcp", "octet"}, {"tls", "lf"}, {"tls", "octet"}} {
 		t.Run(tc.proto+"-"+tc.framing, func(t *testing.T) {
 			res, err := Bench(context.Background(), BenchOptions{Proto: tc.proto, Framing: tc.framing, Rate: 2000, Duration: time.Second})
 			if err != nil {
@@ -181,5 +211,23 @@ func TestBenchKeepDataDir(t *testing.T) {
 	res2, err := Bench(context.Background(), BenchOptions{Rate: 1000, Duration: 200 * time.Millisecond, DataDir: dir})
 	if err != nil || !res2.OK() || res2.Foreign != res.Sent {
 		t.Fatalf("second run %+v %v", res2, err)
+	}
+}
+
+func TestClientTLSConfig(t *testing.T) {
+	if _, err := ClientTLSConfig("", "", false); err == nil {
+		t.Error("no CA and not insecure accepted")
+	}
+	if c, err := ClientTLSConfig("", "", true); err != nil || !c.InsecureSkipVerify {
+		t.Errorf("insecure: %v", err)
+	}
+	dir := t.TempDir()
+	bad := filepath.Join(dir, "bad.pem")
+	os.WriteFile(bad, []byte("not a certificate"), 0o600)
+	if _, err := ClientTLSConfig(bad, "", false); err == nil {
+		t.Error("a file without a certificate accepted")
+	}
+	if _, err := ClientTLSConfig(filepath.Join(dir, "missing.pem"), "", false); err == nil {
+		t.Error("a missing file accepted")
 	}
 }
