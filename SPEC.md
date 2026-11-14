@@ -562,6 +562,17 @@ If there's a newer version, it shows a banner that links to that version's relea
   is saved in its own folder.
 - To decide for many machines, set `[updates] check = "off"` (or `"on"`) in `woodshed.toml` before the first start.
   There's no banner then.
+- Silent fleet installs set it at install time with `WOODSHED_UPDATE_CHECK=on|off|ask` **(decided, 2026-11-13)**:
+  - MSI: a public property, `msiexec /i woodshed_X.Y.Z_windows_amd64.msi /qn WOODSHED_UPDATE_CHECK=off`.
+  - pkg, deb and rpm: an environment variable the install script reads, as in
+    `sudo WOODSHED_UPDATE_CHECK=off apt install ./woodshed_X.Y.Z_amd64.deb`.
+  - When it's set, the installer runs `woodshed update-check <value> --config <path>` (a new admin command, like
+    `lan-mode`, which also serves headless servers), on a fresh install and on an upgrade alike: an explicit choice
+    wins. When it isn't set, the config is left alone. An invalid value is ignored with a warning in the install log;
+    it never fails the install, because a half-configured deb is worse than a missing setting.
+  - The install smoke tests check each one. Whether macOS `installer` passes the variable through to the pkg's
+    scripts, and `sudo` and dpkg to the deb's, has to be confirmed there; if `installer` doesn't, the pkg documents
+    pre-seeding the TOML instead.
 - A build whose version isn't a release (`0.0.0-dev` from `make build`), or that has no `releases_url`, never checks
   and never asks. Settings says "Not available in this build".
 
@@ -688,15 +699,17 @@ Editing them on main now would make them wrong for 1.0 users, so the exact wordi
 - **CHANGELOG.md** (1.1.0): "Opt-in update check: asks once, off unless you turn it on, one GET of the public releases
   file a day, never installs anything." Earlier entries stay as they are.
 
-### 10.3 Open questions (1.1)
-1. Regex terms inside `syntax=terms` (`/deny.*tcp/ AND NOT 10.0.0.1`)? 1.1 refuses mixing the two.
-2. Should the live tail get `syntax=terms` and the new exclude filters? 1.1 leaves it unchanged.
-3. A filter for "(none)", lines with no hostname or program/tag, so the panel can click it.
-4. A silent-install switch for the update check (an MSI property, a pkg choice) for fleets, beyond pre-seeding
-   `woodshed.toml`.
-5. Should a future custom domain for the site be allowed by following same-site redirects? 1.1 follows none.
-6. Is the 60 s auto-continue limit for the field panel right on a small install, where the scan usually finishes
-   anyway?
+### 10.3 Questions settled for 1.1 (decided, 2026-11-13)
+1. No regex terms inside `syntax=terms` in 1.1; mixing the two stays a 400.
+2. The live tail gets neither `syntax=terms` nor the new exclude filters in 1.1.
+3. No filter for "(none)" (lines with no hostname or program/tag) yet; the panel row stays unclickable.
+4. Silent fleet installs get a switch for the update check: the MSI property and the pkg/deb/rpm environment
+   variable `WOODSHED_UPDATE_CHECK=on|off|ask` (§10.2).
+5. No redirects: the update check follows none, and the site keeps the URL answering.
+6. The field panel's 60 s auto-continue limit stays.
+7. The other 1.x roadmap items stay unordered.
+8. The 1.3 SNMP poller will be a second package that connects out on its own; §10.2's allowlist test and its "only
+   `internal/updatecheck`" wording get amended then.
 
 ## 11. Open questions
 1. Where the repo lives. The answer given was the internal GHE, which conflicts with "open source on

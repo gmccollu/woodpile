@@ -555,5 +555,6 @@ for everyone. A newer version shows it again.
 check = "ask"   # "ask" (the default: ask once in the UI), "on" or "off"
 ```
 A config without `[updates]` (a fresh install, an upgrade from 1.0, portable mode) means `"ask"`. Setting `"on"` or
-`"off"` before the first start skips the banner. The request itself, the schedule and the state file
+`"off"` before the first start skips the banner, and so does installing with `WOODSHED_UPDATE_CHECK=on|off` (the MSI
+property, or the environment variable for pkg, deb and rpm), which runs `woodshed update-check <value>`. The request itself, the schedule and the state file
 (`<data>/update-check.json`) are in SPEC §10.2.
