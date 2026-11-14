@@ -35,6 +35,14 @@ In each device's logging or syslog settings, set the syslog server to one of the
 port 514, UDP (or TCP if the device offers it). Save, and make the device log something (log in to it, or change
 a setting). The Setup page says when the first message arrives.
 
+Over TCP, Woodshed keeps a quiet connection open for 24 hours, because some devices don't notice a closed
+connection until their next message fails, and lose messages until they reconnect. To change it, set
+`tcp_idle_timeout` under `[listeners]` in the config file ([where it is](install.md#where-things-live); for example
+`"48h"`, between `"1m"` and `"168h"`) and restart Woodshed. A long timeout doesn't lock devices out: a device that
+restarts without closing its connections gets back in by replacing its own idle ones, Woodshed notices a vanished
+device within a few minutes (TCP keepalives), and when every connection slot is in use, the one idle longest is
+closed to let a new device in.
+
 No device handy? Send a test message from the Woodshed computer:
 
 ```sh

@@ -18,15 +18,31 @@ import (
 //
 //   - at most tcp_max_conns_per_source connections per sender address, and at most
 //     tcp_max_conns_per_prefix per IPv6 /64 (one host can pick from a whole /64,
-//     but a server VLAN shares one too);
+//     but a server VLAN shares one too). At the limit, a newcomer evicts that
+//     address's (or /64's) connection idle longest, if one has had no complete
+//     message for more than EvictIdle and has no message in progress; otherwise
+//     it's refused. So a sender that rebooted without closing its connections
+//     isn't locked out by its own dead ones for the whole idle timeout;
 //   - once a message starts, all of it must arrive within tcp_frame_timeout, or
 //     the connection is closed and the part that arrived is stored, marked
 //     truncated;
-//   - between messages, the idle timeout is renewed only by complete messages;
+//   - between messages, the idle timeout (tcp_idle_timeout, default 24 h) is
+//     renewed only by complete messages. It's long on purpose: some senders
+//     keep one connection for days without keepalives and notice it was closed
+//     only when a later write fails, losing what they send until they reconnect;
 //   - when MaxConns are open, a newcomer evicts the connection idle longest (no
 //     complete message for more than EvictIdle); if none is, the oldest connection
 //     of the biggest source (IPv4 address or IPv6 /64), so busy sources can't
-//     pin every slot. A newcomer whose own source is the biggest is refused.
+//     pin every slot. A newcomer whose own source is the biggest is refused;
+//   - TCP keepalives are on for every accepted connection (tcpKeepAlive), so a
+//     connection to a sender that rebooted or vanished is closed within minutes,
+//     whatever the idle timeout.
+
+// tcpKeepAlive is set on every accepted connection: the first probe after 15 s
+// without traffic, then every 15 s, and the connection is closed after 9
+// unanswered ones (Go's defaults, set explicitly). A sender that rebooted answers
+// the first probe with a reset.
+var tcpKeepAlive = net.KeepAliveConfig{Enable: true, Idle: 15 * time.Second, Interval: 15 * time.Second, Count: 9}
 
 type tcpListener struct {
 	srv   *Server
@@ -52,6 +68,7 @@ type tconn struct {
 	connAt  time.Time
 	seq     uint64       // accept order; "oldest" goes by this, not connAt (Windows' clock can tie)
 	last    atomic.Int64 // UnixNano of the connect or the last complete message
+	inFrame atomic.Bool  // a message has started arriving and isn't complete yet
 	cut     atomic.Bool  // we closed it (eviction or shutdown): a partial message is truncated
 	blocked atomic.Bool  // closed because its sender was blocked: nothing more is stored
 }
@@ -118,6 +135,10 @@ func (t *tcpListener) accept() {
 			continue
 		}
 		backoff = 0
+		if tc, ok := c.(*net.TCPConn); ok {
+			// Best effort: some systems can't set every field (older Windows, the count).
+			_ = tc.SetKeepAliveConfig(tcpKeepAlive)
+		}
 		from := addrOf(c.RemoteAddr())
 		if r := t.srv.allow.Load().refusal(from); r != "" {
 			t.srv.rejects.add(from, t.srv.opts.Clock().UTC(), 1, r)
@@ -140,8 +161,9 @@ func newTconn(c net.Conn, from netip.Addr, now time.Time) *tconn {
 }
 
 // track registers a connection. It reports false (and counts why) if the listener
-// is closing, the sender's address or IPv6 /64 is at its limit, or the table is
-// full and the newcomer's own source holds the most connections.
+// is closing, the sender's address or IPv6 /64 is at its limit with none of its
+// connections idle enough to evict, or the table is full and the newcomer's own
+// source holds the most connections.
 func (t *tcpListener) track(tc *tconn) bool {
 	s := t.srv
 	t.mu.Lock()
@@ -149,18 +171,29 @@ func (t *tcpListener) track(tc *tconn) bool {
 	if t.closing {
 		return false
 	}
+	now := time.Now()
 	overAddr := t.perAddr[tc.addr] >= int(s.perSource.Load())
 	overPrefix := tc.addr.Is6() && t.perGroup[tc.group] >= int(s.perPrefix.Load())
 	if overAddr || overPrefix {
-		s.rejects.add(tc.from, s.opts.Clock().UTC(), 1, RejectPerSource)
-		if s.perSourceRefused.Add(1)%1000 == 1 {
-			s.log.Warn("listen: TCP connections per source limit reached; refusing", "from", tc.from.String(),
-				"per_address", s.perSource.Load(), "per_ipv6_64", s.perPrefix.Load())
+		// Make room from the newcomer's own address (or /64): one of its
+		// connections it has stopped using, such as those it left open when it
+		// rebooted. Evicting one of the address's frees a place in its /64 too.
+		same := func(c *tconn) bool { return c.addr == tc.addr }
+		if !overAddr {
+			same = func(c *tconn) bool { return c.group == tc.group }
 		}
-		return false
+		victim := t.idlestOf(now, same)
+		if victim == nil {
+			s.rejects.add(tc.from, s.opts.Clock().UTC(), 1, RejectPerSource)
+			if s.perSourceRefused.Add(1)%1000 == 1 {
+				s.log.Warn("listen: TCP connections per source limit reached; refusing", "from", tc.from.String(),
+					"per_address", s.perSource.Load(), "per_ipv6_64", s.perPrefix.Load())
+			}
+			return false
+		}
+		t.evictLocked(victim, "its own source's idle longest")
 	}
 	if len(t.conns) >= s.opts.MaxConns {
-		now := time.Now()
 		victim, why := t.longestIdle(now), "idle longest"
 		if victim == nil {
 			victim, why = t.oldestOfBiggest(tc.group), "oldest of the biggest source"
@@ -172,13 +205,7 @@ func (t *tcpListener) track(tc *tconn) bool {
 			}
 			return false
 		}
-		victim.cut.Store(true)
-		victim.c.Close()
-		t.removeLocked(victim) // free the slot now; its goroutine finishes on its own
-		if s.evicted.Add(1)%1000 == 1 {
-			s.log.Warn("listen: TCP connection limit reached; closing a connection", "limit", s.opts.MaxConns,
-				"evicted", victim.from.String(), "why", why)
-		}
+		t.evictLocked(victim, why)
 	}
 	t.seq++
 	tc.seq = t.seq
@@ -211,6 +238,41 @@ func (t *tcpListener) oldestOfBiggest(newcomer netip.Prefix) *tconn {
 		}
 	}
 	return oldest
+}
+
+// evictLocked closes victim to make room for a newcomer and frees its slot now
+// (its goroutine finishes on its own). A partial message it had is stored,
+// marked truncated (t.mu held).
+func (t *tcpListener) evictLocked(victim *tconn, why string) {
+	s := t.srv
+	victim.cut.Store(true)
+	victim.c.Close()
+	t.removeLocked(victim)
+	if s.evicted.Add(1)%1000 == 1 {
+		s.log.Warn("listen: TCP connection limit reached; closing a connection", "limit", s.opts.MaxConns,
+			"per_address", s.perSource.Load(), "per_ipv6_64", s.perPrefix.Load(),
+			"evicted", victim.from.String(), "why", why)
+	}
+}
+
+// idlestOf returns, among the connections match accepts, the one whose last
+// complete message (or connect) is oldest, if that was more than EvictIdle ago
+// and no message is in progress on it; else nil (t.mu held).
+func (t *tcpListener) idlestOf(now time.Time, match func(*tconn) bool) *tconn {
+	var best *tconn
+	var bestAt int64
+	for c := range t.conns {
+		if !match(c) || c.inFrame.Load() {
+			continue
+		}
+		if at := c.last.Load(); best == nil || at < bestAt || (at == bestAt && c.seq < best.seq) {
+			best, bestAt = c, at
+		}
+	}
+	if best == nil || now.Sub(time.Unix(0, bestAt)) <= t.srv.opts.EvictIdle {
+		return nil
+	}
+	return best
 }
 
 // longestIdle returns the connection with the oldest complete message (or connect),
@@ -253,7 +315,7 @@ func (t *tcpListener) untrack(tc *tconn) {
 func (t *tcpListener) serve(tc *tconn) {
 	defer t.untrack(tc)
 	defer tc.c.Close()
-	fr := &frameReader{c: tc.c, idle: t.srv.opts.IdleTimeout, frameTimeout: &t.srv.frameTimeout, last: &tc.last}
+	fr := &frameReader{c: tc.c, idle: &t.srv.idleTimeout, frameTimeout: &t.srv.frameTimeout, last: &tc.last, inFrame: &tc.inFrame}
 	r := syslog.NewStreamReader(fr, int(t.srv.maxSize.Load()))
 	for {
 		fails := fr.fails
@@ -309,6 +371,7 @@ func (t *tcpListener) close() {
 // frameReader sets the read deadline before every read: between messages, the idle
 // timeout from the last complete message (bytes alone don't renew it); once a
 // message's first byte has arrived, the frame timeout from that byte, if sooner.
+// Both timeouts are read live, so a new value applies from the next read.
 //
 // It hands the StreamReader errors only with no data (a read returning both is
 // split), so that "the reader failed during this Next" means "this message is
@@ -318,9 +381,11 @@ func (t *tcpListener) close() {
 // started arriving (StreamReader.Buffered).
 type frameReader struct {
 	c            net.Conn
-	idle         time.Duration
-	frameTimeout *atomic.Int64 // time.Duration, live from config
-	last         *atomic.Int64 // UnixNano of the last complete message (or the connect)
+	idle         *atomic.Int64    // time.Duration, live from config
+	frameTimeout *atomic.Int64    // time.Duration, live from config
+	last         *atomic.Int64    // UnixNano of the last complete message (or the connect)
+	inFrame      *atomic.Bool     // set while a message is in progress (nil: not tracked)
+	now          func() time.Time // time.Now if nil (tests pass a fake clock)
 
 	frameStart time.Time // zero between messages
 	stashed    error
@@ -334,7 +399,7 @@ func (r *frameReader) Read(p []byte) (int, error) {
 		r.fails++
 		return 0, r.stashed
 	}
-	deadline := time.Unix(0, r.last.Load()).Add(r.idle)
+	deadline := time.Unix(0, r.last.Load()).Add(time.Duration(r.idle.Load()))
 	frameBound := false
 	if !r.frameStart.IsZero() {
 		if fd := r.frameStart.Add(time.Duration(r.frameTimeout.Load())); fd.Before(deadline) {
@@ -347,7 +412,8 @@ func (r *frameReader) Read(p []byte) (int, error) {
 	}
 	n, err := r.c.Read(p)
 	if n > 0 && r.frameStart.IsZero() && hasMessageByte(p[:n]) {
-		r.frameStart = time.Now()
+		r.frameStart = r.clock()
+		r.setInFrame(true)
 	}
 	if err != nil {
 		if errors.Is(err, os.ErrDeadlineExceeded) {
@@ -366,12 +432,26 @@ func (r *frameReader) Read(p []byte) (int, error) {
 // frameDone records a complete message: it renews the idle timeout, and restarts
 // the frame clock if the next message is already buffered (else stops it).
 func (r *frameReader) frameDone(nextStarted bool) {
-	now := time.Now()
+	now := r.clock()
 	r.frameStart = time.Time{}
 	if nextStarted {
 		r.frameStart = now
 	}
+	r.setInFrame(nextStarted)
 	r.last.Store(now.UnixNano())
+}
+
+func (r *frameReader) setInFrame(v bool) {
+	if r.inFrame != nil {
+		r.inFrame.Store(v)
+	}
+}
+
+func (r *frameReader) clock() time.Time {
+	if r.now != nil {
+		return r.now()
+	}
+	return time.Now()
 }
 
 // hasMessageByte reports whether b holds a byte other than the LF, CR and NUL

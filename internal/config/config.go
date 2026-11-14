@@ -78,6 +78,7 @@ type Listeners struct {
 	TCPMaxConnsPerSource int      `toml:"tcp_max_conns_per_source" json:"-" comment:"Open TCP connections allowed per sender address."`
 	TCPMaxConnsPerPrefix int      `toml:"tcp_max_conns_per_prefix" json:"-" comment:"Open TCP connections allowed per IPv6 /64 (all its addresses together)."`
 	TCPFrameTimeout      Duration `toml:"tcp_frame_timeout" json:"-" comment:"Once a TCP message starts, all of it must arrive within this (e.g. 60s); then the connection is closed and the part kept, marked truncated."`
+	TCPIdleTimeout       Duration `toml:"tcp_idle_timeout" json:"-" comment:"Close a TCP connection that sends no complete message for this long (1m to 168h). Keep it long: some senders notice a closed connection only when a later write fails, and lose messages until they reconnect."`
 }
 
 // Listener is one syslog listener.
@@ -132,6 +133,7 @@ func Default() Config {
 
 			TCPMaxConnsPerSource: DefaultTCPMaxConnsPerSource,
 			TCPFrameTimeout:      DefaultTCPFrameTimeout,
+			TCPIdleTimeout:       DefaultTCPIdleTimeout,
 			TCPMaxConnsPerPrefix: DefaultTCPMaxConnsPerPrefix,
 
 			MaxDevices:          DefaultMaxDevices,

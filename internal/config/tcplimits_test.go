@@ -41,3 +41,39 @@ func TestTCPLimits(t *testing.T) {
 		t.Errorf("errors %v", errs)
 	}
 }
+
+func TestTCPIdleTimeout(t *testing.T) {
+	c := testConfig(t)
+	if time.Duration(c.Listeners.TCPIdleTimeout) != 24*time.Hour {
+		t.Errorf("default %v, want 24h", time.Duration(c.Listeners.TCPIdleTimeout))
+	}
+	path := filepath.Join(t.TempDir(), FileName)
+	if err := Save(path, c); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(path); !strings.Contains(string(b), "tcp_idle_timeout = '24h0m0s'") {
+		t.Errorf("file:\n%s", b)
+	}
+	// A file from 1.0.0 (no key) gets the default; a set value is kept.
+	os.WriteFile(path, []byte("[listeners]\ntcp_frame_timeout = \"90s\"\n"), 0o640)
+	if got, err := Load(path); err != nil || time.Duration(got.Listeners.TCPIdleTimeout) != 24*time.Hour {
+		t.Errorf("missing key: %v %v", time.Duration(got.Listeners.TCPIdleTimeout), err)
+	}
+	os.WriteFile(path, []byte("[listeners]\ntcp_idle_timeout = \"72h\"\n"), 0o640)
+	if got, err := Load(path); err != nil || time.Duration(got.Listeners.TCPIdleTimeout) != 72*time.Hour {
+		t.Errorf("72h: %v %v", time.Duration(got.Listeners.TCPIdleTimeout), err)
+	}
+	for d, ok := range map[time.Duration]bool{
+		time.Minute: true, 10 * time.Minute: true, 24 * time.Hour: true, 7 * 24 * time.Hour: true,
+		59 * time.Second: false, 7*24*time.Hour + time.Second: false, -time.Hour: false,
+	} {
+		c.Listeners.TCPIdleTimeout = Duration(d)
+		msg, bad := c.validate("linux", nil)["listeners.tcp_idle_timeout"]
+		if bad == ok {
+			t.Errorf("%v: error %q", d, msg)
+		}
+		if bad && !strings.Contains(msg, "between 1m and 168h") {
+			t.Errorf("%v: message %q", d, msg)
+		}
+	}
+}

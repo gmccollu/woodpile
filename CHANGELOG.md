@@ -4,6 +4,15 @@ All notable changes to Woodshed. The format follows [Keep a Changelog](https://k
 and versions follow [Semantic Versioning](https://semver.org/). Release notes on GitHub are taken from this file
 (`scripts/release-notes.sh`), so set a section's date before tagging it.
 
+## [1.0.1] - unreleased
+
+### Fixed
+- TCP connections are now kept open for 24 hours without a message, not 10 minutes, so senders that don't notice a
+  closed connection no longer lose messages; set it with `listeners.tcp_idle_timeout` (1m to 168h).
+- A sender at its TCP connections-per-address (or per-/64) limit, for example after rebooting without closing its
+  connections, now replaces its own connection idle longest instead of being refused. Keepalives are set
+  explicitly on every TCP connection, so connections to a vanished sender close within minutes.
+
 ## [1.0.0] - 2026-11-13
 
 The first release: a syslog server you can install on Windows, macOS or Linux in a minute, that keeps every message

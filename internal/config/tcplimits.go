@@ -10,10 +10,16 @@ const (
 	DefaultTCPMaxConnsPerSource = 32
 	DefaultTCPMaxConnsPerPrefix = 256 // per IPv6 /64
 	DefaultTCPFrameTimeout      = Duration(60 * time.Second)
+	// DefaultTCPIdleTimeout is long because some senders keep a TCP connection
+	// open for days with no keepalives, notice that it was closed only when a
+	// later write fails, and lose what they send until they reconnect.
+	DefaultTCPIdleTimeout = Duration(24 * time.Hour)
 
 	MaxTCPMaxConnsPerSource = 100000
 	MinTCPFrameTimeout      = Duration(time.Second)
 	MaxTCPFrameTimeout      = Duration(time.Hour)
+	MinTCPIdleTimeout       = Duration(time.Minute)
+	MaxTCPIdleTimeout       = Duration(7 * 24 * time.Hour)
 )
 
 // Duration is a time.Duration written in the config file as text ("60s", "2m").
@@ -43,6 +49,9 @@ func normalizeTCPLimits(l *Listeners) {
 	if l.TCPFrameTimeout == 0 {
 		l.TCPFrameTimeout = DefaultTCPFrameTimeout
 	}
+	if l.TCPIdleTimeout == 0 {
+		l.TCPIdleTimeout = DefaultTCPIdleTimeout
+	}
 }
 
 func checkTCPLimits(e Errors, l Listeners) {
@@ -54,5 +63,8 @@ func checkTCPLimits(e Errors, l Listeners) {
 	}
 	if d := l.TCPFrameTimeout; d != 0 && (d < MinTCPFrameTimeout || d > MaxTCPFrameTimeout) {
 		e["listeners.tcp_frame_timeout"] = "must be between 1s and 1h"
+	}
+	if d := l.TCPIdleTimeout; d != 0 && (d < MinTCPIdleTimeout || d > MaxTCPIdleTimeout) {
+		e["listeners.tcp_idle_timeout"] = "must be between 1m and 168h (7 days)"
 	}
 }
