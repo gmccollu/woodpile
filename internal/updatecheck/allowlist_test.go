@@ -71,6 +71,11 @@ func goFiles(t *testing.T, root string) map[string][]string {
 			case "node_modules", "testdata", "vendor", ".git", "dist":
 				return filepath.SkipDir
 			}
+			// The repo's top-level tmp/ is gitignored scratch space (copies of
+			// old trees live there), not part of the module that ships.
+			if rel, _ := filepath.Rel(root, p); filepath.ToSlash(rel) == "tmp" {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		if strings.HasSuffix(p, ".go") && !strings.HasSuffix(p, "_test.go") {
