@@ -512,6 +512,23 @@ func (inst *instance) stop() {
 		inst.conns.closeQuiet()
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
+		// A connection accepted just before the listener closed may reach the
+		// tracker (StateNew) only after the closeQuiet above, and Shutdown would
+		// then wait its 5 s for it: keep closing quiet ones until Shutdown is done.
+		sweepDone := make(chan struct{})
+		defer close(sweepDone)
+		go func() {
+			t := time.NewTicker(20 * time.Millisecond)
+			defer t.Stop()
+			for {
+				select {
+				case <-sweepDone:
+					return
+				case <-t.C:
+					inst.conns.closeQuiet()
+				}
+			}
+		}()
 		var wg sync.WaitGroup
 		for _, srv := range inst.servers {
 			wg.Add(1)

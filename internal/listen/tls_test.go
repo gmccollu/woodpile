@@ -567,3 +567,41 @@ func TestClassifyHandshake(t *testing.T) {
 		}
 	}
 }
+
+// Close is prompt with idle TCP and TLS connections and a stalled handshake
+// open, whatever the idle timeout (24 h) and handshake timeout: it closes them
+// all at once rather than waiting for a read deadline.
+func TestCloseWithIdleTCPAndTLSIsPrompt(t *testing.T) {
+	cfg := tlsConfig(false)
+	cfg.TCP = config.Listener{Enabled: true, Addr: "127.0.0.1", Port: 0}
+	s, c, pool := startTLS(t, cfg, func(o *Options) { o.HandshakeTimeout = time.Minute })
+	tcp, err := net.Dial("tcp", tcpAddr(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tcp.Close()
+	fmt.Fprintf(tcp, "<13>tcp\n")
+	tc, err := tls.Dial("tcp", tlsAddr(t, s), client(pool))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tc.Close()
+	fmt.Fprintf(tc, "<13>tls\n")
+	stalled, err := net.Dial("tcp", tlsAddr(t, s)) // a handshake that never starts
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stalled.Close()
+	c.wait(t, 2)
+	waitFor(t, "2 conns and a handshake", func() bool { st := s.Status(); return st.TCPConns == 2 && st.TLSHandshakes == 1 })
+	t0 := time.Now()
+	s.Close()
+	if d := time.Since(t0); d > time.Second {
+		t.Errorf("Close took %v with idle connections open", d)
+	}
+	for name, conn := range map[string]net.Conn{"tcp": tcp, "tls": tc, "handshake": stalled} {
+		if !closedByServer(conn, time.Second) {
+			t.Errorf("%s connection still open after Close", name)
+		}
+	}
+}

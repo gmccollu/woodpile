@@ -297,3 +297,22 @@ func TestShutdownDoesNotWaitForSilentConnections(t *testing.T) {
 		}
 	}
 }
+
+// A silent connection made just before shutdown (it may be accepted after the
+// first sweep of quiet connections) doesn't hold shutdown for net/http's 5 s
+// either. It raced on CI: "stopping the UI server" took 5.001 s.
+func TestShutdownRightAfterSilentConnect(t *testing.T) {
+	for i := 0; i < 20; i++ {
+		srv := startServer(t, nil, UIConfig{})
+		c, err := net.Dial("tcp", srv.State().Addr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t0 := time.Now()
+		srv.stop()
+		c.Close()
+		if d := time.Since(t0); d > time.Second {
+			t.Fatalf("round %d: shutdown took %v with a just-made silent connection", i, d)
+		}
+	}
+}
