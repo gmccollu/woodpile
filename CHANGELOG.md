@@ -4,7 +4,7 @@ All notable changes to Woodshed. The format follows [Keep a Changelog](https://k
 and versions follow [Semantic Versioning](https://semver.org/). Release notes on GitHub are taken from this file
 (`scripts/release-notes.sh`), so set a section's date before tagging it.
 
-## [1.1.0] - unreleased
+## [1.1.0] - 2026-11-14
 
 ### Added
 - Opt-in update check: asks once, off unless you turn it on, one GET of the public releases file a day, never
@@ -46,6 +46,13 @@ and versions follow [Semantic Versioning](https://semver.org/). Release notes on
 
 ### Changed
 - The 15 min, 1 h, 24 h and 7 d presets end at the next whole minute, so their time buckets line up.
+
+### Fixed
+- Stopping Woodshed no longer waits up to 5 seconds when a browser connected to the UI just before.
+
+### Known issues
+- On Windows in a language other than English, the "TLS firewall rule is off" banner doesn't appear (the rule's
+  state reads as unknown). `woodshed tls on` still turns the rule on.
 
 ## [1.0.1] - 2026-11-14
 
