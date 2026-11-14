@@ -62,7 +62,7 @@ func docExamples(t *testing.T) map[string]any {
 	out := map[string]any{}
 	// A route line starting "`GET /api/x`" owns the next ```json block, unless
 	// another route line comes first.
-	heads := regexp.MustCompile("(?m)^`GET (/api/[a-z/]+)[`?]").FindAllStringSubmatchIndex(doc, -1)
+	heads := regexp.MustCompile("(?m)^`GET (/api/[a-z/-]+)[`?]").FindAllStringSubmatchIndex(doc, -1)
 	for i, h := range heads {
 		route := doc[h[2]:h[3]]
 		rest := doc[h[1]:]
@@ -202,7 +202,8 @@ func sameShape(t *testing.T, where string, doc, got any, optional map[string]boo
 
 func TestRoutesMatchDocExamples(t *testing.T) {
 	examples := docExamples(t)
-	for _, route := range []string{"/api/status", "/api/stats", "/api/devices", "/api/groups", "/api/settings", "/api/rejected", "/api/storage/history", "/api/storage/estimate"} {
+	for _, route := range []string{"/api/status", "/api/stats", "/api/devices", "/api/groups", "/api/settings", "/api/rejected", "/api/storage/history", "/api/storage/estimate",
+		"/api/search/schema", "/api/search/summary", "/api/saved-searches"} {
 		if _, ok := examples[route]; !ok {
 			t.Fatalf("no example for %s in docs/api.md", route)
 		}
@@ -216,8 +217,8 @@ func TestRoutesMatchDocExamples(t *testing.T) {
 		"/api/status.listeners[].holder": true, // omitted when the OS doesn't say
 	}
 	for route, doc := range examples {
-		if strings.HasPrefix(route, "/api/search") {
-			continue // M3
+		if route == "/api/search" {
+			continue // its own test (TestSearchRoutes) checks the example
 		}
 		path := route
 		if route == "/api/storage/estimate" {
@@ -251,6 +252,11 @@ func TestRoutesMatchDocExamples(t *testing.T) {
 		if route == "/api/status" {
 			for i := range 4 {
 				opt[fmt.Sprintf("/api/status.listeners[%d].holder", i)] = true
+			}
+		}
+		if route == "/api/search/summary" {
+			for i := range 4 {
+				opt[fmt.Sprintf("/api/search/summary.histogram.buckets[%d].count", i)] = true // null: not counted yet
 			}
 		}
 		sameShape(t, route, doc, got, opt)

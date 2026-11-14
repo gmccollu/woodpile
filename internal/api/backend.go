@@ -88,6 +88,35 @@ type Backend interface {
 	// the cursor, the resolved range) comes back as a *RequestError.
 	Search(ctx context.Context, r SearchRequest) (SearchPage, error)
 
+	// SearchSchema serves GET /api/search/schema: the data types and their
+	// field-panel fields.
+	SearchSchema(ctx context.Context) ([]SearchType, error)
+
+	// Summary serves GET /api/search/summary: one response of a field-panel
+	// and histogram summary. What only the backend can check (the query, the
+	// bucket, the cursor, an expired summary) is a *RequestError.
+	Summary(ctx context.Context, r SummaryRequest) (SummaryPage, error)
+
+	// SavedSearches serves GET /api/saved-searches: every saved search of a
+	// type, sorted by name ignoring case, with MissingDevices and MissingGroup
+	// worked out now.
+	SavedSearches(ctx context.Context, typ string) ([]SavedSearch, error)
+	// SavedSearch serves GET /api/saved-searches/{id}: ErrNotFound for an
+	// unknown id.
+	SavedSearch(ctx context.Context, id string) (SavedSearch, error)
+	// CreateSavedSearch serves POST /api/saved-searches. A query /api/search
+	// would refuse is a *ValidationError ("query.q", "query.exclude"); a name in
+	// use a *NameTakenError; one too many ErrSavedSearchLimit.
+	CreateSavedSearch(ctx context.Context, in SavedSearchInput) (SavedSearch, error)
+	// UpdateSavedSearch serves PUT /api/saved-searches/{id}. With ifVersion >
+	// 0 it saves only if the saved search is still at that Version
+	// (ErrSavedSearchChanged). Errors otherwise as for CreateSavedSearch, and
+	// ErrNotFound.
+	UpdateSavedSearch(ctx context.Context, id string, in SavedSearchInput, ifVersion int64) (SavedSearch, error)
+	// DeleteSavedSearch serves DELETE /api/saved-searches/{id}: ErrNotFound
+	// for an unknown id.
+	DeleteSavedSearch(ctx context.Context, id string) error
+
 	// Context serves GET /api/context: before and after are 0-500. An invalid
 	// ref is a *RequestError, a ref whose file is gone ErrNotFound.
 	Context(ctx context.Context, ref string, before, after int) (ContextPage, error)

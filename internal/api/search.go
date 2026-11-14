@@ -130,6 +130,14 @@ type SearchRequest struct {
 	App        []string // program/tag values (a trailing '*' is a prefix)
 	Host       []string // header hostnames
 	Exclude    string   // drop lines matching this (regex and case as for Q)
+	// 1.1 (docs/api.md): the data type ("syslog"), syntax=terms, facilities and
+	// the exclude forms of devices, app and host.
+	Type           string
+	Terms          bool
+	Facilities     Facilities
+	ExcludeDevices []string
+	ExcludeApp     []string
+	ExcludeHost    []string
 }
 
 // SearchLine is one search result or context line.
@@ -195,6 +203,13 @@ type ExportRequest struct {
 	App        []string
 	Host       []string
 	Exclude    string
+	// 1.1, as for SearchRequest.
+	Type           string
+	Terms          bool
+	Facilities     Facilities
+	ExcludeDevices []string
+	ExcludeApp     []string
+	ExcludeHost    []string
 }
 
 // ExportEstimate is the body of POST /api/exports/estimate.
@@ -215,6 +230,13 @@ type ExportFilters struct {
 	App        []string   `json:"app"`
 	Host       []string   `json:"host"`
 	Exclude    string     `json:"exclude"`
+	// 1.1.
+	Type           string     `json:"type"`
+	Syntax         string     `json:"syntax"`
+	Facilities     Facilities `json:"facilities"`
+	ExcludeDevices []string   `json:"exclude_devices"`
+	ExcludeApp     []string   `json:"exclude_app"`
+	ExcludeHost    []string   `json:"exclude_host"`
 }
 
 // ExportInfo is one export in GET /api/exports.
@@ -237,6 +259,14 @@ type ExportInfo struct {
 func (e *ExportInfo) normalize() {
 	e.Devices = nonNil(e.Devices)
 	e.Filters.App, e.Filters.Host = nonNil(e.Filters.App), nonNil(e.Filters.Host)
+	e.Filters.ExcludeDevices, e.Filters.ExcludeApp = nonNil(e.Filters.ExcludeDevices), nonNil(e.Filters.ExcludeApp)
+	e.Filters.ExcludeHost = nonNil(e.Filters.ExcludeHost)
+	if e.Filters.Type == "" {
+		e.Filters.Type = "syslog"
+	}
+	if e.Filters.Syntax == "" {
+		e.Filters.Syntax = "text"
+	}
 	e.Created, e.From, e.To = e.Created.UTC(), e.From.UTC(), e.To.UTC()
 	for _, p := range []**time.Time{&e.ReadyAt, &e.ExpiresAt} {
 		if *p != nil {
@@ -368,7 +398,30 @@ func ParseSearch(v url.Values) (SearchRequest, error) {
 	}
 	r.Cursor = v.Get("cursor")
 	r.App, r.Host, r.Exclude = splitList(v.Get("app")), splitList(v.Get("host")), v.Get("exclude")
+	if err := parseFilters11(v, &r); err != nil {
+		return r, err
+	}
 	return r, nil
+}
+
+// parseFilters11 reads the 1.1 filter parameters: type, syntax, facilities,
+// exclude_devices, exclude_app and exclude_host.
+func parseFilters11(v url.Values, r *SearchRequest) error {
+	var err error
+	if r.Type, err = parseType(v.Get("type")); err != nil {
+		return err
+	}
+	if r.Terms, err = parseSyntax(v.Get("syntax")); err != nil {
+		return err
+	}
+	if r.Terms && r.Regex {
+		return errors.New(errTermsRegex)
+	}
+	if r.Facilities, err = parseFacilityList(v.Get("facilities")); err != nil {
+		return err
+	}
+	r.ExcludeDevices, r.ExcludeApp, r.ExcludeHost = splitList(v.Get("exclude_devices")), splitList(v.Get("exclude_app")), splitList(v.Get("exclude_host"))
+	return nil
 }
 
 // requestOrBackendError answers a Backend error: 400 for a RequestError, 404
@@ -447,6 +500,13 @@ type exportBody struct {
 	App        []string   `json:"app"`
 	Host       []string   `json:"host"`
 	Exclude    string     `json:"exclude"`
+	// 1.1.
+	Type           string     `json:"type"`
+	Syntax         string     `json:"syntax"`
+	Facilities     Facilities `json:"facilities"`
+	ExcludeDevices []string   `json:"exclude_devices"`
+	ExcludeApp     []string   `json:"exclude_app"`
+	ExcludeHost    []string   `json:"exclude_host"`
 }
 
 func (s *Server) readExportRequest(w http.ResponseWriter, r *http.Request) (ExportRequest, bool) {
@@ -455,11 +515,12 @@ func (s *Server) readExportRequest(w http.ResponseWriter, r *http.Request) (Expo
 		return ExportRequest{}, false
 	}
 	req := ExportRequest{AllDevices: b.AllDevices, Group: b.Group, Ungrouped: b.Ungrouped, Severities: b.Severities, Q: b.Q, Regex: b.Regex, Case: b.Case,
-		Exclude: b.Exclude}
+		Exclude: b.Exclude, Facilities: b.Facilities}
 	for _, l := range []struct {
 		in  []string
 		out *[]string
-	}{{b.Devices, &req.Devices}, {b.App, &req.App}, {b.Host, &req.Host}} {
+	}{{b.Devices, &req.Devices}, {b.App, &req.App}, {b.Host, &req.Host}, {b.ExcludeDevices, &req.ExcludeDevices},
+		{b.ExcludeApp, &req.ExcludeApp}, {b.ExcludeHost, &req.ExcludeHost}} {
 		for _, d := range l.in {
 			if d = strings.TrimSpace(d); d != "" {
 				*l.out = append(*l.out, d)
@@ -471,6 +532,15 @@ func (s *Server) readExportRequest(w http.ResponseWriter, r *http.Request) (Expo
 		return ExportRequest{}, false
 	}
 	var err error
+	if req.Type, err = parseType(b.Type); err != nil {
+		return bad(err.Error())
+	}
+	if req.Terms, err = parseSyntax(b.Syntax); err != nil {
+		return bad(err.Error() + ".")
+	}
+	if req.Terms && req.Regex {
+		return bad(errTermsRegex)
+	}
 	for _, f := range []struct {
 		name, v string
 		t       *time.Time

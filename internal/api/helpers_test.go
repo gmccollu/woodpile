@@ -56,6 +56,10 @@ type fakeBackend struct {
 	exportErr  error
 	exports    map[string]ExportInfo
 	zip        []byte // the content of every ready export
+
+	summaries []SummaryRequest
+	saved     map[string]SavedSearch
+	savedSeq  int
 }
 
 func newFakeBackend() *fakeBackend {
@@ -647,4 +651,112 @@ func (b *fakeBackend) QueryDevices(ctx context.Context, q DeviceQuery) (DevicePa
 func (b *fakeBackend) Groups(ctx context.Context) ([]Group, error) {
 	ds, _ := b.Devices(ctx)
 	return groupsOf(ds), nil
+}
+
+// ---- Events v2 ----
+
+func (b *fakeBackend) SearchSchema(ctx context.Context) ([]SearchType, error) {
+	return []SearchType{{Type: "syslog", Label: "Syslog", Default: true, Fields: []SearchField{
+		{Key: "device", Label: "Device", Param: "devices", ExcludeParam: "exclude_devices"},
+		{Key: "severity", Label: "Severity", Param: "severities", Domain: []DomainValue{{"0", "emerg"}, {"unknown", "unknown"}}},
+	}}}, nil
+}
+
+func (b *fakeBackend) Summary(ctx context.Context, r SummaryRequest) (SummaryPage, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.summaries = append(b.summaries, r)
+	if b.searchErr != nil {
+		return SummaryPage{}, b.searchErr
+	}
+	n := int64(812)
+	p := SummaryPage{From: ts("2026-11-13T14:00:00Z"), To: ts("2026-11-13T15:00:00Z"), Matched: 48210, CountedFrom: ts("2026-11-13T14:00:00Z"),
+		Fields: []SummaryField{{Key: "host", Label: "Host", Values: []SummaryValue{{Value: "web-01", Label: "web-01", Count: 20311, Filterable: true}},
+			Other: 1204, None: 37, Distinct: 14}}}
+	if r.Histogram {
+		p.Histogram = &SummaryHistogram{BucketSeconds: 60, Source: "index", Buckets: []SummaryBucket{{Start: ts("2026-11-13T14:00:00Z"), Count: &n},
+			{Start: ts("2026-11-13T14:01:00Z")}}}
+	}
+	return p, nil
+}
+
+func (b *fakeBackend) SavedSearches(ctx context.Context, typ string) ([]SavedSearch, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.saved == nil {
+		b.saved = map[string]SavedSearch{}
+		b.savedSeq++
+		b.saved["ss_00000001"] = SavedSearch{ID: "ss_00000001", Name: "Edge denies", Type: "syslog", Created: ts("2026-11-13T14:02:11Z"),
+			Updated: ts("2026-11-13T14:02:11Z"), Version: 1, Query: SavedQuery{Q: "deny NOT 10.0.0.1", Syntax: "terms", Devices: []string{"10.1.0.1", "10.9.9.9"},
+				App: []string{"%FW-6-*"}, Range: SavedRange{Last: "1h"}}, MissingDevices: []string{"10.9.9.9"}}
+	}
+	var out []SavedSearch
+	for _, s := range b.saved {
+		if s.Type == typ {
+			out = append(out, s)
+		}
+	}
+	slices.SortFunc(out, func(a, c SavedSearch) int { return strings.Compare(strings.ToLower(a.Name), strings.ToLower(c.Name)) })
+	return out, nil
+}
+
+func (b *fakeBackend) SavedSearch(ctx context.Context, id string) (SavedSearch, error) {
+	b.SavedSearches(ctx, "syslog") // seed
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	s, ok := b.saved[id]
+	if !ok {
+		return SavedSearch{}, ErrNotFound
+	}
+	return s, nil
+}
+
+func (b *fakeBackend) CreateSavedSearch(ctx context.Context, in SavedSearchInput) (SavedSearch, error) {
+	b.SavedSearches(ctx, "syslog")
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if in.Query.Q == "bad(" {
+		return SavedSearch{}, &ValidationError{Fields: map[string]string{"query.q": "Unclosed quote starting at character 12."}}
+	}
+	if len(b.saved) >= 200 {
+		return SavedSearch{}, ErrSavedSearchLimit
+	}
+	for _, s := range b.saved {
+		if strings.EqualFold(s.Name, in.Name) {
+			return SavedSearch{}, &NameTakenError{Name: in.Name}
+		}
+	}
+	b.savedSeq++
+	s := SavedSearch{ID: fmt.Sprintf("ss_%08x", b.savedSeq), Name: in.Name, Type: in.Type, Query: in.Query, Version: 1,
+		Created: ts("2026-11-13T15:00:00Z"), Updated: ts("2026-11-13T15:00:00Z")}
+	b.saved[s.ID] = s
+	return s, nil
+}
+
+func (b *fakeBackend) UpdateSavedSearch(ctx context.Context, id string, in SavedSearchInput, ifVersion int64) (SavedSearch, error) {
+	b.SavedSearches(ctx, "syslog")
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	s, ok := b.saved[id]
+	if !ok {
+		return SavedSearch{}, ErrNotFound
+	}
+	if ifVersion > 0 && ifVersion != s.Version {
+		return SavedSearch{}, ErrSavedSearchChanged
+	}
+	s.Name, s.Type, s.Query = in.Name, in.Type, in.Query
+	s.Version++
+	b.saved[id] = s
+	return s, nil
+}
+
+func (b *fakeBackend) DeleteSavedSearch(ctx context.Context, id string) error {
+	b.SavedSearches(ctx, "syslog")
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if _, ok := b.saved[id]; !ok {
+		return ErrNotFound
+	}
+	delete(b.saved, id)
+	return nil
 }
