@@ -28,7 +28,11 @@ Anything that lets someone do more than Woodshed's design allows, for example:
 - reading, changing or deleting files outside Woodshed's data folder, or gaining the service account's or an
   administrator's rights through Woodshed, its installers or its service setup;
 - crashing the service or making it lose data with crafted syslog traffic;
-- Woodshed making any outbound network connection.
+- Woodshed making any outbound network connection other than the opt-in update check: one HTTPS `GET` of
+  `https://gmccollu.github.io/woodshed/releases.json` a day, made only after an administrator turns it on. A check
+  while it's off or still asking, a request that sends more than that (a query string, a cookie, an identifier, the
+  version), a connection anywhere else, or an update banner that links outside this repository's releases all
+  count.
 
 A device on your network that can send syslog to Woodshed is expected to be able to fill its logs (within the disk
 limits): that isn't a vulnerability, but a way to bypass the disk limits is.

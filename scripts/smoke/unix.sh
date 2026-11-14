@@ -16,6 +16,15 @@
 # it stopped the old service), the old data is kept and named by the installer output and
 # `woodshed status`, and the new service runs.
 #
+# WOODSHED_UPDATE_CHECK (SPEC §10.2, an acceptance item in §10.4): deb and rpm install with
+# WOODSHED_UPDATE_CHECK=off through sudo as the docs say (`sudo VAR=value apt-get install`;
+# plain VAR=value as root in the rpm container) and require check = "off" in the config, then
+# reinstall with an invalid value and require it ignored with a warning. pkg tries the same
+# with `sudo VAR=value installer`; whether installer passes it through is reported either way
+# (an ::warning:: when it doesn't), and the documented fallback, pre-seeding the TOML, is
+# checked instead. The pkg here is a release version (0.0.1), so the update_prompt banner is
+# checked too; the deb and rpm are snapshot builds, which never ask.
+#
 # Each mode checks: the service runs as the unprivileged account, holds UDP and TCP 514,
 # the UI answers on 8514, 10,000 messages sent with `woodshed send` are all on disk
 # exactly once (scripts/verifyseq), `woodshed status` works, a restart keeps the data,
@@ -35,9 +44,11 @@ if [ "$os" = Darwin ]; then
 	DATA="/Library/Application Support/Woodshed"
 	ACCOUNT=_woodshed
 	LABEL=com.woodshed.daemon
+	CFG="$DATA/woodshed.toml"
 else
 	DATA=/var/lib/woodshed
 	ACCOUNT=woodshed
+	CFG=/etc/woodshed/woodshed.toml
 fi
 UI=http://127.0.0.1:8514
 passes=0
@@ -179,12 +190,46 @@ data_gone() { $SUDO test ! -e "$DATA" || die "$DATA still exists"; ok "$DATA del
 
 run_id() { openssl rand -hex 4; }
 
+# update_check prints updates.check from the config ("" when the file or the key is missing).
+update_check() {
+	$SUDO sed -n '/^\[updates\]/,/^\[/s/^check *= *["'"'"']\([a-z]*\)["'"'"'].*/\1/p' "$CFG" 2>/dev/null | head -n 1 || true
+}
+
+# with_env VAR=value command...: as an admin would type it, through sudo when not root.
+with_env() {
+	if [ -n "$SUDO" ]; then sudo "$@"; else env "$@"; fi
+}
+
+# update_banners prints the update banner kinds in /api/status, one per line.
+update_banners() {
+	curl -fsS "$UI/api/status" | python3 -c 'import json,sys; [print(b["kind"]) for b in json.load(sys.stdin)["banners"] if b["kind"].startswith("update_")]'
+}
+
+# ignored_invalid <output>: an invalid WOODSHED_UPDATE_CHECK left the setting alone and said so.
+ignored_invalid() {
+	local want=$1 out=$2
+	[ "$(update_check)" = "$want" ] || die "an invalid WOODSHED_UPDATE_CHECK changed updates.check to '$(update_check)'"
+	if echo "$out" | grep -q "warning: ignored WOODSHED_UPDATE_CHECK=bogus"; then
+		ok "an invalid WOODSHED_UPDATE_CHECK is ignored with a warning; the install succeeded and check is still \"$want\""
+	else
+		echo "::warning::the installer output doesn't show the WOODSHED_UPDATE_CHECK warning (check is still \"$want\")"
+		ok "an invalid WOODSHED_UPDATE_CHECK is ignored; the install succeeded (the warning isn't in this installer's output)"
+	fi
+}
+
 case "$mode" in
 deb | rpm)
 	pm=apt-get
 	[ "$mode" = rpm ] && pm=dnf
-	say "$pm install $artifact"
-	if [ "$mode" = deb ]; then $SUDO apt-get install -y "$(realpath "$artifact")"; else $SUDO dnf install -y "$(realpath "$artifact")"; fi
+	say "WOODSHED_UPDATE_CHECK=off $pm install $artifact"
+	if [ "$mode" = deb ]; then
+		with_env WOODSHED_UPDATE_CHECK=off apt-get install -y "$(realpath "$artifact")"
+	else
+		with_env WOODSHED_UPDATE_CHECK=off dnf install -y "$(realpath "$artifact")"
+	fi
+	[ "$(update_check)" = off ] ||
+		die "WOODSHED_UPDATE_CHECK=off didn't reach the $mode's install script ($CFG has check = '$(update_check)')"
+	ok "WOODSHED_UPDATE_CHECK=off reached the $mode's install script through ${SUDO:-root}, $pm and ${mode/deb/dpkg}: check = \"off\" before the first start"
 	check_running
 	r1=$(run_id)
 	traffic "$r1"
@@ -196,6 +241,15 @@ deb | rpm)
 	refuses "installed by the package" $SUDO "$(command -v woodshed)" uninstall
 	restart_service
 	still_there "$r1" "a restart"
+	say "reinstall with WOODSHED_UPDATE_CHECK=bogus: ignored with a warning"
+	if [ "$mode" = deb ]; then
+		out=$(with_env WOODSHED_UPDATE_CHECK=bogus apt-get install --reinstall -y "$(realpath "$artifact")" 2>&1) || die "the reinstall failed: $out"
+	else
+		out=$(with_env WOODSHED_UPDATE_CHECK=bogus dnf reinstall -y "$(realpath "$artifact")" 2>&1) || die "the reinstall failed: $out"
+	fi
+	echo "$out"
+	ignored_invalid off "$out"
+	wait_up
 	say "reindex: refused as root, works as the service's user (re-test N1)"
 	$SUDO systemctl stop woodshed.service
 	refuses "sudo -u woodshed" $SUDO "$(command -v woodshed)" reindex
@@ -236,9 +290,25 @@ pkg)
 	# does with an unsigned daemon (loopback traffic isn't filtered either way).
 	fwtool=/usr/libexec/ApplicationFirewall/socketfilterfw
 	$SUDO "$fwtool" --setglobalstate on || true
-	say "installer -pkg $artifact"
-	$SUDO installer -pkg "$artifact" -target /
+	say "WOODSHED_UPDATE_CHECK=off installer -pkg $artifact"
+	with_env WOODSHED_UPDATE_CHECK=off installer -pkg "$artifact" -target /
 	check_running
+	pkg_env=no
+	case "$(update_check)" in
+	off)
+		pkg_env=yes
+		ok "ACCEPTANCE: macOS installer passes WOODSHED_UPDATE_CHECK to the pkg's scripts (check = \"off\")"
+		[ -z "$(update_banners)" ] || die "update banners with check = off: $(update_banners)"
+		ok "no update banner with check = off"
+		;;
+	ask)
+		echo "::warning::ACCEPTANCE: macOS installer does NOT pass WOODSHED_UPDATE_CHECK to the pkg's scripts; docs/install.md's pre-seeded TOML is the way (checked below)"
+		ok "ACCEPTANCE: macOS installer doesn't pass WOODSHED_UPDATE_CHECK through (check = \"ask\"); the pre-seeded TOML is checked below"
+		[ "$(update_banners)" = update_prompt ] || die "check = ask in a release build, but the banners are '$(update_banners)'"
+		ok "the update_prompt banner shows while check = ask"
+		;;
+	*) die "updates.check is '$(update_check)' after the install" ;;
+	esac
 	r1=$(run_id)
 	traffic "$r1"
 	check_status_cmd
@@ -258,10 +328,37 @@ pkg)
 	gone
 	data_kept
 	still_there "$r1" "uninstall.sh"
-	say "reinstall over the kept data, then uninstall.sh --delete-logs"
+	say "reinstall over the kept data (WOODSHED_UPDATE_CHECK=bogus), then uninstall.sh --delete-logs"
+	before_check=$(update_check)
+	out=$(with_env WOODSHED_UPDATE_CHECK=bogus installer -pkg "$artifact" -target / 2>&1) || die "the reinstall failed: $out"
+	# installer doesn't show the scripts' output; it's in the install log.
+	out="$out
+$($SUDO grep 'WOODSHED_UPDATE_CHECK' /var/log/install.log 2>/dev/null | tail -n 5)"
+	echo "$out"
+	wait_up
+	if [ "$pkg_env" = yes ]; then
+		ignored_invalid "$before_check" "$out"
+	else
+		[ "$(update_check)" = "$before_check" ] || die "the reinstall changed updates.check to '$(update_check)'"
+		ok "the reinstall kept check = \"$before_check\""
+	fi
+	still_there "$r1" "a reinstall"
+	$SUDO /usr/local/share/woodshed/uninstall.sh --delete-logs
+	gone
+	data_gone
+
+	say "pre-seeded config (docs/install.md): check = \"off\" before installing, no banner"
+	$SUDO mkdir -p "$DATA"
+	printf '[updates]\ncheck = "off"\n' | $SUDO tee "$CFG" >/dev/null
 	$SUDO installer -pkg "$artifact" -target /
 	wait_up
-	still_there "$r1" "a reinstall"
+	[ "$(update_check)" = off ] || die "the pre-seeded check = off became '$(update_check)'"
+	[ -z "$(update_banners)" ] || die "update banners with a pre-seeded check = off: $(update_banners)"
+	settings=$(curl -fsS "$UI/api/settings")
+	code=$(curl -s -o /dev/null -w '%{http_code}' -X PUT -H 'Content-Type: application/json' --data "$settings" "$UI/api/settings")
+	[ "$code" = 200 ] || die "saving settings over the pre-seeded config answered $code"
+	[ "$(update_check)" = off ] || die "a settings save lost check = off"
+	ok "a pre-seeded check = off is kept, shows no banner, and the daemon can save settings over it"
 	$SUDO /usr/local/share/woodshed/uninstall.sh --delete-logs
 	gone
 	data_gone

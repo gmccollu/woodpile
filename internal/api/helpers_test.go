@@ -56,6 +56,11 @@ type fakeBackend struct {
 	exportErr  error
 	exports    map[string]ExportInfo
 	zip        []byte // the content of every ready export
+
+	updates     UpdateInfo
+	checkNowErr error
+	checkNows   int
+	dismissed   []string
 }
 
 func newFakeBackend() *fakeBackend {
@@ -92,6 +97,13 @@ func newFakeBackend() *fakeBackend {
 			Storage: StorageSettings{DataDir: "/data", RetentionDays: 30, RetentionBytes: 21474836480, PartBytes: 104857600},
 			UI:      UISettings{Port: 0}, // tests run on port 0; a different port here would restart the server onto it
 			Quiet:   QuietSettings{QuietAfterSeconds: 300, OfflineAfterSeconds: 3600},
+			Updates: &UpdatesSettings{Check: "ask"},
+		},
+		updates: UpdateInfo{
+			Check: "ask", Available: true, URL: "https://releases.example/woodshed/releases.json", Current: "1.1.0",
+			LastCheck: ptr(ts("2026-11-13T09:12:44Z")), LastResult: "ok", NextCheck: ptr(ts("2026-11-14T08:40:02Z")),
+			Latest:          &LatestRelease{Version: "1.2.0", URL: "https://example.invalid/releases/tag/v1.2.0"},
+			UpdateAvailable: true,
 		},
 		history: []StorageEntry{{Time: ts("2026-11-09T00:00:01Z"), File: "logs/10.1.0.1/2026-10-10.log.gz", DeviceID: "10.1.0.1", Bytes: 1234, Reason: "age"}},
 	}
@@ -205,7 +217,11 @@ func (b *fakeBackend) SaveSettings(ctx context.Context, s Settings, ifMatch stri
 	if ifMatch != "" && ifMatch != SettingsETag(b.settings) {
 		return Settings{}, ErrSettingsChanged
 	}
+	if s.Updates == nil {
+		s.Updates = b.settings.Updates // a PUT without it keeps it
+	}
 	b.settings = s
+	b.updates.Check = s.Updates.Check
 	return s, nil
 }
 func (b *fakeBackend) RetryListeners(ctx context.Context) error {
@@ -220,6 +236,36 @@ func (b *fakeBackend) StorageHistory(ctx context.Context) ([]StorageEntry, error
 	return b.history, nil
 }
 func (b *fakeBackend) LiveHandler() http.Handler { return b.live }
+func (b *fakeBackend) Updates(ctx context.Context) (UpdateInfo, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.updates, nil
+}
+func (b *fakeBackend) SetUpdateCheck(ctx context.Context, check string) (UpdateInfo, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.saveErr != nil {
+		return UpdateInfo{}, b.saveErr
+	}
+	b.settings.Updates = &UpdatesSettings{Check: check}
+	b.updates.Check = check
+	return b.updates, nil
+}
+func (b *fakeBackend) CheckUpdatesNow(ctx context.Context) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.checkNows++
+	return b.checkNowErr
+}
+func (b *fakeBackend) DismissUpdate(ctx context.Context, version string) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if version == "" || strings.ContainsAny(version, " <>") {
+		return &RequestError{Msg: "version must be a version, e.g. 1.2.0"}
+	}
+	b.dismissed = append(b.dismissed, version)
+	return nil
+}
 func (b *fakeBackend) RecordEvent(ctx context.Context, e Event) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()

@@ -8,7 +8,8 @@
 //
 // CHROME=/path/to/chrome, BASE=http://host:port and OUT=/some/dir override the defaults.
 // Shots with a `check` also assert behaviour (a JS expression that must be true),
-// and `noshot` entries are checks only, so this doubles as a UI smoke test.
+// and `noshot` entries are checks only, so this doubles as a UI smoke test. A `clip`
+// (a CSS selector) captures just that element, wherever it is on the page.
 import { spawn } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -1239,6 +1240,97 @@ const SHOTS = [
     check: `!!__field('Current password') && !!__btn('Log out') && document.body.innerText.includes('Certificate fingerprint (SHA-256)')`,
   },
   { name: 'mock-panel-light', mode: 'light', url: '/#/dashboard', act: `__btn('Mock data ▸').click();`, after: 500 },
+
+  // The update check (docs/api.md → Update check): mock_updates makes it a release build.
+  ...both({
+    name: 'banner-update-prompt',
+    url: '/?mock_panel=0&mock_updates=ask#/dashboard',
+    check: `(() => { const b = [...document.querySelectorAll('.banner')].find((x) => x.innerText.includes('Check for new Woodshed versions once a day?'));
+      return !!b && !!__btn('Turn on') && !!__btn('No thanks') && !b.querySelector('.x'); })()`,
+  }),
+  ...both({
+    name: 'banner-update-available',
+    url: '/?mock_panel=0&mock_updates=on#/dashboard',
+    check: `document.body.innerText.includes('Woodshed 1.2.0 is available (this is 1.1.0).')
+      && [...document.querySelectorAll('.banner a')].some((a) => a.href === 'https://github.com/gmccollu/woodshed/releases/tag/v1.2.0')`,
+  }),
+  {
+    name: 'update-turn-on-clears-prompt',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0&mock_updates=ask#/dashboard',
+    act: `__btn('Turn on').click();`,
+    after: 4500,
+    check: `!document.body.innerText.includes('Check for new Woodshed versions') && document.body.innerText.includes('Woodshed 1.2.0 is available')`,
+  },
+  {
+    name: 'update-no-thanks-clears-prompt',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0&mock_updates=ask#/dashboard',
+    act: `__btn('No thanks').click();`,
+    after: 1500,
+    check: `!document.body.innerText.includes('Check for new Woodshed versions') && !document.body.innerText.includes('is available')`,
+  },
+  {
+    name: 'update-dismiss-hides-version',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0&mock_updates=on#/dashboard',
+    act: `document.querySelector('[aria-label="Hide this until a newer version"]').click();`,
+    after: 1500,
+    check: `!document.body.innerText.includes('Woodshed 1.2.0 is available')`,
+  },
+  ...both({
+    name: 'settings-updates',
+    url: '/?mock_panel=0&mock_updates=on#/settings?section=updates',
+    clip: 'section[aria-labelledby="updates"]',
+    check: `(() => { const t = document.querySelector('section[aria-labelledby="updates"]')?.innerText ?? '';
+      return t.includes('Check for new versions once a day') && t.includes('gmccollu.github.io/woodshed/releases.json')
+        && t.includes('Woodshed 1.2.0 is available (this is 1.1.0), checked 3 h ago') && t.includes('Next check') && !!__btn('Check now'); })()`,
+  }),
+  {
+    name: 'settings-updates-check-now-light',
+    mode: 'light',
+    url: '/?mock_panel=0&mock_updates=on&mock_update_result=latest#/settings?section=updates',
+    clip: 'section[aria-labelledby="updates"]',
+    act: `__btn('Check now').click();`,
+    after: 3500,
+    check: `document.querySelector('section[aria-labelledby="updates"]').innerText.includes('OK, 1.1.0 is the latest (checked just now)')`,
+  },
+  {
+    name: 'settings-updates-failed-light',
+    mode: 'light',
+    url: '/?mock_panel=0&mock_updates=on&mock_update_result=error#/settings?section=updates',
+    clip: 'section[aria-labelledby="updates"]',
+    check: `document.querySelector('section[aria-labelledby="updates"]').innerText.includes('Last check failed 3 h ago: TLS certificate not trusted (a proxy that inspects HTTPS?)')`,
+  },
+  {
+    name: 'settings-updates-ask-light',
+    mode: 'light',
+    url: '/?mock_panel=0&mock_updates=ask#/settings?section=updates',
+    clip: 'section[aria-labelledby="updates"]',
+    check: `(() => { const s = document.querySelector('section[aria-labelledby="updates"]'); return s.innerText.includes('Not decided yet')
+      && !s.querySelector('input[type=checkbox]').checked && __btn('Check now').disabled; })()`,
+  },
+  {
+    name: 'settings-updates-dev-build-light',
+    mode: 'light',
+    url: '/?mock_panel=0#/settings?section=updates',
+    clip: 'section[aria-labelledby="updates"]',
+    check: `document.querySelector('section[aria-labelledby="updates"]').innerText.includes('Not available in this build (0.1.0)')
+      && !document.body.innerText.includes('Check for new Woodshed versions')`,
+  },
+  {
+    name: 'settings-update-switch-then-save',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0&mock_updates=on#/settings',
+    act: `document.querySelector('section[aria-labelledby="updates"] input[type=checkbox]').click(); await new Promise((r) => setTimeout(r, 1200));
+      __set(__field('Keep logs for'), '14'); await __tick(); __btn('Save').click();`,
+    after: 1500,
+    check: `!document.body.innerText.includes('changed since you loaded them') && !document.body.innerText.includes('changed elsewhere')`,
+  },
 ].filter((s) => s.name.includes(only));
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -1339,6 +1431,16 @@ try {
       events.length = 0;
       if (s.noshot) {
         console.log(`  ${s.name}: checked`);
+        continue;
+      }
+      if (s.clip) {
+        const r = JSON.parse(
+          await evaluate(`const r = document.querySelector(${JSON.stringify(s.clip)}).getBoundingClientRect();
+            return JSON.stringify({ x: r.left + scrollX - 16, y: r.top + scrollY - 16, width: r.width + 32, height: r.height + 32 });`),
+        );
+        const shot = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true, clip: { ...r, x: Math.max(0, r.x), y: Math.max(0, r.y), scale: 1 } });
+        writeFileSync(join(OUT, `${s.name}.png`), Buffer.from(shot.data, 'base64'));
+        console.log(`  ${s.name}.png (${Math.round(r.width)}x${Math.round(r.height)}, ${s.clip})`);
         continue;
       }
       const height = await evaluate('return Math.ceil(document.documentElement.scrollHeight)');

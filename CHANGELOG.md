@@ -4,6 +4,16 @@ All notable changes to Woodshed. The format follows [Keep a Changelog](https://k
 and versions follow [Semantic Versioning](https://semver.org/). Release notes on GitHub are taken from this file
 (`scripts/release-notes.sh`), so set a section's date before tagging it.
 
+## [1.1.0] - unreleased
+
+### Added
+
+- Opt-in update check: asks once, off unless you turn it on, one GET of the public releases file a day, never
+  installs anything.
+- `woodshed update-check on|off|ask` sets it from the command line, and silent installs set it with
+  `WOODSHED_UPDATE_CHECK` (an MSI property; an environment variable for the pkg, deb and rpm). See
+  [docs/install.md](docs/install.md#the-update-check-on-many-machines).
+
 ## [1.0.1] - 2026-11-14
 
 ### Fixed

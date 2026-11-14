@@ -4,7 +4,7 @@
   "type": "module",
   "description": "The project website (GitHub Pages). No build step; these scripts only test and check it.",
   "scripts": {
-    "test": "node --test test/download.test.mjs",
+    "test": "node --test test/download.test.mjs test/releases.test.mjs",
     "contrast": "node tools/contrast.mjs",
     "screenshots": "node tools/screenshots.mjs",
     "images": "python3 tools/images.py"

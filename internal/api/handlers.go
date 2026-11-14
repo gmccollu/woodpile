@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 )
@@ -210,6 +211,11 @@ func (s *Server) apiRoutes() *http.ServeMux {
 		writeJSON(w, http.StatusOK, es)
 	}})
 
+	// The update check.
+	mux.Handle("/api/updates", methods{http.MethodGet: s.getUpdates, http.MethodPut: s.putUpdates})
+	mux.Handle("/api/updates/check", methods{http.MethodPost: s.postUpdateCheck})
+	mux.Handle("/api/updates/dismiss", methods{http.MethodPost: s.postUpdateDismiss})
+
 	// Auth.
 	mux.Handle("/api/session", methods{http.MethodGet: s.getSession})
 	mux.Handle("/api/login", methods{http.MethodPost: s.login})
@@ -272,6 +278,13 @@ func checkLabel(v string) string {
 func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 	var in Settings
 	if !decodeJSON(w, r, &in) {
+		return
+	}
+	if u := in.Updates; u != nil && u.Check != "ask" && u.Check != "on" && u.Check != "off" {
+		writeJSON(w, http.StatusBadRequest, errorBody{
+			Error:  "Some settings need fixing.",
+			Errors: map[string]string{"updates.check": `Must be "ask", "on" or "off".`},
+		})
 		return
 	}
 	// LAN mode needs a password first (SPEC §5). The backend can't know: the
@@ -347,6 +360,72 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		s.log.Info("api: UI settings changed; restarting the UI server", "lan_mode", next.LANMode, "port", next.Port)
 		s.Reconfigure(next)
 	}
+}
+
+func (s *Server) getUpdates(w http.ResponseWriter, r *http.Request) {
+	u, err := s.backend.Updates(r.Context())
+	if err != nil {
+		s.backendError(w, r, err)
+		return
+	}
+	u.normalize()
+	writeJSON(w, http.StatusOK, u)
+}
+
+// putUpdates is the banner's Turn on / No thanks and the Settings switch:
+// "on" or "off" only ("ask" is for Settings).
+func (s *Server) putUpdates(w http.ResponseWriter, r *http.Request) {
+	var in UpdatesSettings
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	if in.Check != "on" && in.Check != "off" {
+		writeJSON(w, http.StatusBadRequest, errorBody{
+			Error:  `check must be "on" or "off".`,
+			Errors: map[string]string{"check": `Must be "on" or "off".`},
+		})
+		return
+	}
+	u, err := s.backend.SetUpdateCheck(r.Context(), in.Check)
+	if err != nil {
+		s.requestOrBackendError(w, r, err, "")
+		return
+	}
+	u.normalize()
+	writeJSON(w, http.StatusOK, u)
+}
+
+func (s *Server) postUpdateCheck(w http.ResponseWriter, r *http.Request) {
+	err := s.backend.CheckUpdatesNow(r.Context())
+	var ra *RetryAfterError
+	switch {
+	case err == nil:
+		w.Header().Set("Cache-Control", "no-store")
+		w.WriteHeader(http.StatusAccepted)
+	case errors.Is(err, ErrUpdateCheckOff):
+		writeError(w, http.StatusConflict, "The update check is off. Turn it on first.")
+	case errors.As(err, &ra):
+		secs := max(int((ra.After+time.Second-1)/time.Second), 1)
+		w.Header().Set("Retry-After", strconv.Itoa(secs))
+		writeError(w, http.StatusTooManyRequests, ra.Msg)
+	default:
+		s.backendError(w, r, err)
+	}
+}
+
+func (s *Server) postUpdateDismiss(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Version string `json:"version"`
+	}
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	if err := s.backend.DismissUpdate(r.Context(), in.Version); err != nil {
+		s.requestOrBackendError(w, r, err, "")
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // settingsResponse is the PUT /api/settings body: the saved settings, plus

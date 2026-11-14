@@ -28,11 +28,17 @@
 //   mock_ui_port_busy=1 the installed service can't open its UI because this copy holds the UI port
 //   mock_blocked=LIST  start with this blocklist (comma-separated IPs or CIDRs)
 //   mock_young=1       less than an hour of data: no retention estimate yet
+//   mock_updates=ask|on|off  a release build (1.1.0) with the update check in that state (default: a
+//                      development build, which has no update check). releases_url defaults to the
+//                      project's releases page then
+//   mock_update_result=newer|latest|error  what checks find (default newer: 1.2.0 is out)
 //   (at mock_rate=1284 the 20 GiB cap lasts about 13 days, so the size cap limits retention)
 
 import type {
   Device,
   ExportInfo,
+  UpdateCheck,
+  UpdateInfo,
   RejectedSender,
   Settings,
   Stats,
@@ -393,7 +399,115 @@ let settings: Settings = {
     trusted_hosts: [],
   },
   quiet: { quiet_after_seconds: 300, offline_after_seconds: 3600 },
+  updates: { check: (['ask', 'on', 'off'].includes(P.get('mock_updates') ?? '') ? P.get('mock_updates') : 'ask') as UpdateCheck },
 };
+
+// ---------- The update check (docs/api.md → Update check) ----------
+
+/** A release build with the update check only when mock_updates is set; otherwise a dev build. */
+const UPDATES_AVAILABLE = P.has('mock_updates');
+const VERSION = UPDATES_AVAILABLE ? '1.1.0' : '0.1.0';
+const RELEASES = P.get('mock_releases') ?? (UPDATES_AVAILABLE ? 'https://github.com/gmccollu/woodshed/releases' : '');
+const UPDATE_RESULT = P.get('mock_update_result') ?? 'newer';
+
+export const updates = $state({
+  /** What the next check finds: "newer" (1.2.0 is out), "latest" (this is the newest) or "error". */
+  result: ['newer', 'latest', 'error'].includes(UPDATE_RESULT) ? UPDATE_RESULT : 'newer',
+  lastCheck: null as number | null,
+  lastResult: '' as '' | 'ok' | 'error',
+  lastError: '',
+  lastErrorKind: '',
+  nextCheck: null as number | null,
+  latest: null as UpdateInfo['latest'],
+  dismissed: '',
+  lastManual: 0,
+});
+
+function runUpdateCheck(now: number) {
+  updates.lastCheck = now;
+  updates.nextCheck = now + 24 * 3600_000 - 17 * MIN;
+  if (updates.result === 'error') {
+    updates.lastResult = 'error';
+    updates.lastError = 'TLS certificate not trusted (a proxy that inspects HTTPS?)';
+    updates.lastErrorKind = 'tls';
+    updates.latest = null;
+    return;
+  }
+  const v = updates.result === 'newer' ? '1.2.0' : VERSION;
+  updates.lastResult = 'ok';
+  updates.lastError = updates.lastErrorKind = '';
+  updates.latest = { version: v, prerelease: false, url: `${RELEASES}/tag/v${v}` };
+}
+
+// On: the last check ran 3 h ago.
+if (UPDATES_AVAILABLE && settings.updates?.check === 'on') runUpdateCheck(Date.now() - 3 * 3600_000);
+
+function setUpdateCheck(check: UpdateCheck, now: number) {
+  const was = settings.updates?.check;
+  settings = { ...settings, updates: { check } };
+  if (check === was) return;
+  settingsRev++;
+  if (check === 'on') {
+    updates.nextCheck = now + 2000;
+    setTimeout(() => {
+      if (settings.updates?.check === 'on') runUpdateCheck(Date.now());
+    }, 2000);
+  } else {
+    updates.nextCheck = null;
+    updates.latest = null;
+  }
+}
+
+const newer = (a: string, b: string) => {
+  const p = (v: string) => v.split('-')[0].split('.').map(Number);
+  const [x, y] = [p(a), p(b)];
+  for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i] > y[i];
+  return false;
+};
+
+function updatesJSON(): UpdateInfo {
+  const on = settings.updates?.check === 'on';
+  const latest = on ? updates.latest : null;
+  return {
+    check: settings.updates?.check ?? 'ask',
+    available: UPDATES_AVAILABLE,
+    url: 'https://gmccollu.github.io/woodshed/releases.json',
+    current: VERSION,
+    last_check: updates.lastCheck ? new Date(updates.lastCheck).toISOString() : null,
+    last_result: updates.lastResult,
+    last_error: updates.lastError,
+    last_error_kind: updates.lastErrorKind,
+    next_check: on && updates.nextCheck ? new Date(updates.nextCheck).toISOString() : null,
+    latest,
+    update_available: !!latest && newer(latest.version, VERSION),
+    dismissed_version: updates.dismissed,
+  };
+}
+
+function updateBanners(): Status['banners'] {
+  if (!UPDATES_AVAILABLE) return [];
+  const u = updatesJSON();
+  if (u.check === 'ask')
+    return [
+      {
+        kind: 'update_prompt',
+        level: 'info',
+        action: 'update_choice',
+        text: 'Check for new Woodshed versions once a day? It fetches one public file from gmccollu.github.io and sends nothing about this server.',
+      },
+    ];
+  if (u.check === 'on' && u.update_available && u.latest && u.latest.version !== u.dismissed_version)
+    return [
+      {
+        kind: 'update_available',
+        level: 'info',
+        action: 'update_dismiss',
+        text: `Woodshed ${u.latest.version} is available (this is ${VERSION}).`,
+        url: u.latest.url,
+      },
+    ];
+  return [];
+}
 
 const isIPv4 = (s: string) =>
   /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.test(s) && s.split('.').every((p) => Number(p) <= 255);
@@ -488,6 +602,7 @@ function validate(s: Settings): Record<string, string> {
     e['quiet.quiet_after_seconds'] = 'Use at least 30 seconds.';
   if (!Number.isInteger(q.offline_after_seconds) || q.offline_after_seconds <= q.quiet_after_seconds)
     e['quiet.offline_after_seconds'] = 'Offline must come after quiet.';
+  if (s.updates && !['ask', 'on', 'off'].includes(s.updates.check)) e['updates.check'] = 'Must be "ask", "on" or "off".';
   return e;
 }
 
@@ -894,8 +1009,9 @@ function statusJSON(): Status {
       level: 'error',
       text: `Writes are paused: the data volume has 0.8 GiB free and there are no old logs left to delete. ${droppedByGuard.toLocaleString()} messages dropped so far. Free some disk space and writing resumes on its own.`,
     });
+  banners.push(...updateBanners());
   return {
-    version: '0.1.0',
+    version: VERSION,
     build: 'abc1234',
     os: OS,
     data_dir: settings.storage.data_dir,
@@ -903,7 +1019,7 @@ function statusJSON(): Status {
     first_message_at: firstMessageAt ? new Date(firstMessageAt).toISOString() : null,
     udp_rcvbuf_bytes: smallBuffer ? 212_992 : OS.startsWith('darwin') ? 7_454_720 : 33_554_432,
     udp_rcvbuf_requested_bytes: 32 * MiB,
-    releases_url: P.get('mock_releases') ?? '',
+    releases_url: RELEASES,
     kernel_drops_visible: OS.startsWith('linux'),
     ...(mock.lan ? { ui_cert_fingerprint: CERT_FP } : {}),
     listeners,
@@ -1339,7 +1455,10 @@ async function route(method: string, url: URL, body: unknown, header: string | n
     if (Object.keys(errors).length) return json({ errors }, 400);
     const wasLan = settings.ui.lan_mode;
     const restarting = wasLan !== s.ui.lan_mode || settings.ui.port !== s.ui.port;
-    settings = structuredClone(s);
+    // A PUT without updates keeps it (docs/api.md).
+    const check = s.updates?.check ?? settings.updates?.check ?? 'ask';
+    settings = structuredClone({ ...s, updates: settings.updates });
+    if (check !== settings.updates?.check) setUpdateCheck(check, now);
     settingsRev++;
     if (wasLan !== s.ui.lan_mode) {
       // The real server restarts at the new address; the mock just switches modes and keeps
@@ -1350,6 +1469,27 @@ async function route(method: string, url: URL, body: unknown, header: string | n
     }
     // mock_put_no_etag=1: a server that sends no ETag with the save (the UI reads it again).
     return json(restarting ? { ...settings, restarting: true } : settings, 200, P.get('mock_put_no_etag') === '1' ? {} : { ETag: settingsETag() });
+  }
+  if (method === 'GET' && p === '/api/updates') return json(updatesJSON());
+  if (method === 'PUT' && p === '/api/updates') {
+    const c = (body as { check?: string })?.check;
+    if (c !== 'on' && c !== 'off') return json({ error: 'check must be "on" or "off".', errors: { check: 'Must be "on" or "off".' } }, 400);
+    setUpdateCheck(c, now);
+    return json(updatesJSON());
+  }
+  if (method === 'POST' && p === '/api/updates/check') {
+    if (!UPDATES_AVAILABLE || settings.updates?.check !== 'on') return err(409, 'The update check is off. Turn it on first.');
+    const wait = 60_000 - (now - updates.lastManual);
+    if (updates.lastManual && wait > 0) return retryLater(Math.ceil(wait / 1000), 'A check ran less than a minute ago; try again shortly.');
+    updates.lastManual = now;
+    setTimeout(() => runUpdateCheck(Date.now()), 1200);
+    return new Response(null, { status: 202 });
+  }
+  if (method === 'POST' && p === '/api/updates/dismiss') {
+    const v = (body as { version?: string })?.version ?? '';
+    if (!/^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/.test(v)) return err(400, 'version must be a version, e.g. 1.2.0');
+    updates.dismissed = v;
+    return new Response(null, { status: 204 });
   }
   if (method === 'GET' && p === '/api/storage/history') return json(history());
   if (method === 'GET' && p === '/api/storage/estimate') {

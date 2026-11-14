@@ -111,7 +111,15 @@ The zip holds the log lines (plain text, one file per device per day), a manifes
 Woodshed's own events for that time (so the reader can tell "the device sent nothing" from "Woodshed wasn't
 running"), and a short README. Exports are deleted after 24 hours.
 
-## 7. Stop or remove it
+## 7. Updates
+
+The first time you open the UI, a banner asks whether Woodshed may check for new versions once a day.
+**Turn on** lets it fetch one public file a day (nothing about your installation is sent); **No thanks** keeps it
+off and it won't ask again. You can change this in **Settings → Updates**, which also shows the last check. When a
+newer version is out, a banner links to its release page. Woodshed never updates itself: to upgrade, download the
+new installer from the releases page and run it, and your settings and logs are kept.
+
+## 8. Stop or remove it
 
 - **Portable:** close its window (or press Ctrl-C). Your logs stay in `woodshed-data`.
 - **Installer:** see [Uninstall](../FAQ.md#how-do-i-uninstall-it) in the FAQ. Uninstalling keeps your logs unless

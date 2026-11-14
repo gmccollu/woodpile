@@ -41,7 +41,7 @@ func TestJSONShapeMatchesSettings(t *testing.T) {
 	want := `{"listeners":{"udp":{"enabled":true,"addr":"0.0.0.0","port":514},"tcp":{"enabled":true,"addr":"0.0.0.0","port":514},"allowlist":[],"blocklist":[],` +
 		`"max_devices":10000,"new_device_burst":5000,"new_devices_per_minute":200},` +
 		`"storage":{"data_dir":"/data","retention_days":30,"retention_bytes":21474836480,"part_bytes":104857600},` +
-		`"ui":{"lan_mode":false,"port":8514,"cert_file":"","key_file":"","require_login_local":false,"extra_hostnames":[],"trusted_hosts":[]},"quiet":{"quiet_after_seconds":300,"offline_after_seconds":3600}}`
+		`"ui":{"lan_mode":false,"port":8514,"cert_file":"","key_file":"","require_login_local":false,"extra_hostnames":[],"trusted_hosts":[]},"quiet":{"quiet_after_seconds":300,"offline_after_seconds":3600},"updates":{"check":"ask"}}`
 	if string(b) != want {
 		t.Errorf("JSON:\n got %s\nwant %s", b, want)
 	}
@@ -328,5 +328,60 @@ func TestReadDoesNotCreate(t *testing.T) {
 	c, err := Read(path)
 	if err != nil || c.Listeners.UDP.Port != 15514 || !c.Listeners.UDP.Enabled || c.Listeners.TCP.Port != DefaultSyslogPort || c.UI.Port != 18514 {
 		t.Errorf("read %+v %v", c.Listeners, err)
+	}
+}
+
+// A 1.0 config has no [updates]: it means "ask" (SPEC §10.2). A pre-seeded
+// value loads as written, and anything else fails validation on updates.check.
+func TestUpdatesCheck(t *testing.T) {
+	dir := t.TempDir()
+	load := func(body string) Config {
+		t.Helper()
+		p := filepath.Join(dir, "w.toml")
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		c, err := Load(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+	if c := load("[quiet]\nquiet_after_seconds = 60\n"); c.Updates.Check != UpdateCheckAsk {
+		t.Errorf("no [updates]: %q, want ask", c.Updates.Check)
+	}
+	if c := load("[updates]\n"); c.Updates.Check != UpdateCheckAsk {
+		t.Errorf("empty [updates]: %q, want ask", c.Updates.Check)
+	}
+	for _, v := range []string{"on", "off", "ask"} {
+		c := load("[updates]\ncheck = \"" + v + "\"\n")
+		if c.Updates.Check != v {
+			t.Errorf("check = %q loaded as %q", v, c.Updates.Check)
+		}
+		c.Storage.DataDir = dir
+		if errs := c.Validate(nil); errs != nil {
+			t.Errorf("check = %q: %v", v, errs)
+		}
+	}
+	for _, v := range []string{"", "yes", "On", "true"} {
+		c := Default()
+		c.Updates.Check = v
+		if errs := c.Validate(nil); errs["updates.check"] == "" {
+			t.Errorf("check = %q accepted: %v", v, errs)
+		}
+	}
+	// Saved and read back.
+	c := Default()
+	c.Updates.Check = UpdateCheckOff
+	p := filepath.Join(dir, "saved.toml")
+	if err := Save(p, c); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(p)
+	if !strings.Contains(string(b), "[updates]") || !strings.Contains(string(b), "check = 'off'") && !strings.Contains(string(b), `check = "off"`) {
+		t.Errorf("saved file:\n%s", b)
+	}
+	if got, _ := Load(p); got.Updates.Check != UpdateCheckOff {
+		t.Errorf("read back %q", got.Updates.Check)
 	}
 }

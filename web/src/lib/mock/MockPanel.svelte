@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { MOCK_PASSWORD, expireSession, mock, restartFirstRun, sendFirstMessage, setFleetSize, setLanAuth } from './server.svelte';
+  import { MOCK_PASSWORD, expireSession, mock, restartFirstRun, sendFirstMessage, setFleetSize, setLanAuth, updates } from './server.svelte';
   import { loadSession } from '../session.svelte';
   import { refreshDevices, refreshStatus } from '../status.svelte';
   import { go } from '../router.svelte';
@@ -65,11 +65,20 @@
         <label class="row"><input type="checkbox" bind:checked={mock.slowScan} /> Slow search scans (partial pages)</label>
         <label class="row"><input type="checkbox" bind:checked={mock.exportFail} /> Exports fail at 40 %</label>
         <label class="row"><input type="checkbox" checked={mock.lan} onchange={lan} /> LAN mode with auth</label>
+        <label class="row">
+          Update checks find
+          <select class="field" bind:value={updates.result}>
+            <option value="newer">1.2.0 is out</option>
+            <option value="latest">this is the latest</option>
+            <option value="error">a TLS error</option>
+          </select>
+        </label>
         <div class="row presets">
           <button class="ghost-btn" onclick={expire} disabled={!mock.lan || !mock.loggedIn}>Expire session</button>
         </div>
         <p class="hint">Mock password: <code>{MOCK_PASSWORD}</code>. Ten wrong tries lock logins for 15 min.</p>
         <p class="hint">Settings validation: try port 70000, a bad CIDR, or offline &lt; quiet.</p>
+        <p class="hint">The update check needs <code>?mock_updates=ask</code> (or on, off): a release build.</p>
       </div>
     {/if}
   </div>

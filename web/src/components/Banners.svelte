@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { retryListeners, type Listener } from '../lib/api';
+  import { dismissUpdate, getUpdates, putUpdates, retryListeners, type Banner, type Listener } from '../lib/api';
   import { live, refreshStatus } from '../lib/status.svelte';
   import { dismiss, isDismissed, prune } from '../lib/alerts.svelte';
   import { undo, undoLastSave } from '../lib/undo.svelte';
@@ -42,6 +42,45 @@
     }
     return out;
   });
+
+  // The update check's banners (docs/api.md → Update check): the one-time question, and a
+  // newer version. Both answers and the dismissal are saved on the server, for everyone.
+  let updateBusy = $state(false);
+  let updateError = $state('');
+
+  async function chooseUpdates(check: 'on' | 'off') {
+    updateBusy = true;
+    updateError = '';
+    try {
+      await putUpdates(check);
+      await refreshStatus();
+    } catch (e) {
+      updateError = (e as Error).message;
+    } finally {
+      updateBusy = false;
+    }
+  }
+
+  async function dismissNewVersion() {
+    updateBusy = true;
+    updateError = '';
+    try {
+      const u = await getUpdates();
+      if (u.latest) await dismissUpdate(u.latest.version);
+      await refreshStatus();
+    } catch (e) {
+      updateError = (e as Error).message;
+    } finally {
+      updateBusy = false;
+    }
+  }
+
+  /** The release link, only when it points into this build's releases page (the server checks it too). */
+  function releaseLink(b: Banner): string {
+    const base = live.status?.releases_url ?? '';
+    const u = b.url ?? '';
+    return base && (u === base || u.startsWith(base + '/')) ? u : '';
+  }
 
   async function retry() {
     retrying = true;
@@ -100,9 +139,23 @@
         {/if}
         {#if undo.error}<div class="detail-text" role="status">{undo.error}</div>{/if}
       {/if}
+      {#if b.kind === 'update_prompt'}
+        <div class="detail-text">You can change this any time in <a class="text-link underline" href="#/settings?section=updates">Settings → Updates</a>.</div>
+      {/if}
+      {#if b.kind === 'update_available' && releaseLink(b)}
+        <div class="detail-text">
+          <a class="text-link underline" href={releaseLink(b)} target="_blank" rel="noopener noreferrer">What's new, and the downloads</a>.
+          Woodshed doesn't update itself: run the new installer, and your settings and logs are kept.
+        </div>
+      {/if}
+      {#if (b.action === 'update_choice' || b.action === 'update_dismiss') && updateError}<div class="detail-text" role="status">{updateError}</div>{/if}
       {#if b.action === 'retry_listeners' && retryError}<div class="detail" role="status">{retryError}</div>{/if}
     </div>
     <div class="actions">
+      {#if b.action === 'update_choice'}
+        <button class="pill-btn" onclick={() => chooseUpdates('on')} disabled={updateBusy}>Turn on</button>
+        <button class="ghost-btn" onclick={() => chooseUpdates('off')} disabled={updateBusy}>No thanks</button>
+      {/if}
       {#if b.kind === 'listener_bind' && undo.saved}
         <button class="pill-btn" onclick={undoLastSave} disabled={undo.busy}>
           <Icon name="retry" size={15} />{undo.busy ? 'Undoing…' : 'Undo last save'}
@@ -113,9 +166,15 @@
           <Icon name="retry" size={15} />{retrying ? 'Retrying…' : 'Retry'}
         </button>
       {/if}
-      <button class="x" onclick={() => dismiss(b)} aria-label="Hide this alert" title={b.level === 'error' ? 'Hide until it changes or the page is reloaded' : 'Hide until it changes'}>
-        <Icon name="x" size={15} />
-      </button>
+      {#if b.action === 'update_dismiss'}
+        <button class="x" onclick={dismissNewVersion} disabled={updateBusy} aria-label="Hide this until a newer version" title="Hide this version's notice, for everyone">
+          <Icon name="x" size={15} />
+        </button>
+      {:else if b.action !== 'update_choice'}
+        <button class="x" onclick={() => dismiss(b)} aria-label="Hide this alert" title={b.level === 'error' ? 'Hide until it changes or the page is reloaded' : 'Hide until it changes'}>
+          <Icon name="x" size={15} />
+        </button>
+      {/if}
     </div>
   </div>
 {/each}

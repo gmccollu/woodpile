@@ -111,6 +111,7 @@ service account with it:
 
 ```powershell
 msiexec /i woodshed_X.Y.Z_windows_amd64.msi /qn
+msiexec /i woodshed_X.Y.Z_windows_amd64.msi /qn WOODSHED_UPDATE_CHECK=off   # decide the update check too
 ```
 
 The installer:
@@ -157,6 +158,8 @@ finishes, the welcome page opens in your browser. From a terminal instead:
 sudo installer -pkg woodshed_X.Y.Z_macos_universal.pkg -target /
 ```
 
+To decide the update check for a silent install, see [The update check on many machines](#the-update-check-on-many-machines).
+
 The installer:
 - creates a hidden system user and group, `_woodshed`, that the service runs as;
 - installs `/usr/local/bin/woodshed` (one binary for Apple silicon and Intel) and the launchd daemon
@@ -190,6 +193,7 @@ connections for `/usr/local/bin/woodshed` there (Options… → +) if devices ca
 sudo apt install ./woodshed_X.Y.Z_amd64.deb        # Debian, Ubuntu
 sudo dnf install ./woodshed-X.Y.Z-1.x86_64.rpm     # Fedora, RHEL and derivatives
 sudo zypper install ./woodshed-X.Y.Z-1.x86_64.rpm  # openSUSE
+sudo WOODSHED_UPDATE_CHECK=off apt install ./woodshed_X.Y.Z_amd64.deb   # and decide the update check
 ```
 
 The package:
@@ -273,6 +277,7 @@ pick up the change (a second or two without listeners); a foreground `woodshed r
 sudo woodshed set-password            # asks twice; nothing is shown as you type
 sudo woodshed lan-mode on             # HTTPS on every interface, with a login
 sudo woodshed status                  # listeners, warnings, UI addresses, certificate SHA-256
+sudo woodshed update-check off        # or on: the daily update check, without the UI's question
 ```
 
 - **`woodshed set-password`** sets or changes the UI password (at least 8 characters). In a script, pass it on
@@ -291,7 +296,44 @@ sudo woodshed status                  # listeners, warnings, UI addresses, certi
   the certificate's SHA-256 even when the UI needs a login. Run without root, it can't read the config or the data
   folder: it says so, assumes the default UI port, and shows the service's state and what the server answers there
   (only that the UI needs a login, in LAN mode).
+- **`woodshed update-check on|off|ask`** sets `updates.check` (see below) and restarts a running service. `ask` puts
+  the UI's one-time question back.
 - **Forgot the password?** `sudo woodshed reset-password` removes it and turns LAN mode off.
+
+## The update check on many machines
+
+From 1.1, Woodshed can check for new versions once a day: one HTTPS GET of
+`https://gmccollu.github.io/woodshed/releases.json`, nothing about the machine sent, nothing ever downloaded or
+installed. It's off until someone agrees: the first time the UI opens, a banner asks (**Turn on** or **No thanks**).
+The setting is `check` under `[updates]` in `woodshed.toml`: `"ask"` (the default), `"on"` or `"off"`. Settings →
+Updates shows it with the last check; `woodshed status` shows it too.
+
+To decide it for a fleet, so nobody is asked:
+
+| Installer | How |
+|---|---|
+| MSI | the property `WOODSHED_UPDATE_CHECK`: `msiexec /i woodshed_X.Y.Z_windows_amd64.msi /qn WOODSHED_UPDATE_CHECK=off` |
+| deb | the environment variable: `sudo WOODSHED_UPDATE_CHECK=off apt install ./woodshed_X.Y.Z_amd64.deb` |
+| rpm | the environment variable: `sudo WOODSHED_UPDATE_CHECK=off dnf install ./woodshed-X.Y.Z-1.x86_64.rpm` |
+| pkg | the environment variable, `sudo WOODSHED_UPDATE_CHECK=off installer -pkg woodshed_X.Y.Z_macos_universal.pkg -target /`, if macOS `installer` passes it to the package's scripts (see below) |
+| any | after installing: `sudo woodshed update-check off` (an administrator prompt on Windows) |
+
+`on`, `off` and `ask` work, in any case. The value applies on a first install and on an upgrade alike (an explicit
+choice wins); without it the config is left alone. An invalid value is ignored with a warning in the install output
+(the MSI's log with `msiexec /l*v`, `/var/log/install.log` for the pkg) and never fails the install. The installers
+apply it by running `woodshed update-check <value>` before the service starts.
+
+**Pre-seeding the config** is the way for the pkg when `installer` doesn't pass the variable through (then
+`/var/log/install.log` has no `WOODSHED_UPDATE_CHECK` line): write the file before the first install,
+
+```sh
+sudo mkdir -p "/Library/Application Support/Woodshed"
+printf '[updates]\ncheck = "off"\n' | sudo tee "/Library/Application Support/Woodshed/woodshed.toml" >/dev/null
+```
+
+and Woodshed uses the defaults for everything else (Settings writes them out at the first save). On Linux the config is
+`/etc/woodshed/woodshed.toml`; there, use the variable or `woodshed update-check` instead, because a
+`/etc/woodshed` you create before the package keeps your ownership and the service then can't save its settings.
 
 ## Behind a reverse proxy (nginx, Caddy)
 
@@ -414,6 +456,7 @@ Or with icacls, which gives the same DACL (`M` is 0x1301bf) but leaves the owner
 | `index.db` (+ `-wal`, `-shm`) | the SQLite index; `woodshed reindex` rebuilds it from the logs. Stop the service and run it as the service's user: `sudo -u woodshed woodshed reindex` (Linux), `sudo -u _woodshed woodshed reindex` (macOS), an administrator prompt on Windows. As root it refuses, so a link planted in the folder can't steer root |
 | `woodshed.toml` | the config (Linux: `/etc/woodshed/woodshed.toml` instead) |
 | `woodshed.lock` | locked while a Woodshed process uses the folder, so two servers (or a server and `reindex`) never share it. The lock is the OS's and goes away with the process, even after a crash; the file itself stays and holds the last PID |
+| `update-check.json` | the update check's last check, its result and the dismissed version (mode 0640); only written while the check is on or a banner is dismissed |
 | `woodshed.state.json` | written by the running server (PID, version, UI address and any UI error) for `woodshed status`; deleted at a clean stop |
 | `ui-password.hash`, `ui-cert.pem`, `ui-key.pem` | LAN mode's password hash and self-signed certificate (mode 0600) |
 | `exports/` | export zips, deleted after 24 hours |
@@ -465,3 +508,7 @@ that the UI answers on 8514, that 10,000 messages sent with `woodshed send` are 
 `woodshed status` works, and that a restart, an upgrade (Windows, 0.0.1 → 0.0.2) and an uninstall keep the data
 while the delete-logs paths (`apt purge`, `DELETE_LOGS=1`, `uninstall.sh --delete-logs`, `woodshed uninstall
 --delete-logs`) remove it. On Windows it also checks the data-folder ACL, the firewall rules and the event log.
+For the update check, it checks that `WOODSHED_UPDATE_CHECK` reaches each installer's scripts (the MSI property on
+an upgrade and a fresh install, the deb's and rpm's variable through sudo and the package manager) and that an
+invalid value is ignored, and for the pkg it reports whether `installer` passes the variable through and checks
+the pre-seeded config.

@@ -49,6 +49,19 @@ for dir in "$DATA_DIR" "$CONF_DIR"; do
 	fi
 done
 
+# WOODSHED_UPDATE_CHECK=on|off|ask (SPEC §10.2), for silent fleet installs:
+#   sudo WOODSHED_UPDATE_CHECK=off apt install ./woodshed_X.Y.Z_amd64.deb
+# An explicit choice, applied on a first install and on an upgrade alike (before the
+# service starts or restarts below). Unset leaves the config alone; an invalid value
+# is ignored with a warning, never failing the install.
+if [ -n "${WOODSHED_UPDATE_CHECK:-}" ]; then
+	if out=$(/usr/bin/woodshed update-check "$WOODSHED_UPDATE_CHECK" --config "$CONF_DIR/woodshed.toml" --no-restart 2>&1); then
+		echo "woodshed: WOODSHED_UPDATE_CHECK=$WOODSHED_UPDATE_CHECK: $(printf '%s\n' "$out" | head -n 1)"
+	else
+		echo "woodshed: warning: ignored WOODSHED_UPDATE_CHECK=$WOODSHED_UPDATE_CHECK (use on, off or ask): $(printf '%s\n' "$out" | head -n 1)" >&2
+	fi
+fi
+
 # Woodpile, this package's old name: its data isn't migrated or touched; say where it is.
 if [ "$action" = install ]; then
 	old=""
