@@ -295,20 +295,42 @@ Still unproven:
 network devices send, so it can be handed to whoever is helping. It isn't a monitoring system, a flow-analytics
 product or a SIEM. Each new data type has to fit that rule (decided 2026-11-11).
 
-### 1.x
-- **1.1:** Events v2 (field panel, histogram, boolean terms, saved searches) and the opt-in update check, designed in
-  §10; TLS syslog (designed separately).
+### 1.1
+- Events v2 (field panel, histogram, boolean terms, saved searches) and the opt-in update check, designed in §10.
+- TLS syslog (RFC 5425, port 6514), designed separately, later.
+
+### 1.2
 - **Pluggable data types:** generalise the pipeline (listener → per-device store → index → search → export) so
   each data type adds its own listener, record format, UI tab and export section, with syslog as the first.
-  Devices stay keyed by source IP across types.
+  Devices stay keyed by source IP across types. Events v2 already takes a `type` (§10.1.6).
 - **SNMP trap receiver** (UDP 162; v1, v2c, and v3 with user-configured credentials stored like the UI password).
   Traps are stored decoded as text lines, with varbinds and the raw PDU, in the same per-device, per-day files. No
   MIB compiler in the first version; numeric OIDs, plus an optional folder of MIB files for names.
+
+### 1.3
+- **SNMP poller ("OID watcher")**, moved up from 2.0 (owner, 2026-11-13). It collects evidence, so it's small and
+  fixed:
+  - It polls a small fixed set every 30–60 s: sysUpTime; IF-MIB in/out octets (the HC counters), errors and
+    discards; CPU and memory through HOST-RESOURCES-MIB where the device supports it.
+  - Each device can add a list of custom OIDs. The presets stay vendor-neutral.
+  - Counters are stored as rates in a small per-device time-series store, with the same retention as the logs.
+  - They're shown as graphs on the Events timeline, for the same window.
+  - A drop in uptime is detected as a reboot, and marked on the timeline and in the export.
+  - Poll data is included in the export zip.
+- Security:
+  - It polls only addresses the user configured.
+  - v2c communities and v3 auth/priv keys are encrypted at rest with the OS key store where there is one (DPAPI on
+    Windows, the Keychain on macOS), and otherwise kept in a file only the service account can read.
+  - SECURITY.md's outbound rule gains "SNMP polls to devices you configure".
+- Out of scope: discovery, topology, polling hundreds of OIDs, threshold dashboards, a MIB browser.
+- It shares the SNMP library and the v3 credential handling with the 1.2 trap receiver, which is why it comes after
+  it.
+
+### Later 1.x (not yet ordered)
 - **UDP receive off the write path:** today the UDP reader writes each message itself, so a slow disk (fsync,
   rotation) backs up into the OS socket buffer, where loss isn't counted on Windows or macOS. Hand messages to a
   bounded queue and count drops when it's full, so every loss Woodshed causes shows in `dropped_24h`. A 2026-11-12 lab
   soak on Windows lost ~20 per million UDP in bursts near the top of the hour; the cause wasn't found in Woodshed.
-- TLS syslog (RFC 5425, port 6514).
 - Alerts: device quiet, error-rate spike, disk filling, drops (email and webhook). Simple thresholds only.
 - Device identity by hostname as an option, for relayed traffic.
 - Forwarding to another collector; RELP.
@@ -319,15 +341,14 @@ product or a SIEM. Each new data type has to fit that rule (decided 2026-11-11).
   observation domain, compact columnar storage per device per hour, retention and the disk guard shared with
   syslog. Search by time, IPs, ports and protocol; simple top-talker and top-port views for a time window;
   windowed export (CSV or IPFIX file). No long-term flow analytics, baselining or anomaly detection.
-- **The export zip covers every data type**: syslog, traps and flows for the chosen devices and window, with one
-  manifest.
-- A small **OID watcher** (maybe): poll a handful of OIDs (CPU, memory, interface counters) on chosen devices at a
-  fixed interval and show them over time. Not a general SNMP poller.
+- **The export zip covers every data type**: syslog, traps, polls and flows for the chosen devices and window, with
+  one manifest.
 - Device setup helper (generated logging, trap and flow-export config per vendor).
 
 ### Out of scope
 - SIEM features: correlation rules, threat detection, compliance reporting, case management.
-- Full network monitoring: discovery, topology, general SNMP polling, dashboards-as-code.
+- Full network monitoring: discovery, topology, general-purpose SNMP polling (beyond the 1.3 poller's small set),
+  dashboards-as-code.
 
 ## 10. 1.1 design (draft, 2026-11-13)
 
@@ -521,6 +542,8 @@ breaking the API.
 - Every endpoint takes `type`, defaulting to `syslog`. 1.1 accepts only `syslog`; anything else is
   `400 type: unknown data type "x"`. A saved search's `query` is validated by the rules of its type. The first step
   in 1.2 is a second entry in the schema's list.
+- 1.3's poll graphs aren't a searchable type: they sit on the histogram's time axis, for the same window and with
+  the same bucket table.
 
 ### 10.2 Opt-in update check
 
