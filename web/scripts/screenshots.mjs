@@ -1022,9 +1022,10 @@ const SHOTS = [
     mode: 'light',
     url: '/?mock_panel=0&mock_slow_summary=1&mock_latency=20#/events?q=deny&r=24h',
     wait: 9000,
-    act: `window.__c0 = document.querySelector('aside.fp').innerText.match(/Counted (\\S+)/)[1]; __btn('Count the rest').click();`,
+    // The whole "Counted <range> of <range>" line: its first word is a date when the range has one.
+    act: `window.__c0 = document.querySelector('aside.fp').innerText.match(/Counted ([^\\n]+)/)[1]; __btn('Count the rest').click();`,
     after: 2500,
-    check: `document.querySelector('aside.fp').innerText.match(/Counted (\\S+)/)[1] !== window.__c0`,
+    check: `document.querySelector('aside.fp').innerText.match(/Counted ([^\\n]+)/)[1] !== window.__c0`,
   },
   {
     name: 'events2-expired-summary-restarts',
@@ -1789,7 +1790,10 @@ try {
         continue;
       }
       const height = await evaluate('return Math.ceil(document.documentElement.scrollHeight)');
-      const h = Math.max(sh, Math.min(height, 3000));
+      // Long pages stop at 3000 px (the 10k-device list). Settings is one long form whose shots show a section near
+      // its end (host names, LAN mode, storage), so it gets the whole page; since the TLS card it's past 3000.
+      const maxH = s.maxh ?? (s.url.includes('#/settings') ? 6000 : 3000);
+      const h = Math.max(sh, Math.min(height, maxH));
       await send('Emulation.setDeviceMetricsOverride', { width: sw, height: h, deviceScaleFactor: 1, mobile: false });
       await sleep(250);
       const shot = await send('Page.captureScreenshot', { format: 'png', clip: { x: 0, y: 0, width: sw, height: h, scale: 1 } });

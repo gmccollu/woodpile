@@ -1,6 +1,6 @@
 // Records the demo GIF and video from mock mode (vendor-neutral demo data):
-// the dashboard filling up, a device filter, the debug chip, Events with a Host filter and
-// the context panel, and an Export from estimate to Ready. Drives headless Chrome over the DevTools
+// the dashboard and live tail filling up, Open in Events, a field-panel value as a filter, a drag
+// on the histogram to zoom in, and the lines around one result. Drives headless Chrome over the DevTools
 // protocol with real mouse and keyboard events (and a drawn pointer, since headless has
 // none), then assembles the frames with ffmpeg.
 //
@@ -80,7 +80,9 @@ async function captureLoop() {
   let n = 0;
   while (capturing) {
     const t = Date.now();
-    const shot = await send('Page.captureScreenshot', { format: 'png', clip: { x: 0, y: 0, width: W, height: H, scale: DPR } });
+    // The clip is in page coordinates, so it follows the scroll (a click scrolls its target into view).
+    const [sx, sy] = await evaluate('[scrollX, scrollY]');
+    const shot = await send('Page.captureScreenshot', { format: 'png', clip: { x: sx, y: sy, width: W, height: H, scale: DPR } });
     const file = `f${String(++n).padStart(5, '0')}.png`;
     writeFileSync(join(framesDir, file), Buffer.from(shot.data, 'base64'));
     frames.push({ file, t, speed });
@@ -118,13 +120,6 @@ async function click(selectorExpr, modifiers = 0) {
     await send('Input.dispatchMouseEvent', { type, x, y, button: 'left', clickCount: 1, modifiers });
   await sleep(100);
 }
-async function type(text, perChar = 60) {
-  for (const ch of text) {
-    await send('Input.insertText', { text: ch });
-    await sleep(perChar);
-  }
-}
-const byText = (sel, text) => `[...document.querySelectorAll(${JSON.stringify(sel)})].find((e) => e.textContent.trim() === ${JSON.stringify(text)})`;
 
 try {
   await send('Page.enable');
@@ -132,63 +127,68 @@ try {
   await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'light' }] });
   await send('Storage.clearDataForOrigin', { origin: new URL(BASE).origin, storageTypes: 'all' });
   // A fresh start: the first message arrives after 1 s and the rest of the fleet 5 s later.
-  await send('Page.navigate', { url: `${BASE}/?mock_panel=0&mock_firstrun=1&mock_firstmsg=1&mock_export_secs=2#/dashboard` });
+  // mock_updates=off: a release build with the update check already answered, so no prompt banner.
+  await send('Page.navigate', { url: `${BASE}/?mock_panel=0&mock_firstrun=1&mock_firstmsg=1&mock_updates=off#/dashboard` });
   await sleep(700);
   await evaluate(POINTER);
   const loop = captureLoop();
 
-  // 1. Devices appear and the tail fills (time-lapse ×8 while the fleet joins; the strip
-  //    refreshes every 5 s, so wait for the chips rather than a fixed time).
+  // 1. Devices appear and the live tail fills (time-lapse ×8 while the fleet joins; the strip
+  //    refreshes every 5 s, so wait for the chips rather than a fixed time), then a moment at
+  //    normal speed to watch the tail.
   speed = 8;
   for (let i = 0; i < 60 && !(await evaluate(`!!document.querySelector('[aria-label="More for edge-fw-01"]')`)); i++) await sleep(250);
   await sleep(1500);
   speed = 1;
-  await sleep(700);
+  await sleep(2600);
 
-  // 2. Click a device: the tail follows only that one; click again to see all.
-  await click(`document.querySelector('[aria-label="More for edge-fw-01"]')?.previousElementSibling`);
-  await sleep(1000);
-  await click(`document.querySelector('[aria-label="More for edge-fw-01"]')?.previousElementSibling`);
-  await sleep(300);
+  // 2. Open in Events: the tail's view over the stored last hour, with the field panel and the histogram.
+  await click(`[...document.querySelectorAll('a.tail-btn')].find((a) => a.textContent.trim() === 'Open in Events')`);
+  const ready = `document.querySelectorAll('.hist .bar').length > 0 && document.querySelectorAll('aside.fp li.row button.val').length > 5 && document.querySelectorAll('.logline.clickable').length >= 6`;
+  for (let i = 0; i < 60 && !(await evaluate(ready)); i++) await sleep(150);
+  if (!(await evaluate(ready))) throw new Error('Events did not show the field panel, histogram and results');
+  await sleep(2400);
 
-  // 3. The debug chip: Alt-click shows only debug lines.
-  await click(`document.querySelector('[aria-label="Live tail severities"] button[title^="Debug"]')`, 1);
-  await sleep(1200);
+  // 3. The field panel: click a Program/tag value to keep only those lines.
+  const progVal = `[...document.querySelectorAll('aside.fp section')].find((x) => x.querySelector('h3')?.textContent.startsWith('Program/tag'))?.querySelector('button.val')`;
+  const app = await evaluate(`${progVal}.textContent.trim()`);
+  await click(progVal);
+  const onlyApp = `(() => { const k = (x) => x.replace(/^%/, '').toLowerCase(); const a = [...document.querySelectorAll('.logline.clickable .c.ap')];
+    return a.length >= 6 && a.every((x) => k(x.textContent.trim()) === k(${JSON.stringify(app)})); })()`;
+  for (let i = 0; i < 40 && !(await evaluate(onlyApp)); i++) await sleep(150);
+  if (!(await evaluate(onlyApp))) throw new Error(`the field panel didn't narrow the results to ${app}`);
+  await sleep(2400);
 
-  // 4. Events: type a query, results stream in; click a row's host to keep only that host
-  //    (it fills the Host filter and searches again), then open the lines around one.
-  await click(`document.querySelector('nav a[href="#/events"]')`);
-  await sleep(250);
-  await click(`document.getElementById('sq')`);
-  await type('deny');
-  await click(byText('button', 'Search'));
-  for (let i = 0; i < 40 && (await evaluate(`document.querySelectorAll('.logline.clickable').length`)) < 6; i++) await sleep(150);
-  await sleep(400);
-  const host = await evaluate(`document.querySelector('.logline.clickable button.hn').textContent.trim()`);
-  await click(`document.querySelector('.logline.clickable button.hn')`);
-  const onlyHost = `(() => { const h = [...document.querySelectorAll('.logline.clickable .hn')]; return h.length >= 6 && h.every((x) => x.textContent.trim() === ${JSON.stringify(host)}); })()`;
-  for (let i = 0; i < 40 && !(await evaluate(onlyHost)); i++) await sleep(150);
-  if (!(await evaluate(onlyHost))) throw new Error(`the Host filter didn't narrow the results to ${host}`);
-  await sleep(700);
+  // 4. Drag across the histogram to zoom into those minutes.
+  const r = await evaluate(`(() => { const h = document.querySelector('.hist'); h.scrollIntoView({ block: 'nearest' }); const r = h.getBoundingClientRect(); return [r.left, r.top, r.width, r.height]; })()`);
+  const n = await evaluate(`document.querySelectorAll('.hist .bar').length`);
+  const bx = (i) => Math.round(r[0] + ((i + 0.5) * r[2]) / n);
+  const by = Math.round(r[1] + r[3] * 0.6);
+  const hashBefore = await evaluate('location.hash');
+  const [a, b] = [Math.round(n * 0.62), Math.round(n * 0.85)];
+  await pointTo(bx(a), by);
+  await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: bx(a), y: by, button: 'left', buttons: 1, clickCount: 1 });
+  await evaluate(`(() => { document.getElementById('__ptr').style.transition = 'none'; return true; })()`);
+  for (let i = a + 1; i <= b; i++) {
+    await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: bx(i), y: by, button: 'left', buttons: 1 });
+    await evaluate(`(() => { const p = document.getElementById('__ptr'); p.style.left = '${bx(i)}px'; p.style.top = '${by}px'; return true; })()`);
+    await sleep(45);
+  }
+  await sleep(200);
+  await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: bx(b), y: by, button: 'left', buttons: 0, clickCount: 1 });
+  await evaluate(`(() => { document.getElementById('__ptr').style.transition = 'left .3s ease, top .3s ease'; return true; })()`);
+  const zoomed = `location.hash !== ${JSON.stringify(hashBefore)} && location.hash.includes('from=') && document.querySelectorAll('.logline.clickable').length >= 3`;
+  for (let i = 0; i < 40 && !(await evaluate(zoomed)); i++) await sleep(150);
+  if (!(await evaluate(zoomed))) throw new Error('the histogram drag did not zoom in');
+  await sleep(2400);
+
+  // 5. Open the lines around one result, then close it.
   await click(`document.querySelectorAll('.logline.clickable')[2]`);
-  await sleep(900);
+  for (let i = 0; i < 40 && !(await evaluate(`!!document.querySelector('[role=dialog] .logline.hit')`)); i++) await sleep(150);
+  await sleep(2800);
   await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
   await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
-  await sleep(300);
-
-  // 5. Export: pick a group, the estimate follows; build, and Ready.
-  await click(`document.querySelector('nav a[href="#/export"]')`);
-  await sleep(500);
-  await click(`document.querySelector('.dp .trigger')`);
-  await sleep(250);
-  await click(byText('[aria-label="Scope"] label', 'Group: Branches'));
-  await sleep(200);
-  await click(byText('[aria-label="Choose devices"] button', 'Done'));
-  await sleep(500);
-  const readyBefore = await evaluate(`document.querySelectorAll('li.ex[data-state=ready]').length`);
-  await click(byText('button', 'Build the zip'));
-  for (let i = 0; i < 40 && (await evaluate(`document.querySelectorAll('li.ex[data-state=ready]').length`)) <= readyBefore; i++) await sleep(150);
-  await sleep(800);
+  await sleep(700);
 
   capturing = false;
   await loop;
