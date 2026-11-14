@@ -1,7 +1,7 @@
 <script lang="ts">
   import { MOCK_PASSWORD, expireSession, mock, restartFirstRun, sendFirstMessage, setFleetSize, setLanAuth } from './server.svelte';
   import { loadSession } from '../session.svelte';
-  import { refreshDevices, refreshStatus } from '../status.svelte';
+  import { live, refreshDevices, refreshStatus } from '../status.svelte';
   import { go } from '../router.svelte';
 
   let open = $state(false);
@@ -24,6 +24,20 @@
     expireSession();
     refreshStatus(); // gets a 401, which shows the login form
   }
+  // TLS state (mock_tls) lives in the URL, so switching it reloads the mock from scratch.
+  const tlsMode = new URLSearchParams(location.search).get('mock_tls') ?? 'on';
+  function setTlsMode(v: string) {
+    const u = new URL(location.href);
+    if (v === 'on') u.searchParams.delete('mock_tls');
+    else u.searchParams.set('mock_tls', v);
+    location.href = u.toString();
+  }
+  const windows = $derived((live.status?.os ?? '').startsWith('windows'));
+  function tlsToggle(key: 'tlsExpiring' | 'tlsNames') {
+    mock[key] = !mock[key];
+    refreshStatus();
+  }
+
   function testMessage() {
     sendFirstMessage();
     refreshDevices();
@@ -68,6 +82,30 @@
         <div class="row presets">
           <button class="ghost-btn" onclick={expire} disabled={!mock.lan || !mock.loggedIn}>Expire session</button>
         </div>
+        <label class="row">
+          <span>TLS listener</span>
+          <select class="field" value={tlsMode} onchange={(e) => setTlsMode(e.currentTarget.value)}>
+            <option value="on">On (own CA)</option>
+            <option value="off">Off (cert kept)</option>
+            <option value="never">Never turned on</option>
+            <option value="file">On (your cert file)</option>
+          </select>
+        </label>
+        <label class="row"><input type="checkbox" checked={mock.tlsExpiring} onchange={() => tlsToggle('tlsExpiring')} /> TLS cert expires soon</label>
+        <label class="row"><input type="checkbox" checked={mock.tlsNames} onchange={() => tlsToggle('tlsNames')} /> Host name not in TLS cert</label>
+        <label class="row" title={windows ? '' : 'Start the mock with mock_os=windows'}>
+          <input
+            type="checkbox"
+            disabled={!windows}
+            checked={mock.tlsFirewall !== 'ok'}
+            onchange={(e) => {
+              mock.tlsFirewall = e.currentTarget.checked ? 'disabled' : 'ok';
+              refreshStatus();
+            }}
+          />
+          TLS firewall rule off (Windows)
+        </label>
+        <p class="hint">TLS 1.0/1.1 banner: tick "Allow TLS 1.0 and 1.1" in Settings and save.</p>
         <p class="hint">Mock password: <code>{MOCK_PASSWORD}</code>. Ten wrong tries lock logins for 15 min.</p>
         <p class="hint">Settings validation: try port 70000, a bad CIDR, or offline &lt; quiet.</p>
       </div>

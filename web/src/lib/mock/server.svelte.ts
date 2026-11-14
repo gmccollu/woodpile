@@ -28,16 +28,28 @@
 //   mock_ui_port_busy=1 the installed service can't open its UI because this copy holds the UI port
 //   mock_blocked=LIST  start with this blocklist (comma-separated IPs or CIDRs)
 //   mock_young=1       less than an hour of data: no retention estimate yet
+//   mock_tls=MODE      TLS syslog listener: on (default; Woodshed's own CA), off (turned off, certificate kept),
+//                      never (never turned on: no certificate yet) or file (your own certificate)
+//   mock_tls_legacy=1  allow_legacy_tls on (tls_legacy banner)
+//   mock_tls_expiring=1 the TLS certificate expires within 60 days (tls_cert_expiring banner)
+//   mock_tls_names=1   the host has a DNS name the certificate doesn't cover (tls_cert_names banner)
+//   mock_tls_firewall=STATE with mock_os=windows: the firewall rule's state (ok, missing, disabled, wrong_port,
+//                      unknown; default ok). Anything but ok shows the tls_firewall banner
 //   (at mock_rate=1284 the 20 GiB cap lasts about 13 days, so the size cap limits retention)
 
 import type {
   Device,
+  DeviceTls,
   ExportInfo,
   RejectedSender,
   Settings,
   Stats,
   Status,
   StorageHistoryEntry,
+  TlsCa,
+  TlsCert,
+  TlsFailure,
+  TlsState,
   Transport,
 } from '../api';
 import { isKnown } from '../severity';
@@ -76,6 +88,12 @@ export const mock = $state({
   fleetExtra: 0,
   /** Another Woodshed (the installed service) holds port 514 on UDP and TCP. */
   service514: P.get('mock_service_514') === '1',
+  /** The TLS certificate expires within 60 days (until it's renewed). */
+  tlsExpiring: P.get('mock_tls_expiring') === '1',
+  /** The host has a DNS name the TLS certificate doesn't cover. */
+  tlsNames: P.get('mock_tls_names') === '1',
+  /** Windows: the TLS firewall rule's state. */
+  tlsFirewall: P.get('mock_tls_firewall') ?? 'ok',
 });
 
 export const MOCK_PASSWORD = 'woodshed-demo';
@@ -359,6 +377,9 @@ function devicesRoute(u: URLSearchParams, now: number): Response {
 
 // ---------- Settings ----------
 
+/** mock_tls: on, off (certificate kept), never (no certificate yet) or file (your own). */
+const TLS_MODE = P.get('mock_tls') ?? 'on';
+
 // A demo copy beside an installed service starts on 15514, as in the owner's test.
 const SYSLOG_PORT = P.get('mock_service_514') === '1' && P.get('mock_listen_514') !== '1' ? 15514 : 514;
 
@@ -372,6 +393,14 @@ let settings: Settings = {
     max_devices: 10_000,
     new_device_burst: 5_000,
     new_devices_per_minute: 200,
+    tls: {
+      enabled: TLS_MODE === 'on' || TLS_MODE === 'file',
+      addr: '0.0.0.0',
+      port: 6514,
+      allow_legacy_tls: P.get('mock_tls_legacy') === '1',
+      cert_file: TLS_MODE === 'file' ? '/etc/woodshed/tls/fullchain.pem' : '',
+      key_file: TLS_MODE === 'file' ? '/etc/woodshed/tls/privkey.pem' : '',
+    },
   },
   storage: {
     data_dir: OS.startsWith('windows')
@@ -431,8 +460,31 @@ function validate(s: Settings): Record<string, string> {
       e[`listeners.${proto}.addr`] =
         'On macOS a port below 1024 can only be bound on all addresses (0.0.0.0 or ::). Use the sender allowlist to restrict senders.';
   }
-  if (!s.listeners.udp.enabled && !s.listeners.tcp.enabled)
+  if (!s.listeners.udp.enabled && !s.listeners.tcp.enabled && !s.listeners.tls?.enabled)
     e['listeners.udp.enabled'] = 'Keep at least one listener on, or Woodshed receives nothing.';
+  const t = s.listeners.tls;
+  if (t) {
+    port('listeners.tls.port', t.port);
+    if (!isIP(t.addr)) e['listeners.tls.addr'] = 'Enter an IP address, or 0.0.0.0 / :: for all addresses.';
+    else if (!e['listeners.tls.port'])
+      for (const proto of ['udp', 'tcp'] as const) {
+        const o = s.listeners[proto];
+        const shared = o.addr === t.addr || WILDCARD.includes(o.addr) || WILDCARD.includes(t.addr);
+        if (o.port === t.port && shared) e['listeners.tls.port'] = `Use a port other than the ${proto.toUpperCase()} listener's (${o.port}).`;
+      }
+    const abs = (f: string) => f.startsWith('/') || /^[A-Za-z]:\\/.test(f);
+    if (t.cert_file && !abs(t.cert_file)) e['listeners.tls.cert_file'] = 'Use the full path to the certificate file.';
+    if (t.key_file && !abs(t.key_file)) e['listeners.tls.key_file'] = 'Use the full path to the key file.';
+    if (t.cert_file && !t.key_file && !e['listeners.tls.cert_file'])
+      e['listeners.tls.key_file'] = "Set the key file too, or clear both to use Woodshed's own CA.";
+    if (t.key_file && !t.cert_file && !e['listeners.tls.key_file'])
+      e['listeners.tls.cert_file'] = "Set the certificate file too, or clear both to use Woodshed's own CA.";
+    // Mock only: a path with "mismatch" in it is a certificate that doesn't go with the key.
+    if (t.cert_file && t.key_file && /mismatch/.test(t.cert_file + t.key_file) && !e['listeners.tls.cert_file']) {
+      e['listeners.tls.cert_file'] = "This certificate and key don't match.";
+      e['listeners.tls.key_file'] = "This certificate and key don't match.";
+    }
+  }
   (s.listeners.blocklist ?? []).forEach((c, i) => {
     const [ip, bits, extra] = c.split('/');
     let bad = extra !== undefined || !isIP(ip);
@@ -822,6 +874,7 @@ function deviceJSON(d: Dev, now: number): Device {
     msgs_per_min: running ? Math.round(share * mock.rate * 60 * (0.9 + Math.random() * 0.2)) : 0,
     total_msgs: d.total,
     bytes_on_disk: d.bytes,
+    tls: deviceTls(d.def.ip, now),
   };
 }
 
@@ -842,6 +895,7 @@ function statusJSON(): Status {
     const h = holderOf(proto, c.port);
     listeners.push({ proto, addr: c.addr, port: c.port, ok: !h, error: h ? 'bind: address already in use' : '', ...(h ?? {}) });
   }
+  if (l.tls?.enabled) listeners.push({ proto: 'tls', addr: l.tls.addr, port: l.tls.port, ok: true, error: '' });
   const banners: Status['banners'] = [];
   const down = listeners.filter((x) => !x.ok);
   if (down.length) {
@@ -887,6 +941,7 @@ function statusJSON(): Status {
       level: 'warn',
       text: 'The OS gave the UDP listener a 208 KiB receive buffer; Woodshed asked for 32 MiB. Bursts of messages may be dropped before Woodshed sees them. In a container, raise net.core.rmem_max on the host; otherwise check /etc/sysctl.d/60-woodshed.conf is applied.',
     });
+  banners.push(...tlsBanners());
   if (mock.paused)
     banners.push({
       kind: 'writes_paused',
@@ -1017,6 +1072,195 @@ function rejected(now: number): RejectedSender[] {
   // One host opening more TCP connections than the per-source limit allows.
   out.push({ ip: '10.9.0.66', count_24h: Math.round(2_310 + 40 * mins), last_seen: new Date(now - 9000).toISOString(), reason: 'per_source' });
   return out.sort((a, b) => b.count_24h - a.count_24h);
+}
+
+// ---------- TLS syslog listener (docs/api.md → 1.1 (planned)) ----------
+
+const DAY = 24 * 60 * MIN;
+/** SPEC §10.3.3: both certificates end by this date. */
+const TLS_CAP = Date.parse('2037-12-31T23:59:59Z');
+const iso = (t: number) => new Date(t).toISOString().replace(/\.\d{3}Z$/, 'Z');
+
+/** Fake fingerprints: upper-case hex pairs, as the server sends them. */
+function fingerprint(bytes: number): string {
+  return Array.from(crypto.getRandomValues(new Uint8Array(bytes)), (b) => b.toString(16).padStart(2, '0').toUpperCase()).join(':');
+}
+
+/** The names Woodshed would put in a new certificate (hostname, .local, search domain, localhost, extra names). */
+const BASE_NAMES = ['localhost', 'logs-01', 'logs-01.example.net', 'logs-01.local'];
+const hostNames = () => [...new Set([...BASE_NAMES, ...(mock.tlsNames ? ['edge-logs.example.net'] : []), ...settings.ui.extra_hostnames.filter((h) => !isIP(h))])];
+
+function makeCa(at: number): TlsCa {
+  const day = iso(at).slice(0, 10);
+  return { subject: `CN=Woodshed CA logs-01 ${day}`, not_before: iso(at), not_after: iso(TLS_CAP), sha256: fingerprint(32), sha1: fingerprint(20) };
+}
+
+type Leaf = Omit<TlsCert, 'missing_names'>;
+
+function makeLeaf(at: number, names = hostNames()): Leaf {
+  return {
+    subject: 'CN=logs-01.example.net',
+    issuer: wsCa?.subject ?? '',
+    not_before: iso(at),
+    not_after: iso(Math.min(at + 3652 * DAY, TLS_CAP)),
+    sha256: fingerprint(32),
+    dns_names: [...names].sort(),
+    ip_addresses: ['10.1.0.50', '127.0.0.1', '192.168.64.1', '::1', 'fd00::50'],
+  };
+}
+
+// The certificate Woodshed made (kept when TLS is turned off). mock_tls=never: none yet.
+const TLS_MADE = START - 12 * DAY;
+let wsCa: TlsCa | null = TLS_MODE === 'never' ? null : makeCa(TLS_MADE);
+let wsLeaf: Leaf | null = TLS_MODE === 'never' ? null : makeLeaf(TLS_MADE, BASE_NAMES);
+/** The expiring certificate's end, while mock.tlsExpiring is on. */
+const SOON = START + 41 * DAY;
+
+/** mock_tls=file: the user's own certificate, from another CA. */
+const FILE_CERT: TlsCert = {
+  subject: 'CN=logs.example.net',
+  issuer: 'CN=Example Issuing CA 2, O=Example Corp',
+  not_before: iso(START - 30 * DAY),
+  not_after: iso(START + 367 * DAY),
+  sha256: fingerprint(32),
+  dns_names: ['logs.example.net'],
+  ip_addresses: [],
+  missing_names: [],
+};
+
+const isWindowsOs = () => OS.startsWith('windows');
+
+function tlsCertJSON(): TlsCert | null {
+  const t = settings.listeners.tls;
+  if (t?.cert_file) return { ...FILE_CERT, not_after: mock.tlsExpiring ? iso(SOON) : FILE_CERT.not_after };
+  if (!wsLeaf) return null;
+  return {
+    ...wsLeaf,
+    not_after: mock.tlsExpiring ? iso(SOON) : wsLeaf.not_after,
+    missing_names: hostNames().filter((h) => !wsLeaf!.dns_names.includes(h)),
+  };
+}
+
+function tlsJSON(): TlsState {
+  const t = settings.listeners.tls!;
+  const file = !!t.cert_file;
+  return {
+    enabled: t.enabled,
+    port: t.port,
+    source: file ? 'file' : 'woodshed',
+    allow_legacy_tls: t.allow_legacy_tls,
+    ca: file ? null : wsCa,
+    cert: tlsCertJSON(),
+    firewall: isWindowsOs() ? { state: mock.tlsFirewall, command: 'woodshed tls on' } : { state: 'unknown', command: '' },
+  };
+}
+
+const ymd = (s: string) => s.slice(0, 10);
+
+function tlsBanners(): Status['banners'] {
+  const t = settings.listeners.tls;
+  if (!t?.enabled) return [];
+  const out: Status['banners'] = [];
+  const cert = tlsCertJSON();
+  if (t.allow_legacy_tls)
+    out.push({ kind: 'tls_legacy', level: 'warn', action: '', text: "TLS 1.0 and 1.1 are allowed for older senders. Turn this off once they're updated." });
+  if (cert && Date.parse(cert.not_after) - Date.now() < 60 * DAY)
+    out.push({
+      kind: 'tls_cert_expiring',
+      level: 'warn',
+      action: t.cert_file ? '' : 'tls_renew',
+      text: t.cert_file
+        ? `Your TLS syslog certificate expires on ${ymd(cert.not_after)}. Replace the certificate and key files before then.`
+        : `The TLS syslog certificate expires on ${ymd(cert.not_after)}. Renew it, then nothing changes on your devices.`,
+    });
+  if (cert && cert.missing_names.length)
+    out.push({
+      kind: 'tls_cert_names',
+      level: 'warn',
+      action: 'tls_renew',
+      text: `The TLS certificate doesn't name ${cert.missing_names.join(', ')}. Devices that check the server name will refuse it. Renew it to add the name.`,
+    });
+  const fw = tlsJSON().firewall;
+  if (isWindowsOs() && fw.state !== 'ok') {
+    const why: Record<string, string> = {
+      missing: 'there is no Windows firewall rule for it',
+      disabled: 'its Windows firewall rule is turned off',
+      wrong_port: 'its Windows firewall rule is for another port',
+      unknown: "Woodshed can't read its Windows firewall rule",
+    };
+    out.push({
+      kind: 'tls_firewall',
+      level: 'warn',
+      action: '',
+      text: `Devices may not reach TLS port ${t.port}: ${why[fw.state] ?? 'the firewall may block it'}. Run ${fw.command} in an administrator prompt.`,
+    });
+  }
+  return out;
+}
+
+/** Per-device TLS stats: a few fleet devices send over TLS (or try to). */
+function deviceTls(ip: string, now: number): DeviceTls | null {
+  if (!wsLeaf && !settings.listeners.tls?.cert_file) return null;
+  const mins = (now - START) / MIN;
+  const ok = (version: string, cipher: string, conns: number, lastMs: number): DeviceTls => ({
+    connections_24h: conns,
+    version,
+    cipher,
+    last_connected: iso(now - lastMs),
+    failures_24h: 0,
+    last_failure: null,
+  });
+  switch (ip) {
+    case '10.1.0.1':
+      return ok('TLS 1.3', 'TLS_AES_128_GCM_SHA256', 4, 3 * 60 * MIN);
+    case '10.1.0.2':
+      return { ...ok('TLS 1.2', 'TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384', 6, 41 * MIN), failures_24h: 2, last_failure: { time: iso(now - 5 * 60 * MIN), reason: 'timeout', detail: '' } };
+    case '10.1.0.20':
+      return ok('TLS 1.3', 'TLS_CHACHA20_POLY1305_SHA256', 288, 2 * MIN);
+    case '10.8.0.1':
+      // An older sender that offers only TLS 1.0: it connects once allow_legacy_tls is on.
+      if (settings.listeners.tls?.allow_legacy_tls) return ok('TLS 1.0', 'TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA', 3, 4 * MIN);
+      return {
+        connections_24h: 0,
+        version: '',
+        cipher: '',
+        last_connected: null,
+        failures_24h: Math.round(8_640 + 6 * mins),
+        last_failure: { time: iso(now - 7_000), reason: 'version', detail: 'tls: client offered only unsupported versions: [301]' },
+      };
+    default:
+      return null;
+  }
+}
+
+/** GET /api/tls/failures: senders whose handshakes failed in the last 24 h, most failures first. */
+function tlsFailures(now: number): TlsFailure[] {
+  if (mock.firstRun || (!wsLeaf && !settings.listeners.tls?.cert_file)) return [];
+  const mins = (now - START) / MIN;
+  const out: TlsFailure[] = [
+    { ip: '198.51.100.23', count_24h: Math.round(2_880 + 6 * mins), last_seen: iso(now - 4_000), reason: 'cert_rejected', detail: 'remote error: tls: unknown certificate authority', device_id: '' },
+    { ip: '10.2.0.20', count_24h: Math.round(611 + 2 * mins), last_seen: iso(now - 26_000), reason: 'not_tls', detail: 'first record does not look like a TLS handshake', device_id: '10.2.0.20' },
+    { ip: '203.0.113.80', count_24h: 37, last_seen: iso(now - 52 * MIN), reason: 'timeout', detail: 'no complete handshake within 10 s', device_id: '' },
+    { ip: '192.0.2.81', count_24h: 12, last_seen: iso(now - 3 * 60 * MIN), reason: 'cipher', detail: 'tls: no cipher suite supported by both client and server', device_id: '' },
+    { ip: '10.1.0.2', count_24h: 2, last_seen: iso(now - 5 * 60 * MIN), reason: 'timeout', detail: 'no complete handshake within 10 s', device_id: '10.1.0.2' },
+  ];
+  if (!settings.listeners.tls?.allow_legacy_tls)
+    out.push({ ip: '10.8.0.1', count_24h: Math.round(8_640 + 6 * mins), last_seen: iso(now - 7_000), reason: 'version', detail: 'tls: client offered only unsupported versions: [301]', device_id: '10.8.0.1' });
+  return out.sort((a, b) => b.count_24h - a.count_24h);
+}
+
+function caDownload(format: 'pem' | 'der'): Response {
+  const der = crypto.getRandomValues(new Uint8Array(812));
+  if (format === 'der')
+    return new Response(der, {
+      status: 200,
+      headers: { 'Content-Type': 'application/pkix-cert', 'Content-Disposition': 'attachment; filename="woodshed-ca.cer"' },
+    });
+  const b64 = btoa(String.fromCharCode(...der)).replace(/.{64}/g, '$&\n');
+  return new Response(`-----BEGIN CERTIFICATE-----\n${b64}\n-----END CERTIFICATE-----\n`, {
+    status: 200,
+    headers: { 'Content-Type': 'application/x-pem-file', 'Content-Disposition': 'attachment; filename="woodshed-ca.pem"' },
+  });
 }
 
 // ---------- Exports ----------
@@ -1341,6 +1585,12 @@ async function route(method: string, url: URL, body: unknown, header: string | n
     const restarting = wasLan !== s.ui.lan_mode || settings.ui.port !== s.ui.port;
     settings = structuredClone(s);
     settingsRev++;
+    // docs/api.md: turning TLS on for the first time without cert_file creates the CA and certificate.
+    if (settings.listeners.tls?.enabled && !settings.listeners.tls.cert_file && !wsCa) {
+      await sleep(500);
+      wsCa = makeCa(now);
+      wsLeaf = makeLeaf(now);
+    }
     if (wasLan !== s.ui.lan_mode) {
       // The real server restarts at the new address; the mock just switches modes and keeps
       // this browser logged in, as if it had already logged in there.
@@ -1358,6 +1608,24 @@ async function route(method: string, url: URL, body: unknown, header: string | n
     return json(estimateFor(n));
   }
   if (method === 'GET' && p === '/api/rejected') return json(rejected(now));
+  if (method === 'GET' && p === '/api/tls') return json(tlsJSON());
+  if (method === 'GET' && p === '/api/tls/failures') return json(tlsFailures(now));
+  if (method === 'POST' && p === '/api/tls/renew') {
+    if (settings.listeners.tls?.cert_file) return err(409, 'This server uses your own certificate; replace the files instead.');
+    if (!wsCa) return err(409, "TLS hasn't been turned on yet, so there's no certificate to renew.");
+    await sleep(700); // a new RSA key takes a moment
+    const newCa = (body as { new_ca?: unknown })?.new_ca === true;
+    if (newCa) wsCa = makeCa(now);
+    wsLeaf = makeLeaf(now);
+    mock.tlsExpiring = false;
+    return json(tlsJSON());
+  }
+  const caDl = /^\/api\/tls\/ca\.(pem|der)$/.exec(p);
+  if (caDl && method === 'GET') {
+    if (settings.listeners.tls?.cert_file) return err(404, 'This server uses your own certificate; get its CA from whoever issued it.');
+    if (!wsCa) return err(404, "TLS hasn't been turned on yet, so there's no CA certificate.");
+    return caDownload(caDl[1] as 'pem' | 'der');
+  }
   if (method === 'GET' && p === '/api/search') return searchRoute(url.searchParams, now);
   if (method === 'GET' && p === '/api/context') {
     const m = /^h(\d+)$/.exec(url.searchParams.get('ref') ?? '');
