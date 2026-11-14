@@ -37,6 +37,9 @@ changing anything on the device. Most devices send syslog over UDP: it's simple 
 but a message lost on the network isn't resent. Woodshed also listens on TCP 514 for devices that offer it
 (more reliable, in order). Both are on by default; you can change the ports in **Settings → Listeners**.
 
+For encrypted syslog, turn on **Syslog over TLS** (TCP 6514); see the
+[user guide](docs/user-guide.md#sending-syslog-over-tls).
+
 If something else already uses port 514 (often the computer's own syslog service), Woodshed still starts and the UI
 shows a red banner saying which program has the port. Stop that program, or move Woodshed to another port, then press
 **Retry**.

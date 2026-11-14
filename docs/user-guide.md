@@ -35,9 +35,9 @@ In each device's logging or syslog settings, set the syslog server to one of the
 port 514, UDP (or TCP if the device offers it). Save, and make the device log something (log in to it, or change
 a setting). The Setup page says when the first message arrives.
 
-> **Firewalls and TCP:** some firewalls stop passing traffic while their TCP syslog server can't be reached, unless
-> an option such as "permit traffic when the log host is down" is set. Check that option before you choose TCP.
-> UDP has no such risk.
+> **Firewalls and TCP or TLS:** some firewalls stop passing traffic while their TCP or TLS syslog server can't be
+> reached, or its certificate fails, unless an option such as "permit traffic when the log host is down" is set.
+> Check that option before you choose TCP or TLS. UDP has no such risk.
 
 Over TCP, Woodshed keeps a quiet connection open for 24 hours, because some devices don't notice a closed
 connection until their next message fails, and lose messages until they reconnect. To change it, set
@@ -54,6 +54,41 @@ woodshed send --message "hello"          # in the portable folder: ./woodshed se
 ```
 
 If nothing arrives, see [Devices can't reach it](../FAQ.md#devices-cant-reach-woodshed) in the FAQ.
+
+### Sending syslog over TLS
+
+**Sending syslog over TLS.** Use this when a device should encrypt its logs on the way. It's off until you turn it
+on.
+
+1. In **Settings → Listeners**, turn on **Syslog over TLS** (TCP port 6514). On Windows, also run `woodshed tls on`
+   once in an administrator prompt, so the firewall lets devices in; Settings shows the command if it's needed.
+2. Download Woodshed's **CA certificate** from the same section: **PEM** if the device wants the certificate as text
+   to paste, **DER (.cer)** if it wants a file to upload.
+3. On the device, import it as a **trusted CA certificate** (often called a trust anchor or a CA certificate).
+   Compare the fingerprint the device shows with the one in Settings.
+4. Point the device's syslog at this computer, **TCP port 6514 with TLS** (the setting may be called secure,
+   encrypted or TLS syslog).
+5. If the device can check the server's name, give it one of the DNS names Settings lists for the certificate, not
+   an IP address: many devices check names only. Then check on the Dashboard that messages arrive.
+
+**Before you turn on TCP or TLS logging on a firewall:** some firewalls block traffic through them when a TCP or TLS
+syslog server can't be reached, or its certificate fails, unless a "permit traffic when the log host is down" option
+is set. Check that option first.
+
+If a device can't connect, **Settings → TLS** shows each sender's failed handshakes and why: the CA isn't trusted,
+there's no TLS version in common, or plain syslog was sent to the TLS port.
+
+To check the setup from another computer before you change a device, send a test message the way a device would,
+trusting only the downloaded CA:
+
+```sh
+woodshed send --host <this computer's DNS name> --proto tls --ca woodshed-ca.pem --message "hello over TLS"
+```
+
+The certificate doesn't change on its own. **Renew** in Settings makes a new one signed by the same CA, so devices
+need nothing; **Replace CA** makes a new CA, and every device must import it again. Woodshed warns 60 days before
+either expires, and when the computer gets a DNS name the certificate doesn't cover. More in the install guide:
+[TLS syslog: firewall and certificate](install.md#tls-syslog-firewall-and-certificate).
 
 ## 3. Watch
 

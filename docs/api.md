@@ -436,7 +436,10 @@ answer. It only means something while the data folder's lock is held (a crash le
  "banners": [{"kind": "udp_buffer_small", "level": "warn", "text": "The UDP receive buffer is 4 MiB; …", "action": ""}]}
 ```
 `listeners` and `banners` are exactly `/api/status`'s (banners sorted errors first); `listeners` is `[]` before the
-listeners start. `ui.error` and `ui.cert_fingerprint` are omitted when empty.
+listeners start. `ui.error` and `ui.cert_fingerprint` are omitted when empty. Once TLS syslog has been turned on, a
+`tls` object gives `enabled`, `port`, `source`, `ca_sha256`, `ca_sha1`, `ca_not_after`, `cert_sha256`,
+`cert_not_after`, `error` (when the certificate can't be loaded) and `failures` (the 5 senders failing most:
+`ip`, `count_24h`, `reason`, `last_seen`), for `woodshed status` and `woodshed tls status`.
 
 ## Errors
 

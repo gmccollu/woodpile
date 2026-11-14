@@ -1033,6 +1033,41 @@ Answers to the TLS questions:
 6. Client-certificate verification (`client_ca`) comes later, if asked for.
 7. The installers' `WOODSHED_UPDATE_CHECK` pass-through: an acceptance item, below.
 
+**Decided (build, 2026-11-13)**, the smallest choices the TLS build had to make where §10.3 and docs/api.md left
+room:
+1. The MSI creates the TLS rule through a custom action (`woodshed-aclfix --tls-firewall ensure|remove`, the same
+   `internal/fwrule` code as `woodshed install`), not `fw:FirewallException`. The WiX extension can create a rule
+   disabled, but its uninstall step deletes the rule, and a major upgrade removes the old product before the new one
+   installs, so an enabled rule would come back disabled after every upgrade. `ensure` creates the rule disabled
+   only when it's missing and otherwise leaves it as it is; `remove` runs only on a real uninstall
+   (`NOT UPGRADINGPRODUCTCODE`). This answers the first acceptance item's "upgrade keeps its state" by design; CI
+   still has to confirm it.
+2. The CLI never writes key files: `woodshed tls on` edits the config and the service makes the CA and certificate
+   when it starts, as its own account (so the files have the right owner). `woodshed tls renew [--new-ca]` leaves
+   `tls-renew-request.json` in the data folder, and the service carries it out at its start (recording the event)
+   and deletes it; the CLI restarts a running service, as `lan-mode` does.
+3. `GET /api/tls/failures` lists every sender with failed handshakes in the last 24 h, known devices included
+   (`device_id` set), as docs/api.md says; the senders "that failed before they ever got a message through" are the
+   ones with `device_id: ""`.
+4. The TLS banners show only while the listener is on. `tls_cert_names` (and `cert.missing_names`) apply to
+   Woodshed's own certificate only. `tls_firewall` shows only for the installed Windows service: portable mode and
+   `woodshed run` have no rule.
+5. The Windows rule's state is read with `netsh advfirewall firewall show rule name=… verbose` (English field
+   names), at most once a minute. Output it can't read (another display language) is `"unknown"`: no banner. `woodshed
+   tls on` points the rule at the running `woodshed.exe` and creates it (enabled) if it's missing.
+6. `listeners.tls.port` must differ from the TCP and UDP ports on an overlapping address (the same address, or either
+   a wildcard) and from `ui.port`. A user's own key must be RSA of at least 2048 bits or ECDSA P-256, P-384 or P-521
+   (Ed25519 is refused).
+7. Alerts from a sender: `bad_certificate`, `unsupported_certificate`, `certificate_revoked`,
+   `certificate_expired`, `certificate_unknown` and `unknown_ca` are `cert_rejected`; `protocol_version` is
+   `version`; `handshake_failure` and `insufficient_security` are `cipher`. (Go's own clients send `bad_certificate`
+   for an unknown CA.)
+8. `POST /api/tls/renew` before TLS was ever turned on is a `409` ("turn it on first"), like a user certificate.
+9. The CA's subject date is the UTC date. TLS listener events have their own source (`listener/tls`), so an export's
+   gaps include the TLS listener's.
+10. `woodshed send --proto tls` uses port 6514 unless `--port` is given and needs `--ca FILE` (PEM or DER) or
+    `--insecure`; `woodshed bench --proto all` includes TLS.
+
 **Acceptance items for the 1.1 build** (the install smoke tests confirm each, or the design changes before release):
 - The WiX firewall extension in use can ship the TLS 6514 rule present but disabled, and an upgrade keeps its state.
 - The virtual service account (`NT SERVICE\Woodshed`) can read that rule's state, for the `tls_firewall` banner.

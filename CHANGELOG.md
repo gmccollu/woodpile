@@ -4,6 +4,28 @@ All notable changes to Woodshed. The format follows [Keep a Changelog](https://k
 and versions follow [Semantic Versioning](https://semver.org/). Release notes on GitHub are taken from this file
 (`scripts/release-notes.sh`), so set a section's date before tagging it.
 
+## [1.1.0] - unreleased
+
+### Added
+- Syslog over TLS (RFC 5425) on TCP 6514, off until you turn it on in **Settings → Listeners → Syslog over TLS** or
+  with `woodshed tls on`. TLS 1.2 and 1.3 with modern cipher suites; an option allows TLS 1.0 and 1.1 for older
+  senders. Everything after the handshake works as TCP does: the same framing, limits, storage and device identity.
+- Woodshed makes its own small CA and a server certificate the first time TLS is turned on. Devices import the CA
+  (download it as PEM or DER in Settings, and compare the SHA-256 or SHA-1 fingerprint), so renewing the server
+  certificate needs no change on them. Both last until 2037-12-31 at most, for older devices' date handling, and
+  never change on their own: banners warn 60 days before either expires and when the computer gets a DNS name the
+  certificate doesn't cover. Renew and Replace CA are in Settings and `woodshed tls renew [--new-ca]`. You can use
+  your own certificate and key instead.
+- Per-device TLS stats (connections, version and cipher, failed handshakes and why) on the Devices page, and a list of
+  senders whose TLS handshakes fail (an untrusted CA, no version in common, plain syslog sent to the TLS port).
+- `woodshed tls on|off|renew|status`. On Windows the installers add a firewall rule for TLS 6514, turned off, which
+  `tls on` turns on; on Linux `tls on` opens the port in ufw or firewalld when one is active, and `tls off` removes
+  only what it added. `woodshed status` shows the TLS certificate's fingerprints.
+- `woodshed send --proto tls --ca FILE` (or `--insecure`) checks a TLS setup the way a device would, and `woodshed
+  bench --proto tls` measures it.
+- The install guide, user guide and FAQ cover TLS, and warn that some firewalls block traffic while a TCP or TLS log
+  host is unreachable or its certificate fails.
+
 ## [1.0.1] - unreleased
 
 ### Fixed

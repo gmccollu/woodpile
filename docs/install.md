@@ -4,10 +4,11 @@ Woodshed is one program that runs as a background service. Every installer sets 
 leaves it listening for syslog on **UDP and TCP port 514**. The web UI is at **http://127.0.0.1:8514/** on the same
 machine (localhost only until you turn on LAN mode in Settings).
 
-> **Before you send a firewall's logs over TCP:** some firewalls block traffic through themselves while their TCP
-> syslog server is unreachable (Woodshed stopped, its computer restarting, the path to it down), unless an option
-> such as "permit traffic when the log host is down" is set. Check that option on the firewall before you choose
-> TCP. UDP has no such risk: the firewall keeps passing traffic whether or not anything receives its logs.
+> **Before you send a firewall's logs over TCP or TLS:** some firewalls block traffic through themselves while their
+> TCP or TLS syslog server is unreachable (Woodshed stopped, its computer restarting, the path to it down), or its
+> certificate fails, unless an option such as "permit traffic when the log host is down" is set. Check that option on
+> the firewall before you choose TCP or TLS. UDP has no such risk: the firewall keeps passing traffic whether or not
+> anything receives its logs.
 
 ## Portable mode: no install
 
@@ -116,7 +117,9 @@ msiexec /i woodshed_X.Y.Z_windows_amd64.msi /qn
 The installer:
 - installs the `Woodshed` service (automatic start, restarted if it fails) running as the virtual account
   `NT SERVICE\Woodshed`, which can write only to `C:\ProgramData\Woodshed`;
-- adds Windows Firewall rules for woodshed.exe on UDP 514 and TCP 514 only. The UI port isn't opened;
+- adds Windows Firewall rules for woodshed.exe on UDP 514 and TCP 514 only. The UI port isn't opened. It also adds
+  **Woodshed syslog (TLS 6514)** for syslog over TLS, turned off until `woodshed tls on` (see
+  [TLS syslog](#tls-syslog-firewall-and-certificate));
 - resets the ACL of `C:\ProgramData\Woodshed` and everything already in it (owner Administrators; links inside are
   removed), and keeps only `SeChangeNotifyPrivilege` in the service's token;
 - adds a Start menu shortcut, **Woodshed**, that opens the UI.
@@ -124,7 +127,8 @@ The installer:
 **Firewall profiles:** the two rules (**Woodshed syslog (UDP 514)** and **Woodshed syslog (TCP 514)**) apply to all
 network profiles, **Public included**, because devices often sit on a network Windows calls Public only because
 nobody told it otherwise, and they'd be silently blocked. To allow syslog only on Domain and Private networks
-(administrator PowerShell; repeat after an upgrade or repair, which re-creates the rules):
+(administrator PowerShell; repeat after an upgrade or repair, which re-creates the UDP and TCP rules; the TLS rule
+keeps its settings):
 
 ```powershell
 Get-NetFirewallRule -DisplayName "Woodshed syslog (*)" | Set-NetFirewallRule -Profile Domain,Private
@@ -261,6 +265,53 @@ Then restart Woodshed in the container (`systemctl restart woodshed`) so it asks
 **Kubernetes:** the same, plus: a `LoadBalancer` or `NodePort` Service for UDP 514 needs
 `externalTrafficPolicy: Local`, or every device shows up under the node's address (the default policy rewrites the
 source IP); `hostNetwork: true` avoids that too. One replica per volume, and `rmem_max` set on the nodes.
+
+## TLS syslog: firewall and certificate
+
+Syslog over TLS (TCP 6514) is off until you turn it on in **Settings → Listeners → Syslog over TLS**, or with
+`woodshed tls on` as an administrator. How to point a device at it is in the
+[user guide](user-guide.md#sending-syslog-over-tls). The commands, all as an administrator (`sudo` on Linux and
+macOS); like `lan-mode`, they edit the config and restart a running service:
+
+```sh
+woodshed tls on [--port 6514]   # turn the listener on (and open the firewall, below)
+woodshed tls off                # turn it off and undo the firewall change; the certificate is kept
+woodshed tls renew              # a new certificate, signed by the same CA: devices need nothing
+woodshed tls renew --new-ca     # a new CA too: every device must import it again
+woodshed tls status             # the listener, the fingerprints, the expiry and the last failures
+```
+
+**The firewall, per OS** (the service's own account can't change the firewall, and shouldn't be able to):
+- **Windows:** the MSI and `woodshed install` add the rule **Woodshed syslog (TLS 6514)** (TCP 6514 for
+  woodshed.exe, every profile), turned off. `woodshed tls on` turns it on (on `listeners.tls.port`), and `woodshed tls
+  off` turns it off. Upgrades and repairs keep its state, and uninstalling removes it. Turning TLS on in Settings
+  doesn't touch the rule: while it's off, missing or on another port, a banner gives the command to run in an
+  administrator prompt. A portable copy has no rule: if you chose Allow at Windows' first-run prompt, it covers every
+  port.
+- **macOS:** the application firewall allows or blocks the program, not ports, so if Woodshed already receives on
+  514, 6514 works too. `tls on` and `off` change only the listener.
+- **Linux:** the packages add nothing, as for 514. `woodshed tls on` opens the port where it finds an active
+  firewall it knows: `ufw allow 6514/tcp` when ufw is active, or `firewall-cmd --permanent --add-port=6514/tcp` and a
+  reload when firewalld is running (the default zone). It records what it added in `tls-firewall.json` in the data
+  folder, and `woodshed tls off` removes only that. With neither active (your own nftables or iptables rules, say),
+  it changes nothing and prints the commands; allow inbound TCP 6514 yourself. Settings shows the same commands under
+  "If devices can't connect".
+
+**The certificate:** the first time TLS is turned on, Woodshed makes its own small CA and a server certificate signed
+by it, in the data folder (mode 0600). Devices import the **CA**, so a renewed server certificate needs no change on
+any device. Both are RSA-2048 and end no later than 2037-12-31 (the server certificate lasts 10 years, or until then),
+because some older devices can't handle dates after early 2038. Nothing renews on its own: Woodshed warns 60 days
+before the certificate or the CA expires, and when the computer has a DNS name the certificate doesn't cover (after
+a rename, say); then use **Renew** (or `woodshed tls renew`). **Replace CA** (`woodshed tls renew --new-ca`) is for
+when the CA must change, for example if the data folder was copied somewhere it shouldn't be: every device must
+import the new CA certificate before it can connect again. Each renewal is in the event log (and an export's
+`woodshed-events.log`) with the old and new fingerprints.
+
+To use your own certificate instead, set `cert_file` and `key_file` under `[listeners.tls]` (absolute paths to PEM
+files: the certificate, then any chain, and its key). It must allow server authentication (EKU serverAuth) and use an
+RSA (2048 bits or more) or ECDSA key. Woodshed re-reads the files on every Settings save and on **Retry**, shows their
+fingerprint and expiry, and warns before they expire; there's no CA download (get the CA from whoever issued the
+certificate).
 
 ## Headless setup (no browser on the machine)
 
@@ -416,6 +467,9 @@ Or with icacls, which gives the same DACL (`M` is 0x1301bf) but leaves the owner
 | `woodshed.lock` | locked while a Woodshed process uses the folder, so two servers (or a server and `reindex`) never share it. The lock is the OS's and goes away with the process, even after a crash; the file itself stays and holds the last PID |
 | `woodshed.state.json` | written by the running server (PID, version, UI address and any UI error) for `woodshed status`; deleted at a clean stop |
 | `ui-password.hash`, `ui-cert.pem`, `ui-key.pem` | LAN mode's password hash and self-signed certificate (mode 0600) |
+| `tls-ca.pem`, `tls-ca-key.pem`, `tls-cert.pem`, `tls-key.pem` | syslog over TLS: Woodshed's CA, and the server certificate (then the CA: the chain it sends) with their keys (mode 0600). Made the first time TLS is turned on, and only changed by Renew or Replace CA |
+| `tls-firewall.json` | Linux: what `woodshed tls on` added to ufw or firewalld, so `tls off` removes only that |
+| `tls-renew-request.json` | left by `woodshed tls renew` until the service carries it out at its next start |
 | `exports/` | export zips, deleted after 24 hours |
 
 ## Checking that it works
@@ -424,7 +478,8 @@ Or with icacls, which gives the same DACL (`M` is 0x1301bf) but leaves the owner
    listening on, and a test command.
 2. Send a test message with `woodshed send --message "hello"` (see `woodshed send --help`), or point a device at the
    machine's address, port 514.
-3. `woodshed status` shows the service's state, both listeners and the UI address.
+3. `woodshed status` shows the service's state, the listeners and the UI address (as an administrator, also the TLS
+   certificate's fingerprints when TLS is on).
 
 ## Troubleshooting
 

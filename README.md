@@ -19,8 +19,7 @@ hand those people: download it, run it, point the device at it. It doesn't fill 
 drops instead of hiding it, and the export zip carries checksums and the times Woodshed wasn't running, so whoever
 reads it knows what they're looking at.
 
-What it isn't: a SIEM. No correlation, alerting or forwarding (TLS syslog, alerts and forwarding are planned after
-1.0). If you already run a log platform you're happy with, you probably don't need this. How it compares:
+What it isn't: a SIEM. No correlation, alerting or forwarding (alerts and forwarding are planned after 1.0). If you already run a log platform you're happy with, you probably don't need this. How it compares:
 [Why not tcpdump, rsyslog, syslog-ng or Graylog?](FAQ.md#why-not-tcpdump-rsyslog-syslog-ng-or-graylog)
 
 ## Download
@@ -83,6 +82,7 @@ As of 1.0.0 (details in the [CHANGELOG](CHANGELOG.md)):
 - Listens on UDP and TCP port 514 straight away, no setup. TCP framing (octet counting or newline) is detected per
   message. RFC 5424, RFC 3164 and the usual non-compliant variants are parsed leniently, and the raw message is always
   stored exactly as received.
+- Optional syslog over TLS (TCP 6514) with its own CA, so devices import one certificate that renewals don't change.
 - Plain files: one folder per device and one file per day (`logs/<ip>/<day>.log`), gzipped once closed. Read them
   with grep, an editor or any log tool.
 - Doesn't fill the disk: retention by age and total size (30 days / 20 GiB by default), plus a low-disk guard. Every
