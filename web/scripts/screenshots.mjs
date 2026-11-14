@@ -32,6 +32,8 @@ const H_JS = `
     el.dispatchEvent(new Event('input', { bubbles: true }));
   };
   window.__tick = () => new Promise((r) => setTimeout(r, 120));
+  // Shows only the card with this id on the Settings page, so a long page's section fits one shot.
+  window.__only = (id) => document.querySelectorAll('section.card').forEach((c) => { if (c.id !== id) c.style.display = 'none'; });
   window.__field = (label) => [...document.querySelectorAll('label')].find((l) => l.textContent.trim().startsWith(label))?.querySelector('input,textarea');
 `;
 
@@ -1239,6 +1241,139 @@ const SHOTS = [
     check: `!!__field('Current password') && !!__btn('Log out') && document.body.innerText.includes('Certificate fingerprint (SHA-256)')`,
   },
   { name: 'mock-panel-light', mode: 'light', url: '/#/dashboard', act: `__btn('Mock data ▸').click();`, after: 500 },
+  // ---- 1.1: the TLS syslog listener (SPEC §10.3) ----
+  ...both({
+    name: 'settings-tls',
+    url: '/?mock_panel=0#/settings?section=tls',
+    act: `document.getElementById('tls-help').open = true; __only('tls');`,
+    check: `document.body.innerText.includes('Syslog over TLS') && document.body.innerText.includes('CA certificate')
+      && document.querySelectorAll('#tls .fp').length === 3 && !!__btn('Download PEM') && !!__btn('Renew certificate…')
+      && document.body.innerText.includes('sudo ufw allow 6514/tcp') === false`,
+  }),
+  {
+    name: 'settings-tls-linux-help-light',
+    mode: 'light',
+    url: '/?mock_panel=0&mock_os=linux#/settings?section=tls-failures',
+    act: `document.getElementById('tls-help').open = true; __only('tls');`,
+    check: `document.body.innerText.includes('sudo ufw allow 6514/tcp')
+      && document.body.innerText.includes('sudo firewall-cmd --permanent --add-port=6514/tcp && sudo firewall-cmd --reload')`,
+  },
+  {
+    name: 'settings-tls-replace-ca-light',
+    mode: 'light',
+    url: '/?mock_panel=0#/settings?section=tls',
+    act: `__only('tls'); scrollTo(0, 0); __btn('Replace CA…').click();`,
+    check: `document.querySelector('[role=alertdialog]')?.innerText.includes('Every device must import the new CA certificate again')
+      && __btn('Replace CA').disabled`,
+  },
+  {
+    name: 'settings-tls-renew-dialog-light',
+    mode: 'light',
+    url: '/?mock_panel=0#/settings?section=tls',
+    act: `__only('tls'); scrollTo(0, 0); __btn('Renew certificate…').click();`,
+    check: `document.querySelector('[role=alertdialog]')?.innerText.includes('Devices keep working')`,
+  },
+  {
+    name: 'tls-renew-keeps-ca',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0&mock_tls_expiring=1#/settings?section=tls',
+    wait: 2500,
+    act: `const ca = document.querySelectorAll('#tls .fp')[0].textContent, leaf = document.querySelectorAll('#tls .fp')[2].textContent;
+      if (!document.body.innerText.includes('The TLS syslog certificate expires on')) throw new Error('no expiring banner');
+      __btn('Renew certificate…').click(); await __tick(); __btn('Renew certificate').click();
+      await new Promise((r) => setTimeout(r, 2500));
+      window.__ok = document.querySelectorAll('#tls .fp')[0].textContent === ca && document.querySelectorAll('#tls .fp')[2].textContent !== leaf;`,
+    after: 5500,
+    check: `window.__ok && document.body.innerText.includes('The certificate was renewed') && !document.body.innerText.includes('The TLS syslog certificate expires on')`,
+  },
+  {
+    name: 'settings-tls-failures-light',
+    mode: 'light',
+    url: '/?mock_panel=0#/settings?section=tls-failures',
+    act: `__only('tls');`,
+    check: `document.body.innerText.includes('Failed TLS handshakes, last 24 h') && document.body.innerText.includes('Not TLS: usually plain syslog sent to the TLS port')
+      && !!document.querySelector('#tls a[href="#/devices?q=10.8.0.1"]')`,
+  },
+  {
+    name: 'banners-tls-light',
+    mode: 'light',
+    url: '/?mock_panel=0&mock_os=windows&mock_tls_legacy=1&mock_tls_expiring=1&mock_tls_names=1&mock_tls_firewall=disabled#/dashboard',
+    check: `document.querySelectorAll('.banner').length >= 4 && [...document.querySelectorAll('button')].filter((b) => b.textContent.trim() === 'Open TLS settings').length === 2
+      && document.body.innerText.includes('woodshed tls on')`,
+  },
+  {
+    name: 'tls-banner-opens-settings',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0&mock_tls_names=1#/dashboard',
+    act: `__btn('Open TLS settings').click();`,
+    after: 1500,
+    check: `location.hash === '#/settings?section=tls' && Math.abs(document.getElementById('tls').getBoundingClientRect().top) < 200`,
+    report: `location.hash + ' top=' + document.getElementById('tls')?.getBoundingClientRect().top + ' y=' + scrollY`,
+  },
+  {
+    name: 'devices-tls-light',
+    mode: 'light',
+    url: '/?mock_panel=0#/devices',
+    act: `document.querySelector('[aria-label="TLS details for branch-fw-08"]').click(); document.querySelector('[aria-label="TLS details for edge-fw-02"]').click();`,
+    check: `document.querySelectorAll('button.tls').length >= 4 && document.querySelectorAll('tr.tlsrow').length === 2
+      && document.body.innerText.includes('No TLS version in common')`,
+  },
+  {
+    name: 'devices-tls-dark',
+    mode: 'dark',
+    url: '/?mock_panel=0#/devices',
+    act: `document.querySelector('[aria-label="TLS details for edge-fw-02"]').click();`,
+  },
+  {
+    name: 'settings-tls-never-light',
+    mode: 'light',
+    url: '/?mock_panel=0&mock_tls=never#/settings?section=tls',
+    act: `__only('tls');`,
+    check: `!!document.querySelector('[data-tls-none]') && document.querySelectorAll('button.tls').length === 0`,
+  },
+  {
+    name: 'tls-first-turn-on-creates-cert',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0&mock_tls=never#/settings?section=tls',
+    act: `__field('Syslog over TLS').click(); await __tick();
+      if (!document.body.innerText.includes('Before you turn on TLS logging on a firewall')) throw new Error('no firewall warning');
+      __btn('Save').click();`,
+    after: 2500,
+    check: `!document.querySelector('[data-tls-none]') && document.querySelectorAll('#tls .fp').length === 3`,
+  },
+  {
+    name: 'settings-tls-off-light',
+    mode: 'light',
+    url: '/?mock_panel=0&mock_tls=off#/settings?section=tls',
+    act: `__only('tls');`,
+    check: `document.body.innerText.includes('TLS is off.') && !__field('Syslog over TLS').checked`,
+  },
+  {
+    name: 'settings-tls-file-light',
+    mode: 'light',
+    url: '/?mock_panel=0&mock_tls=file#/settings?section=tls',
+    act: `__only('tls');`,
+    check: `document.body.innerText.includes('Your certificate') && !__btn('Download PEM') && !__btn('Renew certificate…')
+      && __field('TLS certificate file').value === '/etc/woodshed/tls/fullchain.pem'`,
+  },
+  {
+    name: 'settings-tls-errors-light',
+    mode: 'light',
+    url: '/?mock_panel=0&mock_tls=file#/settings?section=tls',
+    act: `__set(__field('TLS port'), '514'); __set(__field('TLS certificate file'), '/etc/woodshed/tls/mismatch.pem'); await __tick(); __btn('Save').click();
+      await new Promise((r) => setTimeout(r, 800)); __only('tls');`,
+    check: `document.querySelectorAll('#tls .ferr').length === 3`,
+  },
+  {
+    name: 'settings-tls-windows-firewall-light',
+    mode: 'light',
+    url: '/?mock_panel=0&mock_os=windows&mock_tls_firewall=missing#/settings?section=tls',
+    act: `__only('tls');`,
+    check: `!!document.querySelector('[data-tls-firewall]') && document.querySelector('[data-tls-firewall]').innerText.includes('woodshed tls on')`,
+  },
 ].filter((s) => s.name.includes(only));
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
