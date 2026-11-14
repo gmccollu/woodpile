@@ -16,6 +16,26 @@ import (
 // parse: the storage line has no severity, so search and export read it from
 // the raw message.
 func Severity(raw []byte) int {
+	p := PRI(raw)
+	if p < 0 {
+		return model.Unknown
+	}
+	return p & 7
+}
+
+// Facility returns the syslog facility (0-23) of a raw message from its PRI,
+// or model.Unknown when it has no valid one (the rules of Severity).
+func Facility(raw []byte) int {
+	p := PRI(raw)
+	if p < 0 {
+		return model.Unknown
+	}
+	return p >> 3
+}
+
+// PRI returns the PRI value (0-191) of a raw message, or -1 when it has no
+// valid one; see Severity for the rules.
+func PRI(raw []byte) int {
 	i := 0
 	for i < len(raw) {
 		c := raw[i]
@@ -30,7 +50,7 @@ func Severity(raw []byte) int {
 		break
 	}
 	if i >= len(raw) || raw[i] != '<' {
-		return model.Unknown
+		return -1
 	}
 	v, j := 0, i+1
 	for j < len(raw) && j-(i+1) < 3 && raw[j] >= '0' && raw[j] <= '9' {
@@ -38,9 +58,9 @@ func Severity(raw []byte) int {
 		j++
 	}
 	if j == i+1 || j >= len(raw) || raw[j] != '>' || v > 191 {
-		return model.Unknown
+		return -1
 	}
-	return v & 7
+	return v
 }
 
 // matcher matches q against a raw message (unescaped, without the stored
@@ -57,8 +77,10 @@ type matcher struct {
 	// first byte of the needle in both cases, for the fold prefilter.
 	lo, up byte
 	// pre is a regex's prefilter: a substring matcher for the literal every
-	// match starts with.
+	// match starts with; for terms, the longest term every match contains.
 	pre *matcher
+	// terms is a syntax=terms expression (matchTerms).
+	terms *termNode
 }
 
 type matchKind int
@@ -69,6 +91,7 @@ const (
 	matchFoldASCII                    // case-insensitive, ASCII needle
 	matchFoldUnicode                  // case-insensitive, non-ASCII needle
 	matchRegex
+	matchTerms // syntax=terms with more than one term
 )
 
 // QueryError is a request the engine refuses (a 400 at the API): an invalid
@@ -136,6 +159,8 @@ func (m *matcher) match(raw []byte) bool {
 		return m.nextFold(raw, 0) >= 0
 	case matchFoldUnicode:
 		return bytes.Contains(bytes.ToLower(raw), m.needle)
+	case matchTerms:
+		return m.terms.match(raw)
 	default:
 		return m.re.Match(raw)
 	}

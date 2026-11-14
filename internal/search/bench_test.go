@@ -33,6 +33,37 @@ func BenchmarkSearch(b *testing.B) {
 		{"exclude_all", with(func(q *Query) { q.Exclude = "conn opened" }), true},
 		{"text_app_all", with(func(q *Query) { q.Q = "seq=00"; q.Apps = []string{"sshd"} }), true},
 	}
+	// Summaries (the field panel and histogram), each to the end of the range.
+	sums := []struct {
+		name string
+		q    SummaryQuery
+	}{
+		{"summary_all", SummaryQuery{Filter: all}},
+		{"summary_text", SummaryQuery{Filter: Filter{From: all.From, To: all.To, Q: "seq=00"}}},
+		{"summary_app", SummaryQuery{Filter: Filter{From: all.From, To: all.To, Apps: []string{"%FW-*"}}}},
+		{"histogram_index", SummaryQuery{Filter: all, Fields: []string{}}},
+		{"histogram_scan", SummaryQuery{Filter: Filter{From: all.From, To: all.To, Q: "seq=00"}, Fields: []string{}}},
+	}
+	for _, c := range sums {
+		b.Run(c.name, func(b *testing.B) {
+			var n int64
+			for b.Loop() {
+				q := c.q
+				for {
+					s, err := f.eng.Summary(bg, q)
+					if err != nil {
+						b.Fatal(err)
+					}
+					n = s.Matched
+					if s.NextCursor == "" {
+						break
+					}
+					q.Cursor = s.NextCursor
+				}
+			}
+			b.ReportMetric(float64(n), "matched")
+		})
+	}
 	for _, c := range cases {
 		b.Run(c.name, func(b *testing.B) {
 			var n int

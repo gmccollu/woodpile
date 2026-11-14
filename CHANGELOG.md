@@ -13,6 +13,22 @@ and versions follow [Semantic Versioning](https://semver.org/). Release notes on
 - `woodshed update-check on|off|ask` sets it from the command line, and silent installs set it with
   `WOODSHED_UPDATE_CHECK` (an MSI property; an environment variable for the pkg, deb and rpm). See
   [docs/install.md](docs/install.md#the-update-check-on-many-machines).
+- Events has a field panel beside the results: the top devices, severities, facilities, hosts and programs/tags for
+  the current search, with exact counts over a stated span. Click a value to filter on it, Alt-click or "−" to leave
+  it out.
+- A histogram above the results shows the matches over time. Drag across it to zoom into a range; Back zooms out.
+  Unfiltered searches draw it straight from the index, so it's instant.
+- Text | Terms | Regex: Terms mode takes words and "quoted phrases" with AND, OR, NOT and parentheses. Text mode and
+  every existing link keep their 1.0 meaning.
+- Saved searches: save, open, rename and delete named searches, shared by everyone who can open the UI. They're kept
+  in `index.db`, and `woodshed reindex` keeps them.
+- New filters on search and export: facility, and leaving out devices, programs/tags or hosts. Exports record them in
+  `manifest.json` and `README.txt`.
+- API: `GET /api/search/summary`, `GET /api/search/schema`, `/api/saved-searches`, and the `type`, `syntax`,
+  `facilities`, `exclude_devices`, `exclude_app` and `exclude_host` parameters ([docs/api.md](docs/api.md)).
+
+### Changed
+- The 15 min, 1 h, 24 h and 7 d presets end at the next whole minute, so their time buckets line up.
 
 ## [1.0.1] - 2026-11-14
 

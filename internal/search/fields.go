@@ -11,8 +11,8 @@ import (
 // from a message's header (model.Message.App and Hostname). It holds no state,
 // so the runs of one request can share it; each run brings its own Message.
 type fieldMatcher struct {
-	apps  []appPattern
-	hosts []string // lower-cased
+	apps, exApps   []appPattern
+	hosts, exHosts []string // lower-cased
 }
 
 // appPattern is one app value: lower-cased, without a leading '%', and with a
@@ -22,9 +22,8 @@ type appPattern struct {
 	prefix bool
 }
 
-// newFieldMatcher returns nil when apps and hosts are both empty.
-func newFieldMatcher(apps, hosts []string) *fieldMatcher {
-	var fm fieldMatcher
+func appPatterns(apps []string) []appPattern {
+	var out []appPattern
 	for _, a := range apps {
 		a = strings.TrimSpace(a)
 		if a == "" {
@@ -36,14 +35,25 @@ func newFieldMatcher(apps, hosts []string) *fieldMatcher {
 			a = strings.TrimRight(a, "*")
 		}
 		p.s = strings.ToLower(trimPct(a))
-		fm.apps = append(fm.apps, p)
+		out = append(out, p)
 	}
+	return out
+}
+
+func hostPatterns(hosts []string) []string {
+	var out []string
 	for _, h := range hosts {
 		if h = strings.TrimSpace(h); h != "" {
-			fm.hosts = append(fm.hosts, strings.ToLower(h))
+			out = append(out, strings.ToLower(h))
 		}
 	}
-	if len(fm.apps) == 0 && len(fm.hosts) == 0 {
+	return out
+}
+
+// newFieldMatcher returns nil when every list is empty.
+func newFieldMatcher(apps, hosts, exApps, exHosts []string) *fieldMatcher {
+	fm := fieldMatcher{apps: appPatterns(apps), hosts: hostPatterns(hosts), exApps: appPatterns(exApps), exHosts: hostPatterns(exHosts)}
+	if len(fm.apps) == 0 && len(fm.hosts) == 0 && len(fm.exApps) == 0 && len(fm.exHosts) == 0 {
 		return nil
 	}
 	return &fm
@@ -53,36 +63,44 @@ func newFieldMatcher(apps, hosts []string) *fieldMatcher {
 // "%FAC-N-MNEMONIC" tag, and people type the tag either way.
 func trimPct(s string) string { return strings.TrimPrefix(s, "%") }
 
+func hostIn(host string, hosts []string) bool {
+	for _, h := range hosts {
+		if strings.EqualFold(host, h) {
+			return true
+		}
+	}
+	return false
+}
+
+// appIn reports whether app (without its '%') matches one of ps.
+func appIn(app string, ps []appPattern) bool {
+	for _, p := range ps {
+		if p.prefix {
+			if len(app) >= len(p.s) && strings.EqualFold(app[:len(p.s)], p.s) {
+				return true
+			}
+		} else if strings.EqualFold(app, p.s) {
+			return true
+		}
+	}
+	return false
+}
+
 // match parses raw into msg (the caller's scratch Message) and reports whether
 // its app and host pass.
 func (fm *fieldMatcher) match(raw []byte, msg *model.Message) bool {
 	syslog.Parse(raw, msg)
-	if len(fm.hosts) > 0 {
-		ok := false
-		for _, h := range fm.hosts {
-			if strings.EqualFold(msg.Hostname, h) {
-				ok = true
-				break
-			}
-		}
-		if !ok {
-			return false
-		}
+	if len(fm.hosts) > 0 && !hostIn(msg.Hostname, fm.hosts) {
+		return false
 	}
-	if len(fm.apps) > 0 {
-		app := trimPct(msg.App)
-		if app == "" {
-			return false
-		}
-		for _, p := range fm.apps {
-			if p.prefix {
-				if len(app) >= len(p.s) && strings.EqualFold(app[:len(p.s)], p.s) {
-					return true
-				}
-			} else if strings.EqualFold(app, p.s) {
-				return true
-			}
-		}
+	if len(fm.exHosts) > 0 && msg.Hostname != "" && hostIn(msg.Hostname, fm.exHosts) {
+		return false
+	}
+	app := trimPct(msg.App)
+	if len(fm.apps) > 0 && (app == "" || !appIn(app, fm.apps)) {
+		return false
+	}
+	if len(fm.exApps) > 0 && app != "" && appIn(app, fm.exApps) {
 		return false
 	}
 	return true

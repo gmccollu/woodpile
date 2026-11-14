@@ -431,8 +431,8 @@ func TestRollupAndCounts(t *testing.T) {
 	}
 }
 
-// dropV4Indexes undoes migration 3 -> 4, for tests that rebuild an older schema.
-const dropV4Indexes = `DROP INDEX stats_minute_msgs; DROP INDEX stats_drops; DROP INDEX stats_hourly_drops;
+// dropV4Indexes undoes migrations 4 -> 5 and 3 -> 4, for tests that rebuild an older schema.
+const dropV4Indexes = `DROP TABLE saved_searches; DROP INDEX stats_minute_msgs; DROP INDEX stats_drops; DROP INDEX stats_hourly_drops;
 	DROP INDEX devices_last_heard; DROP INDEX devices_first_seen; DROP INDEX devices_name_sort; `
 
 func TestMigrateV3ToV4Indexes(t *testing.T) {
@@ -443,7 +443,7 @@ func TestMigrateV3ToV4Indexes(t *testing.T) {
 	}
 	d.Close()
 	d2 := openIn(t, dir)
-	if v, _ := d2.SchemaVersion(ctx); v != 4 || CurrentSchema != 4 {
+	if v, _ := d2.SchemaVersion(ctx); v != CurrentSchema || CurrentSchema != 5 {
 		t.Fatalf("version %d", v)
 	}
 	var n int

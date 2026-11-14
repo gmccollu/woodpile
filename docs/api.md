@@ -135,7 +135,7 @@ An invalid value (not 0–7 or `unknown`) is a `400 {"error": ...}`.
 
 ## Search
 
-`GET /api/search?q=text&regex=false&case=false&devices=a,b&group=HQ&ungrouped=true&from=...&to=...&severities=...&app=sshd,%25FW-6-*&host=web-01&exclude=text&order=desc&limit=500&cursor=...`
+`GET /api/search?q=text&regex=false&case=false&devices=a,b&group=HQ&ungrouped=true&from=...&to=...&severities=...&app=sshd,%25FW-6-*&host=web-01&exclude=text&order=desc&limit=500&cursor=...&type=syslog&syntax=text&facilities=...&exclude_devices=...&exclude_app=...&exclude_host=...`
 ```json
 {"results": [{"received": "...", "device_id": "10.1.0.1", "severity": 6, "raw": "...", "ref": "opaque",
               "app": "sshd", "host": "web-01"}],
@@ -143,8 +143,12 @@ An invalid value (not 0–7 or `unknown`) is a `400 {"error": ...}`.
  "partial": false}
 ```
 - `q`: substring by default (case-insensitive unless `case=true`). With `regex=true` it's an RE2 regular expression;
-  an invalid one is a `400` with the parse error. `case` applies to both. Empty `q` matches every line, so it's a
-  filtered browse.
+  an invalid one is a `400` with the parse error. With `syntax=terms` it's boolean terms (below). `case` applies to
+  all of them. Empty `q` matches every line, so it's a filtered browse.
+- `type`: the data type, `syslog`, which is the default and the only value in 1.1. Any other value is a
+  `400 {"error": "type: unknown data type \"x\"."}`.
+- `syntax`: `text` (the default: `q` and `exclude` mean exactly what they meant in 1.0) or `terms` (below). Anything
+  else is a `400`.
 - `q` is matched against the raw message as received (unescaped), not the stored line prefix.
 - `exclude`: lines whose raw message matches it are left out. It's matched like `q`: a substring by default, an RE2
   regular expression with `regex=true`, and `case` applies. An invalid one is a `400` (the message starts
@@ -160,22 +164,37 @@ An invalid value (not 0–7 or `unknown`) is a `400 {"error": ...}`.
   header is parsed only for lines that passed the other filters.
 - Each result's `app` and `host` are the parsed program/tag (with a `%` tag's `%`) and header hostname, or `""` when
   the header has none. Context lines carry them too.
+- `exclude_app`, `exclude_host`: comma-separated, each matched exactly like `app` and `host`. A line whose
+  program/tag (or hostname) matches any of them is left out. A line without a program/tag (or hostname) is never
+  left out by them. When a value is both included and excluded, the exclusion wins.
+- `facilities=0,4,16,unknown`: syslog facilities 0–23 (from the PRI) plus `unknown` (no parseable PRI). It works like
+  `severities`: empty or missing means all, and `none` means nothing. An invalid value is a `400`.
 - `from` / `to`: RFC 3339, on the received time: `from` ≤ received < `to`. Default `to` = now and `from` = to − 24 h.
   `from` must be before `to`.
 - `devices`, `group` / `ungrouped`: as for `/api/live`. Hidden devices are searched only when named in `devices`.
+- `exclude_devices=a,b`: leave these devices out, after `devices`, `group` and `ungrouped` have picked theirs. A
+  device that's both named and excluded is excluded.
 - `order`: `desc` (newest first, the default) or `asc`.
 - `limit`: default 500, max 5,000.
-- `cursor`: from the previous page's `next_cursor`; the other parameters (`app`, `host` and `exclude` included) must
-  be the same as on the first page, or the server returns `400`. The order of the values in `app`, `host` and `devices`
-  doesn't matter. `limit` is the exception: it may change from page to page.
+- `cursor`: from the previous page's `next_cursor`; the other parameters (every filter above included) must be the
+  same as on the first page, or the server returns `400`. The order of the values in the list parameters doesn't
+  matter. `limit` is the exception: it may change from page to page.
 - Each request has a time budget of 10 s. If the budget runs out before `limit` results (or the page reaches 8 MiB of
   messages), the response has what it found, `partial: true` and a `next_cursor` that resumes where the scan stopped. The UI keeps asking while
   `partial` is true and the user hasn't cancelled.
 - `next_cursor` is empty when the range is exhausted.
 - `scanned_bytes`, `scanned_files` and `elapsed_ms` are for this request only; the UI adds them up across pages.
 - `ref` identifies one line for `/api/context`. It stays valid until the file is deleted by retention.
-- 1.1 (planned) adds `type`, `syntax`, `facilities`, `exclude_devices`, `exclude_app` and `exclude_host`, and the
-  summary, schema and saved-search routes: see "1.1 (planned)" at the end.
+
+**`syntax=terms`** (grammar in SPEC §10.1.3): words and `"quoted phrases"` are substrings of the raw message, matched
+as `q` is (`case` applies to all of them). They're joined by `AND` (or just a space), `OR` and `NOT`, upper case only,
+with `( )` for grouping. NOT binds tightest, then AND, then OR. Inside a phrase, `\"` is a quote and `\\` a
+backslash; any other backslash is itself. At most 32 words and phrases, 8 levels of parentheses and 4 KiB of `q`.
+`exclude` takes the same grammar.
+- `regex=true` with `syntax=terms` is a `400 {"error": "Terms and regex can't be combined: pick one."}`.
+- A parse error is a `400` naming a 1-based character position, for example
+  `{"error": "Unclosed quote starting at character 12."}`. For `exclude`, the message starts with `exclude: `. The
+  full list is in SPEC §10.1.3.
 
 `GET /api/context?ref=opaque&before=50&after=50` → `{"lines": [...same shape as results...], "hit_index": 50,
 "at_start": false, "at_end": false}`
@@ -188,11 +207,13 @@ An invalid value (not 0–7 or `unknown`) is a `400 {"error": ...}`.
 
 `POST /api/exports` body `{"devices": ["10.1.0.1"], "group": "", "ungrouped": false, "from": "...", "to": "...",
 "severities": [0, 1, "unknown"], "q": "", "regex": false, "case": false, "app": ["sshd", "%FW-6-*"], "host": ["web-01"],
-"exclude": ""}` → `202 {"id": "exp_..."}`
-- `from` and `to` are required. Pick devices with `devices`, `group`, `ungrouped`, or `"all_devices": true` (every non-hidden device); at least one must select a device. `severities`, `q`, `regex`,
-  `case`, `app`, `host` and `exclude` are optional filters with exactly the same meaning as search, so "Export these
-  results" exports what the search showed. `app` and `host` are JSON lists here (search takes them comma-separated);
-  blank items are dropped. Without filters every line in range is exported.
+"exclude": "", "type": "syslog", "syntax": "text", "facilities": [4, "unknown"], "exclude_devices": ["10.1.0.9"],
+"exclude_app": ["kernel"], "exclude_host": ["lab-01"]}` → `202 {"id": "exp_..."}`
+- `from` and `to` are required. Pick devices with `devices`, `group`, `ungrouped`, or `"all_devices": true` (every non-hidden device); at least one must select a device, and `exclude_devices` then leaves some out. `severities`, `q`, `regex`,
+  `case`, `app`, `host`, `exclude`, `type`, `syntax`, `facilities`, `exclude_app` and `exclude_host` are optional filters
+  with exactly the same meaning as search, so "Export these results" exports what the search showed. The list
+  parameters are JSON lists here (search takes them comma-separated); blank items are dropped. Without filters every
+  line in range is exported.
 - One export builds at a time; a second `POST` while one is building is queued.
 
 `POST /api/exports/estimate` (same body) → `{"lines": 123456, "bytes": 45678901, "files": 12}`: an upper bound
@@ -201,7 +222,8 @@ from the index, without scanning, so the UI can show the size before building.
 `GET /api/exports` → `[{"id", "created", "devices", "from", "to", "state": "queued|building|ready|failed|expired",
 "progress": 0.42, "lines": 0, "size_bytes": 0, "error": "", "ready_at": null, "expires_at": null,
 "filters": {"group": "", "ungrouped": false, "severities": [], "q": "", "regex": false, "case": false, "app": [], "host": [],
-"exclude": ""}}]`, newest
+"exclude": "", "type": "syslog", "syntax": "text", "facilities": [], "exclude_devices": [], "exclude_app": [],
+"exclude_host": []}}]`, newest
 first. `ready_at` / `expires_at` are set once the export is ready; `filters` echoes the request.
 
 `GET /api/exports/{id}` → one entry, same shape.
@@ -224,12 +246,137 @@ them first), but not against the log retention cap.
   line is `<received> <sender> <message>`, with CR, LF and backslash in the message escaped as `\r`, `\n` and `\\`
   (`README.txt` shows how to unescape). Search and context results still return the raw message unescaped.
 - `manifest.json`: Woodshed version, export time, the request (devices with names and groups, range, filters:
-  `severities`, `q`, `regex`, `case`, `app`, `host` and `exclude`), and per-file line count and SHA-256. Also `gaps`: periods inside the range when Woodshed wasn't running or a listener
+  `severities`, `q`, `regex`, `case`, `app`, `host`, `exclude`, `type`, `syntax`, `facilities`, `exclude_devices`,
+  `exclude_app` and `exclude_host`), and per-file line count and SHA-256. Also `gaps`: periods inside the range when Woodshed wasn't running or a listener
   was down, from the event log.
 - `woodshed-events.log`: the service's own events in the range (start, stop, bind errors, rotations, deletions,
   drops, pauses).
 - `README.txt`: a short note on what each file is, with the range and the filters in plain words ("Filters: none"
   when there are none).
+
+## Search summary and schema (Events)
+
+`GET /api/search/schema`: the data types Events can show, and the fields of each one's field panel. The client builds the panel from this list;
+it has no field list of its own.
+```json
+{"types": [
+  {"type": "syslog", "label": "Syslog", "default": true,
+   "fields": [
+     {"key": "device",   "label": "Device",      "param": "devices",    "exclude_param": "exclude_devices", "domain": null},
+     {"key": "severity", "label": "Severity",    "param": "severities", "exclude_param": "",
+      "domain": [{"value": "0", "label": "emerg"}, {"value": "1", "label": "alert"}, {"value": "2", "label": "crit"},
+                 {"value": "3", "label": "err"}, {"value": "4", "label": "warning"}, {"value": "5", "label": "notice"},
+                 {"value": "6", "label": "info"}, {"value": "7", "label": "debug"}, {"value": "unknown", "label": "unknown"}]},
+     {"key": "facility", "label": "Facility",    "param": "facilities", "exclude_param": "",
+      "domain": [{"value": "0", "label": "kern"}, {"value": "1", "label": "user"}, {"value": "4", "label": "auth"},
+                 {"value": "16", "label": "local0"}, {"value": "unknown", "label": "unknown"}]},   // all 24 and unknown; see below
+     {"key": "host",     "label": "Host",        "param": "host",       "exclude_param": "exclude_host", "domain": null},
+     {"key": "app",      "label": "Program/tag", "param": "app",        "exclude_param": "exclude_app",  "domain": null}
+   ]}
+]}
+```
+- `param` is the filter parameter a value is added to; a value goes in exactly as its `value`.
+- `exclude_param` is the parameter that excludes a value. It's `""` for a field with a `domain`: to exclude a value
+  there, send every other value of the domain in `param`.
+- `domain` is the complete value set of a closed field (severity, facility), or `null`. The facility labels are kern,
+  user, mail, daemon, auth, syslog, lpr, news, uucp, cron, authpriv, ftp, ntp, audit, alert, clock and local0–local7
+  (0–23), then unknown.
+- The panel shows the fields in this order. 1.1 has one type; a later type is another entry in `types`.
+
+`GET /api/search/summary?q=...&fields=...&top=10&histogram=true&bucket=60&budget_ms=2000&cursor=...`: the field panel and the histogram
+for a query, from one scan (SPEC §10.1.1–10.1.2). Parameters: every `/api/search` filter parameter (not `order` or `limit`), plus:
+- `fields`: comma-separated field keys from the schema; all of them by default, or `none` for the histogram alone.
+- `top`: values per field, 10 by default, at most 50. Fields with a `domain` return every value that has a count.
+- `histogram`: `false` to leave it out.
+- `bucket`: the bucket size in seconds, one of 1, 5, 15, 60, 300, 900, 3600, 7200, 21600, 86400 and 604800, giving
+  at most 1,000 buckets. By default it's picked from the range (SPEC §10.1.2). Any other value is a `400`.
+- `budget_ms`: this request's time budget, 2,000 by default, at most 10,000.
+- `cursor`: from the previous response's `next_cursor`. The other parameters must be the same, or it's a `400`.
+
+```json
+{"type": "syslog", "from": "2026-11-13T14:00:00Z", "to": "2026-11-13T15:00:00Z",
+ "matched": 48210,                           // matching lines counted so far, in [counted_from, to)
+ "counted_from": "2026-11-13T14:00:00Z",     // equals from once the count is complete
+ "histogram": {"bucket_seconds": 60, "source": "index",          // "index" | "scan"
+               "buckets": [{"start": "2026-11-13T14:00:00Z", "count": 812, "approx": false}]},   // count: null = not counted yet
+ "fields": [{"key": "host", "label": "Host",
+             "values": [{"value": "web-01", "label": "web-01", "count": 20311, "filterable": true}],
+             "other": 1204, "none": 37, "distinct": 14, "distinct_capped": false}],
+ "next_cursor": "", "partial": false, "scanned_bytes": 0, "scanned_files": 0, "elapsed_ms": 4}
+```
+- **Counts are exact** for the matching lines in `[counted_from, to)`. The scan reads newest first, so a partial
+  response has counted the newest part of the range. Each response carries the running totals, not a delta, so the
+  client just replaces what it shows. `partial` and `next_cursor` work as in search; `next_cursor` is `""` once the
+  count is complete.
+- `histogram.source`:
+  - `"index"` when the query has no `q`, `exclude`, `app`, `host`, `exclude_app`, `exclude_host`, facility or severity
+    filter, and the bucket is at least 60 s. Devices, group, ungrouped and `exclude_devices` are allowed. It's read
+    from the stats and checkpoints without opening a log file, and it's complete in the first response whatever
+    `counted_from` says. `approx: true` marks a bucket spread from checkpoints (SPEC §10.1.2).
+  - `"scan"` otherwise. The buckets come from the same scan as `fields`: those wholly before `counted_from` are
+    `null`, and the one that straddles it has the count so far.
+- Buckets start at multiples of `bucket_seconds` since the Unix epoch, in UTC (7-day buckets on Mondays, 00:00 UTC).
+  The first bucket may start before `from` and the last end after `to`; both count only lines in `[from, to)`.
+- `fields[].values` are sorted by count, highest first, ties by `value`. `label` is what to show: a device's name, or
+  its IP if it has none, and the domain label for severity and facility.
+  - `other` counts the lines with a value that isn't listed.
+  - `none` counts the lines without a value (no hostname or no program/tag; always 0 for device, severity and
+    facility).
+  - `distinct` is the number of different values seen. At most 10,000 per field are tracked, and past that
+    `distinct_capped` is true and new values count under `other`.
+  - `filterable` is false for a value that `param` can't express, such as one containing a comma.
+- `matched` is the sum of the histogram when only the index histogram was asked for (`fields=none`).
+- The running counts are kept on the server for 10 minutes after the last request, for at most 8 summaries (least
+  recently used out first). A cursor whose counts are gone is a
+  `400 {"error": "This summary expired; start it again."}`.
+- At most 2 summary scans run at once; a third waits within its own budget and returns what it has. Searches never
+  wait for summaries. A cancelled request stops its scan.
+
+## Saved searches
+
+Saved searches (SPEC §10.1.4) are named and stored on the server, shared by everyone who can open the UI.
+
+`GET /api/saved-searches?type=syslog` → every saved search of that type (default `syslog`), sorted by name ignoring
+case:
+```json
+[{"id": "ss_8f2c1a9d", "name": "Edge denies", "type": "syslog",
+  "created": "2026-11-13T14:02:11Z", "updated": "2026-11-13T14:02:11Z",
+  "query": {"q": "deny NOT 10.0.0.1", "syntax": "terms", "regex": false, "case": false, "exclude": "",
+            "devices": ["10.1.0.1"], "group": "", "ungrouped": false, "exclude_devices": [],
+            "severities": [], "facilities": [], "app": ["%FW-6-*"], "exclude_app": [], "host": [], "exclude_host": [],
+            "order": "desc", "range": {"last": "1h"}},
+  "missing_devices": [], "missing_group": false}]
+```
+- `query` takes every Events parameter, with the same meaning and validation as `/api/search` (lists as JSON lists,
+  severities and facilities as in the export body). Missing keys take their defaults.
+- `range` is either `{"last": "15m"}`, a whole number of `m`, `h` or `d` from 1 minute to 400 days, resolved against
+  now each time it runs, or `{"from": "…", "to": "…"}` in RFC 3339.
+- `missing_devices` lists the IDs in `devices` that the server doesn't know (any more), and `missing_group` is true
+  when `group` has no devices. Both are worked out on every read and never stored. A saved search is never changed
+  because a device went away: device IDs are addresses, so a device that sends again matches again. If every named
+  device is missing, the search matches nothing; it never widens to all devices.
+
+`GET /api/saved-searches/{id}` → one saved search, with an `ETag`. `404` if it's unknown.
+
+`POST /api/saved-searches` body `{"name": "Edge denies", "type": "syslog", "query": {...}}` (`type` optional) →
+`201` with the saved search.
+
+`PUT /api/saved-searches/{id}` (the same body) → `200` with the saved search. Send `If-Match` with its `ETag`, as for
+settings. A stale one gets `409 {"error": "This saved search changed since you loaded it."}`. A PUT without `If-Match`
+is accepted.
+
+`DELETE /api/saved-searches/{id}` → `204`, or `404` if it's unknown.
+
+Limits and errors:
+- At most 200 saved searches: one more is a `409 {"error": "There are already 200 saved searches; delete one first."}`.
+- `name` is 1–80 characters after trimming, unique ignoring case. A clash is a
+  `409 {"error": "A saved search named \"Edge denies\" already exists."}`.
+- Each list in `query` holds at most 1,000 items, and the body is at most 64 KiB.
+- Validation errors are a `400` with dotted keys, as for settings:
+  `{"errors": {"name": "…", "query.q": "Unclosed quote starting at character 12.", "query.range.last": "…"}}`.
+- They're stored in `index.db` (SPEC §10.1.4), which `woodshed reindex` keeps.
+- `query.range` defaults to `{"last": "24h"}` (search's default range), `query.syntax` to `text` and `query.order`
+  to `desc`.
 
 ## Settings
 
@@ -419,157 +566,6 @@ Not in 1.0 builds: nothing in this section is served yet. It's the 1.1 contract 
 heading or after a label, never at the start of a line in the usual "`GET /api/...`" form, so `routes_test.go`
 doesn't request them. When one ships, move it into its section above in the usual form, where the test checks it
 against the server.
-
-### Changed: search, export and saved-search filters
-
-New parameters on `/api/search` and `/api/search/summary`. The same names, as JSON, go in the `POST /api/exports`
-body (and its estimate) and in a saved search's `query`.
-- `type`: the data type, `syslog`, which is the default and the only value in 1.1. Any other value is a
-  `400 {"error": "type: unknown data type \"x\"."}`.
-- `syntax`: `text` (the default: `q` and `exclude` mean exactly what they mean in 1.0) or `terms` (below).
-- `facilities=0,4,16,unknown`: syslog facilities 0–23 (from the PRI) plus `unknown` (no parseable PRI). It works like
-  `severities`: empty or missing means all, and `none` means nothing. An invalid value is a `400`.
-- `exclude_devices=a,b`: leave these devices out, after `devices`, `group` and `ungrouped` have picked theirs. A
-  device that's both named and excluded is excluded.
-- `exclude_app`, `exclude_host`: comma-separated, each matched exactly like `app` and `host`. A line whose
-  program/tag (or hostname) matches any of them is left out. A line without a program/tag (or hostname) is never
-  left out by them.
-- Cursors are bound to all of these too: changing one between pages is a `400`, as now.
-- Export: `"type": "syslog", "syntax": "terms", "facilities": [4, "unknown"], "exclude_devices": ["10.1.0.9"],
-  "exclude_app": ["kernel"], "exclude_host": ["lab-01"]`, all optional. `GET /api/exports`' `filters`, the zip's
-  `manifest.json` and `README.txt` include them.
-
-**`syntax=terms`** (grammar in SPEC §10.1.3): words and `"quoted phrases"` are substrings of the raw message, matched
-as `q` is (`case` applies to all of them). They're joined by `AND` (or just a space), `OR` and `NOT`, upper case only,
-with `( )` for grouping. NOT binds tightest, then AND, then OR. At most 32 words and phrases, 8 levels of parentheses
-and 4 KiB of `q`.
-- `regex=true` with `syntax=terms` is a `400 {"error": "Terms and regex can't be combined: pick one."}`.
-- A parse error is a `400` naming a 1-based character position, for example
-  `{"error": "Unclosed quote starting at character 12."}`. For `exclude`, the message starts with `exclude: `. The
-  full list is in SPEC §10.1.3.
-
-### `GET /api/search/schema`
-
-The data types Events can show, and the fields of each one's field panel. The client builds the panel from this list;
-it has no field list of its own.
-```json
-{"types": [
-  {"type": "syslog", "label": "Syslog", "default": true,
-   "fields": [
-     {"key": "device",   "label": "Device",      "param": "devices",    "exclude_param": "exclude_devices", "domain": null},
-     {"key": "severity", "label": "Severity",    "param": "severities", "exclude_param": "",
-      "domain": [{"value": "0", "label": "emerg"}, {"value": "1", "label": "alert"}, {"value": "2", "label": "crit"},
-                 {"value": "3", "label": "err"}, {"value": "4", "label": "warning"}, {"value": "5", "label": "notice"},
-                 {"value": "6", "label": "info"}, {"value": "7", "label": "debug"}, {"value": "unknown", "label": "unknown"}]},
-     {"key": "facility", "label": "Facility",    "param": "facilities", "exclude_param": "",
-      "domain": [{"value": "0", "label": "kern"}, {"value": "1", "label": "user"}, {"value": "4", "label": "auth"},
-                 {"value": "16", "label": "local0"}, {"value": "unknown", "label": "unknown"}]},   // all 24 and unknown; see below
-     {"key": "host",     "label": "Host",        "param": "host",       "exclude_param": "exclude_host", "domain": null},
-     {"key": "app",      "label": "Program/tag", "param": "app",        "exclude_param": "exclude_app",  "domain": null}
-   ]}
-]}
-```
-- `param` is the filter parameter a value is added to; a value goes in exactly as its `value`.
-- `exclude_param` is the parameter that excludes a value. It's `""` for a field with a `domain`: to exclude a value
-  there, send every other value of the domain in `param`.
-- `domain` is the complete value set of a closed field (severity, facility), or `null`. The facility labels are kern,
-  user, mail, daemon, auth, syslog, lpr, news, uucp, cron, authpriv, ftp, ntp, audit, alert, clock and local0–local7
-  (0–23), then unknown.
-- The panel shows the fields in this order. 1.1 has one type; a later type is another entry in `types`.
-
-### `GET /api/search/summary`
-
-The field panel and the histogram for a query, from one scan.
-
-Parameters: every `/api/search` filter parameter (not `order` or `limit`), plus:
-- `fields`: comma-separated field keys from the schema; all of them by default, or `none` for the histogram alone.
-- `top`: values per field, 10 by default, at most 50. Fields with a `domain` return every value that has a count.
-- `histogram`: `false` to leave it out.
-- `bucket`: the bucket size in seconds, one of 1, 5, 15, 60, 300, 900, 3600, 7200, 21600, 86400 and 604800, giving
-  at most 1,000 buckets. By default it's picked from the range (SPEC §10.1.2). Any other value is a `400`.
-- `budget_ms`: this request's time budget, 2,000 by default, at most 10,000.
-- `cursor`: from the previous response's `next_cursor`. The other parameters must be the same, or it's a `400`.
-
-```json
-{"type": "syslog", "from": "2026-11-13T14:00:00Z", "to": "2026-11-13T15:00:00Z",
- "matched": 48210,                           // matching lines counted so far, in [counted_from, to)
- "counted_from": "2026-11-13T14:00:00Z",     // equals from once the count is complete
- "histogram": {"bucket_seconds": 60, "source": "index",          // "index" | "scan"
-               "buckets": [{"start": "2026-11-13T14:00:00Z", "count": 812, "approx": false}]},   // count: null = not counted yet
- "fields": [{"key": "host", "label": "Host",
-             "values": [{"value": "web-01", "label": "web-01", "count": 20311, "filterable": true}],
-             "other": 1204, "none": 37, "distinct": 14, "distinct_capped": false}],
- "next_cursor": "", "partial": false, "scanned_bytes": 0, "scanned_files": 0, "elapsed_ms": 4}
-```
-- **Counts are exact** for the matching lines in `[counted_from, to)`. The scan reads newest first, so a partial
-  response has counted the newest part of the range. Each response carries the running totals, not a delta, so the
-  client just replaces what it shows. `partial` and `next_cursor` work as in search; `next_cursor` is `""` once the
-  count is complete.
-- `histogram.source`:
-  - `"index"` when the query has no `q`, `exclude`, `app`, `host`, `exclude_app`, `exclude_host`, facility or severity
-    filter, and the bucket is at least 60 s. Devices, group, ungrouped and `exclude_devices` are allowed. It's read
-    from the stats and checkpoints without opening a log file, and it's complete in the first response whatever
-    `counted_from` says. `approx: true` marks a bucket spread from checkpoints (SPEC §10.1.2).
-  - `"scan"` otherwise. The buckets come from the same scan as `fields`: those wholly before `counted_from` are
-    `null`, and the one that straddles it has the count so far.
-- Buckets start at multiples of `bucket_seconds` since the Unix epoch, in UTC (7-day buckets on Mondays, 00:00 UTC).
-  The first bucket may start before `from` and the last end after `to`; both count only lines in `[from, to)`.
-- `fields[].values` are sorted by count, highest first, ties by `value`. `label` is what to show: a device's name, or
-  its IP if it has none, and the domain label for severity and facility.
-  - `other` counts the lines with a value that isn't listed.
-  - `none` counts the lines without a value (no hostname or no program/tag; always 0 for device, severity and
-    facility).
-  - `distinct` is the number of different values seen. At most 10,000 per field are tracked, and past that
-    `distinct_capped` is true and new values count under `other`.
-  - `filterable` is false for a value that `param` can't express, such as one containing a comma.
-- `matched` is the sum of the histogram when only the index histogram was asked for (`fields=none`).
-- The running counts are kept on the server for 10 minutes after the last request, for at most 8 summaries (least
-  recently used out first). A cursor whose counts are gone is a
-  `400 {"error": "This summary expired; start it again."}`.
-- At most 2 summary scans run at once; a third waits within its own budget and returns what it has. Searches never
-  wait for summaries. A cancelled request stops its scan.
-
-### Saved searches
-
-**List:** `GET /api/saved-searches?type=syslog` → every saved search of that type (default `syslog`), sorted by name ignoring
-case:
-```json
-[{"id": "ss_8f2c1a9d", "name": "Edge denies", "type": "syslog",
-  "created": "2026-11-13T14:02:11Z", "updated": "2026-11-13T14:02:11Z",
-  "query": {"q": "deny NOT 10.0.0.1", "syntax": "terms", "regex": false, "case": false, "exclude": "",
-            "devices": ["10.1.0.1"], "group": "", "ungrouped": false, "exclude_devices": [],
-            "severities": [], "facilities": [], "app": ["%FW-6-*"], "exclude_app": [], "host": [], "exclude_host": [],
-            "order": "desc", "range": {"last": "1h"}},
-  "missing_devices": [], "missing_group": false}]
-```
-- `query` takes every Events parameter, with the same meaning and validation as `/api/search` (lists as JSON lists,
-  severities and facilities as in the export body). Missing keys take their defaults.
-- `range` is either `{"last": "15m"}`, a whole number of `m`, `h` or `d` from 1 minute to 400 days, resolved against
-  now each time it runs, or `{"from": "…", "to": "…"}` in RFC 3339.
-- `missing_devices` lists the IDs in `devices` that the server doesn't know (any more), and `missing_group` is true
-  when `group` has no devices. Both are worked out on every read and never stored. A saved search is never changed
-  because a device went away: device IDs are addresses, so a device that sends again matches again. If every named
-  device is missing, the search matches nothing; it never widens to all devices.
-
-**Read:** `GET /api/saved-searches/{id}` → one saved search, with an `ETag`. `404` if it's unknown.
-
-**Create:** `POST /api/saved-searches` body `{"name": "Edge denies", "type": "syslog", "query": {...}}` (`type` optional) →
-`201` with the saved search.
-
-**Update:** `PUT /api/saved-searches/{id}` (the same body) → `200` with the saved search. Send `If-Match` with its `ETag`, as for
-settings. A stale one gets `409 {"error": "This saved search changed since you loaded it."}`. A PUT without `If-Match`
-is accepted.
-
-**Delete:** `DELETE /api/saved-searches/{id}` → `204`, or `404` if it's unknown.
-
-Limits and errors:
-- At most 200 saved searches: one more is a `409 {"error": "There are already 200 saved searches; delete one first."}`.
-- `name` is 1–80 characters after trimming, unique ignoring case. A clash is a
-  `409 {"error": "A saved search named \"Edge denies\" already exists."}`.
-- Each list in `query` holds at most 1,000 items, and the body is at most 64 KiB.
-- Validation errors are a `400` with dotted keys, as for settings:
-  `{"errors": {"name": "…", "query.q": "Unclosed quote starting at character 12.", "query.range.last": "…"}}`.
-- They're stored in `index.db` (SPEC §10.1.4), which `woodshed reindex` keeps.
 
 ### TLS syslog listener
 

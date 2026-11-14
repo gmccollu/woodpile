@@ -57,12 +57,17 @@ func (s *Server) backendError(w http.ResponseWriter, r *http.Request, err error)
 // data and oversized bodies. It writes the error response itself and returns
 // false on failure.
 func decodeJSON(w http.ResponseWriter, r *http.Request, v any) bool {
+	return decodeJSONLimit(w, r, v, maxBody)
+}
+
+// decodeJSONLimit is decodeJSON with its own body size limit.
+func decodeJSONLimit(w http.ResponseWriter, r *http.Request, v any, limit int64) bool {
 	ct := r.Header.Get("Content-Type")
 	if ct != "" && !strings.HasPrefix(strings.ToLower(strings.TrimSpace(ct)), "application/json") {
 		writeError(w, http.StatusUnsupportedMediaType, "The request body must be JSON (Content-Type: application/json).")
 		return false
 	}
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBody))
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, limit))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(v); err != nil {
 		var mbe *http.MaxBytesError
@@ -163,6 +168,10 @@ func (s *Server) apiRoutes() *http.ServeMux {
 
 	// Search and exports.
 	mux.Handle("/api/search", methods{http.MethodGet: s.getSearch})
+	mux.Handle("/api/search/schema", methods{http.MethodGet: s.getSchema})
+	mux.Handle("/api/search/summary", methods{http.MethodGet: s.getSummary})
+	mux.Handle("/api/saved-searches", methods{http.MethodGet: s.listSaved, http.MethodPost: s.createSaved})
+	mux.Handle("/api/saved-searches/{id}", methods{http.MethodGet: s.getSaved, http.MethodPut: s.putSaved, http.MethodDelete: s.deleteSaved})
 	mux.Handle("/api/context", methods{http.MethodGet: s.getContext})
 	mux.Handle("/api/exports", methods{http.MethodGet: s.listExports, http.MethodPost: s.postExport})
 	mux.Handle("/api/exports/estimate", methods{http.MethodPost: s.postEstimate})

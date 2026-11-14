@@ -1063,6 +1063,48 @@ Update check, **decided (build, 2026-11-13)** (the smallest choice where §10.2 
 14. The MSI runs it through WixQuietExec (its output goes to the install log) with `Return="ignore"`, before
     `StartServices`. The pkg's and the deb/rpm scripts print the warning and carry on.
 
+Events v2, **decided (build, 2026-11-13)**: small calls made while building §10.1, where the contract was silent.
+1. Terms grammar: inside a phrase, a backslash before anything other than `"` or `\` is itself (`"C:\temp"` is
+   `C:\temp`). A phrase followed directly by a word (`"a"b`) is two terms. Character positions count code points; the
+   4 KiB limit counts UTF-8 bytes. The checks run in this order: length, quotes and empty phrases, the 32-term count,
+   then structure and nesting; a missing operand names the first operator affected (`a AND OR b` names AND). A terms
+   `exclude` with no terms (only spaces) excludes nothing.
+2. The field panel groups host and program/tag values the way their filters match: ignoring case, and a leading `%`
+   for program/tag. The row shows the first spelling seen, so a value's count is what clicking it returns.
+   `filterable` is also false for a value with surrounding blanks and for a program/tag ending in `*` (the filter
+   would read it as a prefix).
+3. `distinct` counts the values with a count in `[counted_from, to)`.
+4. A summary cursor is good for one request: each response issues the next one. Reusing an older cursor, or a request
+   that was cancelled mid-scan, gets the "expired" 400, so counts are never added twice.
+5. The index histogram uses the per-minute stats for a bucket (clipped to `[from, to)`) that is whole minutes and
+   starts in the last 24 h, and the minute and hourly stats together for one that is whole hours, at least 1 h, and
+   starts in the last 7 days. Anything else (a bucket cut off a minute boundary by `from` or `to`, or older data) comes
+   from the checkpoints and may be `approx`. A device's oldest-file bucket is spread from its checkpoints, which for a
+   quiet device (one checkpoint per file) makes that bucket rough.
+6. Presets in the UI resolve to `to` = now rounded up to the whole minute, `from` = `to` − preset, on Events and Export,
+   so the default 1 h view is on whole minutes (§10.1.2).
+7. Summary parameters: `top` above 50 and `budget_ms` above 10,000 are clamped (as search clamps `limit`); `order` and
+   `limit` are ignored; `histogram=false` leaves the `histogram` key out; an unknown `fields` key is a 400
+   `fields: unknown field "x".`
+8. Saved searches: IDs are `ss_` and 8 hex digits; the ETag is `"<id>.<version>"`; `If-Match: *` is treated as no
+   `If-Match`. A missing `query.range` is `{"last": "24h"}` (search's default range); `syntax` defaults to `text` and
+   `order` to `desc`. `last` is 1–7 digits and `m`, `h` or `d`. Terms with regex is reported on `query.syntax`.
+   `missing_group` is true when no non-hidden device is in the group (those are the only ones the group searches).
+9. The UI's 60 s auto-continue counts the summed `elapsed_ms` of the summary responses, not wall time. Cancel on the
+   results also stops the summary; the panel keeps its counts and offers **Count the rest**.
+10. Field panel clicks: including a value takes it out of the matching exclude list and the other way round;
+    including a device while a group is picked switches to that device; excluding the last value of a closed field
+    sends `none`. A drag on the histogram snaps to bucket edges and stays inside the current range; a click zooms into
+    one bucket.
+11. A saved relative range that isn't one of the presets (say `30m`) opens as a custom range ending now; saving it
+    again makes it absolute.
+12. Export's README.txt names the new filters in plain words ("Facilities: …", "Program/tag left out: …",
+    "Devices left out: …", "boolean terms").
+13. A summary keeps each compressed file's paused pass (its open reader) in its server-side state, at most 8 per
+    summary, so a long range over gzipped days decompresses each byte once across requests. They close with the
+    state (complete, evicted, expired after 10 min, or cancelled). Up to 4 streams (half the CPUs) decompress in
+    parallel within the request's budget.
+
 **Acceptance items for the 1.1 build** (the install smoke tests confirm each, or the design changes before release):
 - The WiX firewall extension in use can ship the TLS 6514 rule present but disabled, and an upgrade keeps its state.
 - The virtual service account (`NT SERVICE\Woodshed`) can read that rule's state, for the `tls_firewall` banner.

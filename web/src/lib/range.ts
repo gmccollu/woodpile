@@ -17,10 +17,17 @@ export interface Range {
 
 export const defaultRange = (): Range => ({ preset: '1h', from: '', to: '' });
 
-/** The concrete from/to. Quick picks are resolved against now, once per search. */
+/**
+ * The concrete from/to. Quick picks are resolved against now, once per search, ending at now
+ * rounded up to the whole minute: the histogram's buckets then line up with the per-minute
+ * stats, so an unfiltered view's histogram comes from the index (SPEC §10.1.2).
+ */
 export function resolveRange(r: Range, now = Date.now()): { from: string; to: string } {
   const pre = PRESETS.find((x) => x.p === r.preset);
-  if (pre) return { from: new Date(now - pre.ms).toISOString(), to: new Date(now).toISOString() };
+  if (pre) {
+    const to = Math.ceil(now / 60_000) * 60_000;
+    return { from: new Date(to - pre.ms).toISOString(), to: new Date(to).toISOString() };
+  }
   return { from: r.from, to: r.to };
 }
 

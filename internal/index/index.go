@@ -4,7 +4,7 @@
 //
 // The log files are the source of truth. Files and checkpoints can be rebuilt from
 // them at any time with Reindex; devices keep their user-set name, group and hidden
-// flag across a rebuild.
+// flag across a rebuild, and saved searches are left alone.
 //
 // All times are stored as Unix milliseconds and returned in UTC. File paths are
 // relative to the data dir and '/'-separated ("logs/192.0.2.1/2026-11-10.log").
@@ -189,6 +189,21 @@ CREATE INDEX stats_hourly_drops ON stats_hourly (hour) WHERE dropped > 0 OR trun
 CREATE INDEX devices_last_heard ON devices (last_heard DESC, id);
 CREATE INDEX devices_first_seen ON devices (first_seen DESC, id);
 CREATE INDEX devices_name_sort ON devices ((CASE WHEN name = '' THEN ip ELSE name END) COLLATE NOCASE, id);
+`,
+	// 4 -> 5: saved searches (Events, SPEC §10.1.4). User data like device names:
+	// Reindex rebuilds only files and checkpoints, so it keeps them. name_key is
+	// the name folded for case, so names are unique ignoring case.
+	`
+CREATE TABLE saved_searches (
+	id       TEXT PRIMARY KEY,
+	name     TEXT NOT NULL,
+	name_key TEXT NOT NULL UNIQUE,
+	type     TEXT NOT NULL,
+	query    TEXT NOT NULL,
+	created  INTEGER NOT NULL,
+	updated  INTEGER NOT NULL,
+	version  INTEGER NOT NULL DEFAULT 1
+);
 `,
 }
 

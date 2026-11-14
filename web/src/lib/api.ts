@@ -185,7 +185,22 @@ export interface SearchParams {
   host?: string[];
   /** Leave out lines matching this; regex and case apply as for q. */
   exclude?: string;
+  /** 1.1: the data type; "syslog" is the default and the only one. */
+  type?: string;
+  /** 1.1: "terms" reads q and exclude as boolean terms (SPEC §10.1.3); "text" (default) is the 1.0 meaning. */
+  syntax?: Syntax;
+  /** 1.1: facilities 0–23 and "unknown"; empty = all, ["none"] = nothing. */
+  facilities?: FacKey[];
+  /** 1.1: leave these devices out (after devices, group and ungrouped). */
+  exclude_devices?: string[];
+  /** 1.1: leave out lines whose program/tag (or hostname) matches one of these, as app (host) matches. */
+  exclude_app?: string[];
+  exclude_host?: string[];
 }
+
+export type Syntax = 'text' | 'terms';
+/** A syslog facility 0 (kern) … 23 (local7), "unknown" (no parseable PRI), or "none" (matches nothing). */
+export type FacKey = number | 'unknown' | 'none';
 
 export interface SearchResult extends LogLine {
   ref: string;
@@ -230,6 +245,12 @@ export interface ExportRequest {
   app?: string[];
   host?: string[];
   exclude?: string;
+  type?: string;
+  syntax?: Syntax;
+  facilities?: FacKey[];
+  exclude_devices?: string[];
+  exclude_app?: string[];
+  exclude_host?: string[];
 }
 
 export interface ExportFilters {
@@ -242,6 +263,13 @@ export interface ExportFilters {
   app: string[];
   host: string[];
   exclude: string;
+  /** 1.1; older servers omit them. */
+  type?: string;
+  syntax?: Syntax;
+  facilities?: FacKey[];
+  exclude_devices?: string[];
+  exclude_app?: string[];
+  exclude_host?: string[];
 }
 
 export interface ExportEstimate {
@@ -575,6 +603,7 @@ export const searchPath = (p: SearchParams) =>
     app: p.app,
     host: p.host,
     exclude: p.exclude,
+    ...newFilterParams(p),
     order: p.order,
     limit: p.limit,
     cursor: p.cursor,
@@ -583,6 +612,203 @@ export const search = (p: SearchParams, signal?: AbortSignal) =>
   request<SearchResponse>('GET', searchPath(p), undefined, signal);
 export const getContext = (ref: string, before = 50, after = 50) =>
   request<ContextResponse>('GET', `/api/context${query({ ref, before, after })}`);
+
+/** The 1.1 filter parameters, as /api/search and /api/search/summary take them (sent only when set). */
+function newFilterParams(p: SearchParams): Record<string, string | string[] | undefined> {
+  return {
+    type: p.type && p.type !== 'syslog' ? p.type : undefined,
+    syntax: p.syntax === 'terms' ? 'terms' : undefined,
+    facilities: p.facilities?.length ? p.facilities.map(String) : undefined,
+    exclude_devices: p.exclude_devices,
+    exclude_app: p.exclude_app,
+    exclude_host: p.exclude_host,
+  };
+}
+
+// ---------- Events v2: schema, summary, saved searches (docs/api.md, 1.1) ----------
+
+export interface FieldDomainValue {
+  value: string;
+  label: string;
+}
+
+export interface FieldDescriptor {
+  key: string;
+  label: string;
+  /** The filter parameter a value is added to, exactly as its `value`. */
+  param: string;
+  /** The parameter that excludes a value; "" for a field with a domain (send the complement in `param`). */
+  exclude_param: string;
+  /** The complete value set of a closed field (severity, facility), or null. */
+  domain: FieldDomainValue[] | null;
+}
+
+export interface DataType {
+  type: string;
+  label: string;
+  default: boolean;
+  fields: FieldDescriptor[];
+}
+
+export interface SearchSchema {
+  types: DataType[];
+}
+
+export const getSchema = (signal?: AbortSignal) => request<SearchSchema>('GET', '/api/search/schema', undefined, signal);
+
+export interface SummaryParams extends Omit<SearchParams, 'order' | 'limit'> {
+  /** Field keys from the schema; undefined = all, [] = none (the histogram alone). */
+  fields?: string[];
+  top?: number;
+  histogram?: boolean;
+  bucket?: number;
+  budget_ms?: number;
+}
+
+export interface HistogramBucket {
+  start: string;
+  /** null: not counted yet (before counted_from). */
+  count: number | null;
+  /** Spread from checkpoints: show "≈" in the tooltip. */
+  approx: boolean;
+}
+
+export interface Histogram {
+  bucket_seconds: number;
+  source: 'index' | 'scan';
+  buckets: HistogramBucket[];
+}
+
+export interface FieldValueCount {
+  value: string;
+  label: string;
+  count: number;
+  /** False for a value `param` can't express (one with a comma, say). */
+  filterable: boolean;
+}
+
+export interface FieldSummary {
+  key: string;
+  label: string;
+  values: FieldValueCount[];
+  other: number;
+  none: number;
+  distinct: number;
+  distinct_capped: boolean;
+}
+
+export interface SummaryResponse {
+  type: string;
+  from: string;
+  to: string;
+  matched: number;
+  /** The counts are exact for [counted_from, to); equals from once complete. */
+  counted_from: string;
+  /** Absent with histogram=false. */
+  histogram?: Histogram;
+  fields: FieldSummary[];
+  next_cursor: string;
+  partial: boolean;
+  scanned_bytes: number;
+  scanned_files: number;
+  elapsed_ms: number;
+}
+
+/** The bucket sizes `bucket=` accepts, in seconds (SPEC §10.1.2). */
+export const BUCKETS = [1, 5, 15, 60, 300, 900, 3600, 7200, 21600, 86400, 604800];
+
+export const summaryPath = (p: SummaryParams) =>
+  `/api/search/summary${query({
+    q: p.q,
+    regex: p.regex ? true : undefined,
+    case: p.case ? true : undefined,
+    devices: p.devices,
+    group: p.group,
+    ungrouped: p.ungrouped ? true : undefined,
+    from: p.from,
+    to: p.to,
+    severities: p.severities ? sevParam(p.severities) : undefined,
+    app: p.app,
+    host: p.host,
+    exclude: p.exclude,
+    ...newFilterParams(p),
+    fields: p.fields === undefined ? undefined : p.fields.length ? p.fields : 'none',
+    top: p.top,
+    histogram: p.histogram === false ? false : undefined,
+    bucket: p.bucket,
+    budget_ms: p.budget_ms,
+    cursor: p.cursor,
+  })}`;
+export const getSummary = (p: SummaryParams, signal?: AbortSignal) =>
+  request<SummaryResponse>('GET', summaryPath(p), undefined, signal);
+
+/** The message of a 400 for a summary whose running counts the server no longer has. */
+export const SUMMARY_EXPIRED = 'This summary expired; start it again.';
+
+export type SavedRange = { last: string } | { from: string; to: string };
+
+/** A saved search's parameters (docs/api.md → Saved searches). Missing keys take their defaults. */
+export interface SavedQuery {
+  q?: string;
+  syntax?: Syntax;
+  regex?: boolean;
+  case?: boolean;
+  exclude?: string;
+  devices?: string[];
+  group?: string;
+  ungrouped?: boolean;
+  exclude_devices?: string[];
+  severities?: (SevKey | 'none')[];
+  facilities?: FacKey[];
+  app?: string[];
+  exclude_app?: string[];
+  host?: string[];
+  exclude_host?: string[];
+  order?: 'desc' | 'asc';
+  range?: SavedRange;
+}
+
+export interface SavedSearch {
+  id: string;
+  name: string;
+  type: string;
+  created: string;
+  updated: string;
+  query: SavedQuery;
+  /** Device IDs in query.devices the server doesn't know (any more); worked out on every read. */
+  missing_devices: string[];
+  /** query.group has no devices. */
+  missing_group: boolean;
+}
+
+export interface SavedSearchBody {
+  name: string;
+  type?: string;
+  query: SavedQuery;
+}
+
+export const listSavedSearches = (type = 'syslog') =>
+  request<SavedSearch[]>('GET', `/api/saved-searches${query({ type })}`);
+
+export async function getSavedSearch(id: string): Promise<{ saved: SavedSearch; etag: string }> {
+  const { data, headers } = await requestFull<SavedSearch>('GET', `/api/saved-searches/${encodeURIComponent(id)}`);
+  return { saved: data, etag: headers.get('ETag') ?? '' };
+}
+
+export const createSavedSearch = (b: SavedSearchBody) => request<SavedSearch>('POST', '/api/saved-searches', b);
+
+/** Saves with If-Match when etag is set; a stale one is a 409 (isConflict). */
+export async function updateSavedSearch(id: string, b: SavedSearchBody, etag = ''): Promise<{ saved: SavedSearch; etag: string }> {
+  const { data, headers } = await requestFull<SavedSearch>(
+    'PUT',
+    `/api/saved-searches/${encodeURIComponent(id)}`,
+    b,
+    etag ? { 'If-Match': etag } : undefined,
+  );
+  return { saved: data, etag: headers.get('ETag') ?? '' };
+}
+
+export const deleteSavedSearch = (id: string) => request<void>('DELETE', `/api/saved-searches/${encodeURIComponent(id)}`);
 
 /** Optional filters are sent only when they narrow the export (all severities = no filter). */
 function exportBody(r: ExportRequest): ExportRequest {
@@ -599,7 +825,13 @@ function exportBody(r: ExportRequest): ExportRequest {
     if (r.q) b.q = r.q;
     if (r.regex) b.regex = true;
     if (r.case) b.case = true;
+    if (r.syntax === 'terms') b.syntax = 'terms';
   }
+  if (r.type && r.type !== 'syslog') b.type = r.type;
+  if (r.facilities?.length) b.facilities = r.facilities;
+  if (r.exclude_devices?.length) b.exclude_devices = r.exclude_devices;
+  if (r.exclude_app?.length) b.exclude_app = r.exclude_app;
+  if (r.exclude_host?.length) b.exclude_host = r.exclude_host;
   return b;
 }
 export const createExport = (r: ExportRequest) => request<{ id: string }>('POST', '/api/exports', exportBody(r));

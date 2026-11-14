@@ -72,11 +72,48 @@ func toAPILines(ls []search.Line) []api.SearchLine {
 	return out
 }
 
+func toFacilitySet(f api.Facilities) search.FacilitySet {
+	if f.None {
+		return search.FacilityNone
+	}
+	var set search.FacilitySet
+	for _, v := range f.Values {
+		set = set.With(v)
+	}
+	return set.Normalize()
+}
+
+func fromFacilitySet(set search.FacilitySet) api.Facilities {
+	switch set {
+	case 0:
+		return api.Facilities{}
+	case search.FacilityNone:
+		return api.Facilities{None: true}
+	}
+	var f api.Facilities
+	for i := 0; i < 24; i++ {
+		if set.Has(i) {
+			f.Values = append(f.Values, i)
+		}
+	}
+	if set.Has(api.Unknown) {
+		f.Values = append(f.Values, api.Unknown)
+	}
+	return f
+}
+
+// searchFilter is the engine filter of a request.
+func searchFilter(r api.SearchRequest) search.Filter {
+	return search.Filter{Q: r.Q, Regex: r.Regex, Terms: r.Terms, Case: r.Case, Severities: toSeveritySet(r.Severities),
+		Facilities: toFacilitySet(r.Facilities), From: r.From, To: r.To, Apps: r.App, Hosts: r.Host, ExcludeApps: r.ExcludeApp,
+		ExcludeHosts: r.ExcludeHost, Exclude: r.Exclude}
+}
+
 func (b *backend) Search(ctx context.Context, r api.SearchRequest) (api.SearchPage, error) {
 	p, err := b.search.Search(ctx, search.Query{
-		Filter: search.Filter{Q: r.Q, Regex: r.Regex, Case: r.Case, Severities: toSeveritySet(r.Severities), From: r.From, To: r.To,
-			Apps: r.App, Hosts: r.Host, Exclude: r.Exclude},
-		Devices: r.Devices, Group: r.Group, Ungrouped: r.Ungrouped, Asc: r.Asc, Limit: r.Limit, Cursor: r.Cursor,
+		Filter:  searchFilter(r),
+		Devices: r.Devices, Group: r.Group, Ungrouped: r.Ungrouped, ExcludeDevices: r.ExcludeDevices, Asc: r.Asc, Limit: r.Limit,
+		Cursor: r.Cursor,
 	})
 	if err != nil {
 		return api.SearchPage{}, requestError(err)
@@ -96,7 +133,8 @@ func (b *backend) Context(ctx context.Context, ref string, before, after int) (a
 func toExportRequest(r api.ExportRequest) export.Request {
 	return export.Request{AllDevices: r.AllDevices, Devices: r.Devices, From: r.From, To: r.To, Filters: export.Filters{
 		Group: r.Group, Ungrouped: r.Ungrouped, Severities: toSeveritySet(r.Severities), Q: r.Q, Regex: r.Regex, Case: r.Case,
-		Apps: r.App, Hosts: r.Host, Exclude: r.Exclude}}
+		Apps: r.App, Hosts: r.Host, Exclude: r.Exclude, Terms: r.Terms, Facilities: toFacilitySet(r.Facilities),
+		ExcludeDevices: r.ExcludeDevices, ExcludeApps: r.ExcludeApp, ExcludeHosts: r.ExcludeHost}}
 }
 
 func toAPIExport(e export.Info) api.ExportInfo {
@@ -105,7 +143,10 @@ func toAPIExport(e export.Info) api.ExportInfo {
 		Progress: e.Progress, Lines: e.Lines, SizeBytes: e.SizeBytes, Error: e.Error, ReadyAt: e.ReadyAt, ExpiresAt: e.ExpiresAt,
 		Filters: api.ExportFilters{Group: e.Filters.Group, Ungrouped: e.Filters.Ungrouped,
 			Severities: fromSeveritySet(e.Filters.Severities), Q: e.Filters.Q, Regex: e.Filters.Regex, Case: e.Filters.Case,
-			App: e.Filters.Apps, Host: e.Filters.Hosts, Exclude: e.Filters.Exclude},
+			App: e.Filters.Apps, Host: e.Filters.Hosts, Exclude: e.Filters.Exclude,
+			Type: "syslog", Syntax: map[bool]string{false: "text", true: "terms"}[e.Filters.Terms],
+			Facilities: fromFacilitySet(e.Filters.Facilities), ExcludeDevices: e.Filters.ExcludeDevices,
+			ExcludeApp: e.Filters.ExcludeApps, ExcludeHost: e.Filters.ExcludeHosts},
 	}
 }
 
