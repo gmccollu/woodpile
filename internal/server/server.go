@@ -193,6 +193,7 @@ func Open(cfgPath string, opts Options) (*Server, error) {
 	// Turned on in the config (by `woodshed tls on`, or by hand) while stopped:
 	// the CA and the certificate are made now. A failure shows on the listener.
 	_ = s.be.prepareTLS(cfg.Listeners.TLS)
+	s.be.applyTLSRenewRequest(dataDir)
 	if sharedBanner != nil {
 		s.be.startupBanners = append(s.be.startupBanners, *sharedBanner)
 		s.be.serviceEvent(index.LevelError, index.KindError, sharedBanner.Text)

@@ -2,15 +2,19 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/gmccollu/woodshed/internal/api"
+	"github.com/gmccollu/woodshed/internal/atomicfile"
 	"github.com/gmccollu/woodshed/internal/config"
 	"github.com/gmccollu/woodshed/internal/fwrule"
 	"github.com/gmccollu/woodshed/internal/index"
@@ -341,4 +345,49 @@ func (b *backend) runStateTLS(cfg config.Config) *RunStateTLS {
 		}
 	}
 	return rs
+}
+
+// ---- renewals asked for by `woodshed tls renew` ----
+
+// TLSRenewRequestFile is where `woodshed tls renew` (run as an administrator)
+// leaves its request; the service carries it out when it starts, as its own
+// account, so the new files get the right owner, and records the event.
+const TLSRenewRequestFile = "tls-renew-request.json"
+
+type renewRequest struct {
+	NewCA bool      `json:"new_ca"`
+	Asked time.Time `json:"asked"`
+}
+
+// WriteTLSRenewRequest leaves a renewal request in dataDir (mode 0644: it holds
+// nothing secret, and the service's account must read it).
+func WriteTLSRenewRequest(dataDir string, newCA bool) error {
+	b, _ := json.Marshal(renewRequest{NewCA: newCA, Asked: time.Now().UTC()})
+	return atomicfile.WriteFile(filepath.Join(dataDir, TLSRenewRequestFile), append(b, '\n'), 0o644)
+}
+
+// applyTLSRenewRequest carries out a pending `woodshed tls renew`, then
+// removes the request.
+func (b *backend) applyTLSRenewRequest(dataDir string) {
+	p := filepath.Join(dataDir, TLSRenewRequestFile)
+	raw, err := atomicfile.ReadFile(p)
+	if errors.Is(err, os.ErrNotExist) {
+		return
+	}
+	defer os.Remove(p)
+	var req renewRequest
+	if err == nil {
+		err = json.Unmarshal(raw, &req)
+	}
+	if err != nil {
+		b.tlsEvent(index.LevelError, "Couldn't read the TLS renewal request from `woodshed tls renew`: "+err.Error())
+		return
+	}
+	if _, err := b.RenewTLS(context.Background(), req.NewCA); err != nil {
+		text := "The TLS renewal asked for by `woodshed tls renew` failed: " + err.Error()
+		if errors.Is(err, api.ErrTLSUserCert) {
+			text = "Ignored `woodshed tls renew`: this server uses your own certificate (listeners.tls.cert_file)."
+		}
+		b.tlsEvent(index.LevelError, text)
+	}
 }

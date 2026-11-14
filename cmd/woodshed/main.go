@@ -30,6 +30,7 @@ commands:
   reindex         rebuild the index from the log files
   set-password    set the UI password (for servers without a browser)
   lan-mode        turn LAN mode on or off (HTTPS on the network, with a login)
+  tls             syslog over TLS: on, off, renew the certificate, status
   reset-password  remove the UI password and turn LAN mode off
   send            send test messages to a syslog server
   bench           measure sustained throughput
@@ -56,6 +57,7 @@ func init() {
 		{"reindex", cmdReindex},
 		{"set-password", cmdSetPassword},
 		{"lan-mode", cmdLANMode},
+		{"tls", cmdTLS},
 		{"reset-password", cmdResetPassword},
 		{"send", cmdSend},
 		{"bench", cmdBench},

@@ -195,6 +195,7 @@ reached.`, stderr)
 			status.StartedAt.Local().Format("2006-01-02 15:04:05")))
 		listenerRows(w, status.Listeners)
 		uiRows(w, cfg, status.UICertFingerprint)
+		statusTLSRows(w, cfg, nil)
 		w.row("Data", status.DataDir)
 		bannerRows(w, status.Banners)
 		return 0
@@ -216,6 +217,7 @@ reached.`, stderr)
 			listenerRows(w, rs.Listeners)
 		}
 		uiRows(w, cfg, rs.UI.CertFingerprint)
+		statusTLSRows(w, cfg, &rs)
 		w.row("Data", cfg.Storage.DataDir)
 		bannerRows(w, rs.Banners)
 		return 0
@@ -245,6 +247,27 @@ reached.`, stderr)
 		w.row("Server", "not running (nothing answers on "+uiURL(cfg)+")")
 	}
 	return 1
+}
+
+// statusTLSRows adds the TLS listener's certificate to `woodshed status`, from
+// the run-state file (or the files), when TLS is on or was ever turned on.
+func statusTLSRows(w *tabw, cfg config.Config, rs *server.RunState) {
+	if rs == nil {
+		if got, err := server.ReadState(cfg.Storage.DataDir); err == nil {
+			rs = &got
+		}
+	}
+	var t *server.RunStateTLS
+	if rs != nil {
+		t = rs.TLS
+	}
+	if t == nil && cfg.Listeners.TLS.Enabled {
+		t = tlsFromFiles(cfg.Listeners.TLS, cfg.Storage.DataDir)
+		t.Enabled, t.Port = true, cfg.Listeners.TLS.Port
+	}
+	if t != nil {
+		tlsRows(w, t)
+	}
 }
 
 func listenerRows(w *tabw, ls []api.Listener) {

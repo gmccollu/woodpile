@@ -289,3 +289,39 @@ func TestTLSUserCertificate(t *testing.T) {
 		t.Errorf("mismatched pair: %d %v", code, errBody.Errors)
 	}
 }
+
+// `woodshed tls renew` leaves a request; the service carries it out at start
+// (as its own account), records it and removes the request.
+func TestTLSRenewRequestAtStart(t *testing.T) {
+	dir := t.TempDir()
+	tlsPort := freePort(t)
+	cfgPath := writeConfig(t, dir, freePort(t), 0, func(c *config.Config) {
+		c.Listeners.TLS = config.TLSListener{Enabled: true, Addr: "127.0.0.1", Port: tlsPort}
+	})
+	dataDir := filepath.Join(dir, "data")
+	r := start(t, cfgPath)
+	before := readTLSFiles(t, dataDir)
+	r.stop(t)
+
+	if err := WriteTLSRenewRequest(dataDir, false); err != nil {
+		t.Fatal(err)
+	}
+	r = start(t, cfgPath)
+	after := readTLSFiles(t, dataDir)
+	if !bytes.Equal(before[tlscert.CAFile], after[tlscert.CAFile]) || bytes.Equal(before[tlscert.CertFile], after[tlscert.CertFile]) {
+		t.Error("the request wasn't a same-CA renewal")
+	}
+	if _, err := os.Stat(filepath.Join(dataDir, TLSRenewRequestFile)); !os.IsNotExist(err) {
+		t.Error("the request is still there")
+	}
+	evs, _ := r.srv.be.idx.Events(context.Background(), time.Time{}, time.Time{}, 100)
+	n := 0
+	for _, e := range evs {
+		if e.Kind == index.KindTLS && strings.Contains(e.Text, "Renewed") {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf("%d renew events", n)
+	}
+}
