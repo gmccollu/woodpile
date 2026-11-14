@@ -263,7 +263,7 @@ func TestTLSFailureReasons(t *testing.T) {
 	expect("version", TLSVersion, "unsupported versions")
 
 	stall, _ := net.Dial("tcp", addr)
-	expect("timeout", TLSTimeout, "")
+	expect("timeout", TLSTimeout, "no complete handshake within 300ms")
 	if !closedByServer(stall, 2*time.Second) {
 		t.Error("stalled handshake not closed")
 	}

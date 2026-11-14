@@ -3,6 +3,7 @@ package listen
 import (
 	"crypto/tls"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/netip"
@@ -163,6 +164,9 @@ func (t *tcpListener) handshake(c net.Conn, from netip.Addr) {
 			ts.mu.Unlock()
 			if !shutdown {
 				reason, detail := classifyHandshake(err)
+				if reason == TLSTimeout {
+					detail = fmt.Sprintf("no complete handshake within %v", s.opts.HandshakeTimeout)
+				}
 				s.tlsFailed.Add(1)
 				s.tlsStats.fail(a, s.opts.Clock().UTC(), reason, detail)
 			}
