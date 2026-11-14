@@ -9,7 +9,8 @@
                 the data, reinstalls and uninstalls with DELETE_LOGS=1, then installs -Msi fresh
                 with WOODSHED_UPDATE_CHECK=off and uninstalls it with DELETE_LOGS=1.
                 WOODSHED_UPDATE_CHECK (SPEC §10.2, an acceptance item in §10.4): v1 asks (check =
-                "ask" and the update_prompt banner), the upgrade sets off, the reinstall's invalid
+                "ask", and the update_prompt banner when GET /api/updates says the build can check:
+                a snapshot or dev build can't, by the product's own rule), the upgrade sets off, the reinstall's invalid
                 value is ignored with the reason in the install log, and the fresh install writes
                 the config before the service's first start (and the service can save over it).
   -Mode manual  `woodshed install` / `uninstall` with -Binary (no package), the same checks.
@@ -185,6 +186,8 @@ function Get-UpdateCheck {
     return ""
 }
 # The update banner kinds in /api/status.
+# Whether this build can check for updates: the product's own rule, from GET /api/updates.
+function Test-CanCheck { return [bool](Invoke-RestMethod "$Ui/api/updates").available }
 function Get-UpdateBanners {
     $st = Invoke-RestMethod "$Ui/api/status"
     return @($st.banners | Where-Object { $_.kind -like "update_*" } | ForEach-Object { $_.kind })
@@ -208,8 +211,13 @@ switch ($Mode) {
         $st = Check-Running
         $v1 = $st.version
         Want-UpdateCheck "ask" "a fresh install without WOODSHED_UPDATE_CHECK"
-        if (@(Get-UpdateBanners) -notcontains "update_prompt") { Die "no update_prompt banner with check = ask (release build $v1)" }
-        Ok "without WOODSHED_UPDATE_CHECK a fresh install asks: check = ask and the update_prompt banner"
+        if (Test-CanCheck) {
+            if (@(Get-UpdateBanners) -notcontains "update_prompt") { Die "no update_prompt banner with check = ask (version $v1 can check)" }
+            Ok "without WOODSHED_UPDATE_CHECK a fresh install asks: check = ask and the update_prompt banner (version $v1)"
+        } else {
+            if (@(Get-UpdateBanners).Count -ne 0) { Die "version $v1 can't check but shows update banners: $(Get-UpdateBanners)" }
+            Ok "without WOODSHED_UPDATE_CHECK: check = ask; version $v1 can't check (GET /api/updates: available = false), so no banner"
+        }
         $r1 = New-RunId
         Send-Traffic $Exe $r1
         Check-EventLog

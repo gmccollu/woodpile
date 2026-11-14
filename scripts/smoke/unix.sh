@@ -59,10 +59,17 @@ ok() {
 	printf 'PASS %s\n' "$*"
 }
 die() {
+	died=1
 	printf 'FAIL %s\n' "$*" >&2
 	collect_logs
 	exit 1
 }
+# Anything that stops the script without die (set -e on a failing command) still says what
+# failed: ERR records the main shell's last failing command, EXIT prints it.
+died=""
+last_err=""
+trap 'last_err="line $LINENO: $BASH_COMMAND (exit $?)"' ERR
+trap 'rc=$?; if [ "$rc" -ne 0 ] && [ -z "$died" ]; then printf "FAIL unexpected exit %s; last failing command: %s\n" "$rc" "${last_err:-unknown (inside a function)}" >&2; collect_logs; fi' EXIT
 collect_logs() {
 	set +e
 	if [ "$os" = Darwin ]; then
@@ -195,6 +202,16 @@ update_check() {
 	$SUDO sed -n '/^\[updates\]/,/^\[/s/^check *= *["'"'"']\([a-z]*\)["'"'"'].*/\1/p' "$CFG" 2>/dev/null | head -n 1 || true
 }
 
+# install_log_mark prints the macOS install log's line count; install_log_since N prints the
+# lines added after it (the pkg's script output goes there, not to installer's stdout).
+install_log_mark() { $SUDO wc -l /var/log/install.log 2>/dev/null | awk '{print $1}' || echo 0; }
+install_log_since() { $SUDO tail -n +"$(($1 + 1))" /var/log/install.log 2>/dev/null || true; }
+
+# can_check: this build can check for updates (the product's own rule, from GET /api/updates).
+can_check() {
+	curl -fsS "$UI/api/updates" | python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin)["available"] else 1)'
+}
+
 # with_env VAR=value command...: as an admin would type it, through sudo when not root.
 with_env() {
 	if [ -n "$SUDO" ]; then sudo "$@"; else env "$@"; fi
@@ -304,8 +321,13 @@ pkg)
 	ask)
 		echo "::warning::ACCEPTANCE: macOS installer does NOT pass WOODSHED_UPDATE_CHECK to the pkg's scripts; docs/install.md's pre-seeded TOML is the way (checked below)"
 		ok "ACCEPTANCE: macOS installer doesn't pass WOODSHED_UPDATE_CHECK through (check = \"ask\"); the pre-seeded TOML is checked below"
-		[ "$(update_banners)" = update_prompt ] || die "check = ask in a release build, but the banners are '$(update_banners)'"
-		ok "the update_prompt banner shows while check = ask"
+		if can_check; then
+			[ "$(update_banners)" = update_prompt ] || die "check = ask in a build that can check, but the banners are '$(update_banners)'"
+			ok "the update_prompt banner shows while check = ask"
+		else
+			[ -z "$(update_banners)" ] || die "a build that can't check shows update banners: $(update_banners)"
+			ok "this build can't check (GET /api/updates: available = false), so it doesn't ask"
+		fi
 		;;
 	*) die "updates.check is '$(update_check)' after the install" ;;
 	esac
@@ -330,11 +352,12 @@ pkg)
 	still_there "$r1" "uninstall.sh"
 	say "reinstall over the kept data (WOODSHED_UPDATE_CHECK=bogus), then uninstall.sh --delete-logs"
 	before_check=$(update_check)
-	out=$(with_env WOODSHED_UPDATE_CHECK=bogus installer -pkg "$artifact" -target / 2>&1) || die "the reinstall failed: $out"
-	# installer doesn't show the scripts' output; it's in the install log.
+	mark=$(install_log_mark)
+	out=$(with_env WOODSHED_UPDATE_CHECK=bogus installer -pkg "$artifact" -target / 2>&1) || die "the reinstall with WOODSHED_UPDATE_CHECK=bogus failed: $out"
+	# installer doesn't show the scripts' output; it's in the install log (only this install's lines).
 	out="$out
-$($SUDO grep 'WOODSHED_UPDATE_CHECK' /var/log/install.log 2>/dev/null | tail -n 5)"
-	echo "$out"
+$(install_log_since "$mark")"
+	printf '%s\n' "$out" | grep -i 'woodshed' || true
 	wait_up
 	if [ "$pkg_env" = yes ]; then
 		ignored_invalid "$before_check" "$out"
@@ -348,13 +371,13 @@ $($SUDO grep 'WOODSHED_UPDATE_CHECK' /var/log/install.log 2>/dev/null | tail -n 
 	data_gone
 
 	say "pre-seeded config (docs/install.md): check = \"off\" before installing, no banner"
-	$SUDO mkdir -p "$DATA"
-	printf '[updates]\ncheck = "off"\n' | $SUDO tee "$CFG" >/dev/null
-	$SUDO installer -pkg "$artifact" -target /
+	$SUDO mkdir -p "$DATA" || die "couldn't create $DATA to pre-seed the config"
+	printf '[updates]\ncheck = "off"\n' | $SUDO tee "$CFG" >/dev/null || die "couldn't write the pre-seeded $CFG"
+	$SUDO installer -pkg "$artifact" -target / || die "the install over the pre-seeded config failed"
 	wait_up
 	[ "$(update_check)" = off ] || die "the pre-seeded check = off became '$(update_check)'"
 	[ -z "$(update_banners)" ] || die "update banners with a pre-seeded check = off: $(update_banners)"
-	settings=$(curl -fsS "$UI/api/settings")
+	settings=$(curl -fsS "$UI/api/settings") || die "GET /api/settings failed"
 	code=$(curl -s -o /dev/null -w '%{http_code}' -X PUT -H 'Content-Type: application/json' --data "$settings" "$UI/api/settings")
 	[ "$code" = 200 ] || die "saving settings over the pre-seeded config answered $code"
 	[ "$(update_check)" = off ] || die "a settings save lost check = off"
