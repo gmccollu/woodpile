@@ -28,7 +28,7 @@ import (
 // Defaults for Options.
 const (
 	DefaultMaxConns    = 1000
-	DefaultIdleTimeout = 10 * time.Minute
+	DefaultIdleTimeout = time.Duration(config.DefaultTCPIdleTimeout)
 	DefaultEvictIdle   = 30 * time.Second
 )
 
@@ -76,9 +76,11 @@ type Options struct {
 	// source, which is then refused.
 	MaxConns  int
 	EvictIdle time.Duration
-	// IdleTimeout closes a TCP connection that hasn't completed a message for this
-	// long (default 10 min). Only complete messages renew it, not single bytes; a
-	// message in progress is bound by listeners.tcp_frame_timeout instead.
+	// IdleTimeout, if set, overrides listeners.tcp_idle_timeout (default 24 h):
+	// a TCP connection that hasn't completed a message for this long is closed.
+	// Only complete messages renew it, not single bytes; a message in progress is
+	// bound by listeners.tcp_frame_timeout instead. Eviction under MaxConns
+	// doesn't wait for it, so a long idle timeout can't pin the slots.
 	IdleTimeout time.Duration
 
 	// Holder names the process holding proto ("udp" or "tcp") port, best effort, or
@@ -115,8 +117,8 @@ type Status struct {
 
 	TCPConns                 int   // open TCP connections
 	TCPConnsRefused          int64 // closed at once because MaxConns were open and the newcomer's own source held the most
-	TCPConnsEvicted          int64 // closed to make room for a newcomer (idle longest, or the oldest of the biggest source)
-	TCPConnsPerSourceRefused int64 // refused at the per-address or per-/64 limit
+	TCPConnsEvicted          int64 // closed to make room for a newcomer (idle longest, the oldest of the biggest source, or its own source's idle longest at the per-source limit)
+	TCPConnsPerSourceRefused int64 // refused at the per-address or per-/64 limit, none of that source's connections being idle enough to evict
 	TCPFrameTimeouts         int64 // closed because a message didn't complete within tcp_frame_timeout
 }
 
@@ -138,6 +140,7 @@ type Server struct {
 	perSource    atomic.Int64 // TCP connections allowed per sender address
 	perPrefix    atomic.Int64 // and per IPv6 /64
 	frameTimeout atomic.Int64 // time.Duration a TCP frame may take
+	idleTimeout  atomic.Int64 // time.Duration a TCP connection may go without a complete message
 
 	received, truncated, connsRefused    atomic.Int64
 	evicted, perSourceRefused, frameCuts atomic.Int64
@@ -169,9 +172,6 @@ func Start(cfg config.Listeners, opts Options) (*Server, error) {
 	}
 	if opts.EvictIdle <= 0 {
 		opts.EvictIdle = DefaultEvictIdle
-	}
-	if opts.IdleTimeout <= 0 {
-		opts.IdleTimeout = DefaultIdleTimeout
 	}
 	if opts.Holder == nil {
 		opts.Holder = PortHolder
@@ -369,7 +369,7 @@ type RejectedSender struct {
 const (
 	RejectAllowlist = "allowlist"  // the sender isn't on the allowlist
 	RejectBlocked   = "blocked"    // the sender is on the blocklist (checked first)
-	RejectPerSource = "per_source" // the sender's address has tcp_max_conns_per_source open, or its IPv6 /64 tcp_max_conns_per_prefix
+	RejectPerSource = "per_source" // the sender's address has tcp_max_conns_per_source open, or its IPv6 /64 tcp_max_conns_per_prefix, and none is idle enough to evict
 )
 
 // MaxRejectedList is the most entries Rejected returns (docs/api.md).
@@ -599,9 +599,16 @@ func (s *Server) setTCPLimits(l config.Listeners) {
 	if p <= 0 {
 		p = config.DefaultTCPMaxConnsPerPrefix
 	}
+	idle := time.Duration(l.TCPIdleTimeout)
+	if s.opts.IdleTimeout > 0 {
+		idle = s.opts.IdleTimeout
+	} else if idle <= 0 {
+		idle = DefaultIdleTimeout
+	}
 	s.perSource.Store(int64(n))
 	s.perPrefix.Store(int64(p))
 	s.frameTimeout.Store(int64(d))
+	s.idleTimeout.Store(int64(idle))
 }
 
 func maxSizeOf(l config.Listeners) int {

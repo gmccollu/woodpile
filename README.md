@@ -20,7 +20,8 @@ drops instead of hiding it, and the export zip carries checksums and the times W
 reads it knows what they're looking at.
 
 What it isn't: a SIEM. No correlation, alerting or forwarding (TLS syslog, alerts and forwarding are planned after
-1.0). If you already run a log platform you're happy with, you probably don't need this.
+1.0). If you already run a log platform you're happy with, you probably don't need this. How it compares:
+[Why not tcpdump, rsyslog, syslog-ng or Graylog?](FAQ.md#why-not-tcpdump-rsyslog-syslog-ng-or-graylog)
 
 ## Download
 
