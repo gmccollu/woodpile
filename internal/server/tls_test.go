@@ -325,3 +325,25 @@ func TestTLSRenewRequestAtStart(t *testing.T) {
 		t.Errorf("%d renew events", n)
 	}
 }
+
+// The Windows rule's state is the installed service's only (TLS decision 4): a
+// portable copy or `woodshed run` reports "unknown" and shows no banner, whatever
+// rule the host has; the service reports what it reads, with the command.
+func TestTLSFirewallStateOnlyForService(t *testing.T) {
+	cfg := config.Default()
+	cfg.Listeners.TLS = config.TLSListener{Enabled: true, Addr: "127.0.0.1", Port: 6514}
+	b := &backend{now: time.Now, log: quiet, tlsc: newTLSSide(t.TempDir(), cfg.Listeners.TLS, time.Now, func() []string { return nil })}
+	reads := 0
+	b.tlsc.fwCheck = func(port int) string { reads++; return fwrule.StateDisabled }
+	for _, service := range []bool{false, true} {
+		b.isService = service
+		ts := b.tlsState(cfg)
+		kinds := bannerKinds(b.tlsBanners(cfg, time.Now()))
+		if !service && (ts.Firewall.State != fwrule.StateUnknown || ts.Firewall.Command != "" || slices.Contains(kinds, "tls_firewall") || reads != 0) {
+			t.Errorf("not the service: firewall %+v, banners %v, reads %d", ts.Firewall, kinds, reads)
+		}
+		if service && (ts.Firewall.State != fwrule.StateDisabled || ts.Firewall.Command != "woodshed tls on" || !slices.Contains(kinds, "tls_firewall")) {
+			t.Errorf("the service: firewall %+v, banners %v", ts.Firewall, kinds)
+		}
+	}
+}

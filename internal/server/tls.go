@@ -129,7 +129,13 @@ func (b *backend) tlsState(cfg config.Config) api.TLSState {
 		out.Cert = &api.TLSCert{Subject: c.Subject, Issuer: c.Issuer, NotBefore: c.NotBefore, NotAfter: c.NotAfter, SHA256: c.SHA256,
 			DNSNames: c.DNSNames, IPAddresses: c.IPAddresses, MissingNames: st.MissingNames}
 	}
-	out.Firewall = api.TLSFirewall{State: b.tlsc.firewall(l.Port, b.now())}
+	// Only the installed service has the rule (the MSI's or `woodshed install`'s):
+	// for a portable copy or `woodshed run`, Windows' own first-run prompt
+	// decides, so its state isn't this copy's to report (TLS decision 4).
+	out.Firewall = api.TLSFirewall{State: fwrule.StateUnknown}
+	if b.isService {
+		out.Firewall.State = b.tlsc.firewall(l.Port, b.now())
+	}
 	switch out.Firewall.State {
 	case fwrule.StateMissing, fwrule.StateDisabled, fwrule.StateWrongPort:
 		out.Firewall.Command = "woodshed tls on"
