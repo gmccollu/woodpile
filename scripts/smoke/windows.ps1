@@ -169,16 +169,27 @@ function Wait-Tls([bool]$on) {
 # over TLS from another process, the banner while the rule is off, tls off.
 function Check-Tls([string]$exe) {
     Say "syslog over TLS: woodshed tls on, the rule, the service reads its state, a TLS sender"
-    foreach ($f in "tls-ca.pem", "tls-ca-key.pem", "tls-cert.pem", "tls-key.pem") {
-        if (Test-Path (Join-Path $Data $f)) { Die "$f exists before TLS was turned on" }
+    $caBefore = ""
+    if (Test-Path (Join-Path $Data "tls-ca.pem")) {
+        # A data folder kept from an earlier step: tls on must reuse its CA, never replace it.
+        $caBefore = (Get-FileHash -Algorithm SHA256 (Join-Path $Data "tls-ca.pem")).Hash
+        Ok "the kept data folder already has a TLS CA (from an earlier step); tls on must reuse it"
+    } else {
+        foreach ($f in "tls-ca.pem", "tls-ca-key.pem", "tls-cert.pem", "tls-key.pem") {
+            if (Test-Path (Join-Path $Data $f)) { Die "$f exists before TLS was turned on (and there's no CA)" }
+        }
+        Ok "no TLS key files before TLS is turned on (a fresh data folder)"
     }
-    Ok "no TLS key files before TLS is turned on"
     $out = & $exe tls on 2>&1 | Out-String
     Write-Host $out
     if ($LASTEXITCODE -ne 0) { Die "woodshed tls on exited $LASTEXITCODE" }
     if ($out -notmatch "Enabled the Windows firewall rule") { Die "tls on didn't enable the rule" }
     Wait-Tls $true | Out-Null
     Check-TlsRule $true
+    if ($caBefore -ne "") {
+        if ((Get-FileHash -Algorithm SHA256 (Join-Path $Data "tls-ca.pem")).Hash -ne $caBefore) { Die "tls on replaced the kept CA" }
+        Ok "tls on reused the kept CA, byte for byte"
+    }
     $svc = Get-CimInstance Win32_Service -Filter "Name='Woodshed'"
     $tcp = Get-NetTCPConnection -LocalPort 6514 -State Listen -ErrorAction SilentlyContinue | Where-Object OwningProcess -eq $svc.ProcessId
     if (-not $tcp) { Die "the service doesn't listen on TCP 6514" }

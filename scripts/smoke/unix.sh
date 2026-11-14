@@ -208,12 +208,19 @@ file_owner_mode() { # file_owner_mode <path>: "owner mode", read as root
 }
 
 tls_check() { # tls_check <woodshed binary>: on, a TLS message from another process, off
-	local bin=$1 run out ufw_before="" ufw_after
+	local bin=$1 run out ufw_before="" ufw_after ca_before=""
 	say "syslog over TLS: woodshed tls on, 1,000 messages over TLS, woodshed tls off"
-	for f in tls-ca.pem tls-ca-key.pem tls-cert.pem tls-key.pem; do
-		$SUDO test ! -e "$DATA/$f" || die "$DATA/$f exists before TLS was turned on"
-	done
-	ok "no TLS key files before TLS is turned on"
+	if $SUDO test -e "$DATA/tls-ca.pem"; then
+		# A data folder kept from an earlier step (a removal keeps it): its CA must be
+		# reused by tls on, never replaced (devices trust it).
+		ca_before=$($SUDO cat "$DATA/tls-ca.pem" | openssl dgst -sha256 -r | cut -d' ' -f1) || die "couldn't hash the kept CA"
+		ok "the kept data folder already has a TLS CA (from an earlier step); tls on must reuse it"
+	else
+		for f in tls-ca.pem tls-ca-key.pem tls-cert.pem tls-key.pem; do
+			$SUDO test ! -e "$DATA/$f" || die "$DATA/$f exists before TLS was turned on (and there's no CA)"
+		done
+		ok "no TLS key files before TLS is turned on (a fresh data folder)"
+	fi
 	if [ "$os" = Linux ] && [ "${SMOKE_UFW:-}" = 1 ] && command -v ufw >/dev/null 2>&1; then
 		$SUDO ufw --force enable >/dev/null || die "couldn't turn ufw on"
 		ufw_before=$($SUDO ufw status | tee "$LOGS/ufw-before.txt") || die "ufw status failed"
@@ -234,7 +241,12 @@ tls_check() { # tls_check <woodshed binary>: on, a TLS message from another proc
 	for f in tls-ca.pem tls-ca-key.pem tls-cert.pem tls-key.pem; do
 		[ "$(file_owner_mode "$DATA/$f")" = "$ACCOUNT 600" ] || die "$DATA/$f is $(file_owner_mode "$DATA/$f"), not $ACCOUNT 600"
 	done
-	ok "the service made its CA and certificate: owned by $ACCOUNT, mode 0600"
+	ok "the service's CA and certificate: owned by $ACCOUNT, mode 0600"
+	if [ -n "$ca_before" ]; then
+		[ "$($SUDO cat "$DATA/tls-ca.pem" | openssl dgst -sha256 -r | cut -d' ' -f1)" = "$ca_before" ] ||
+			die "tls on replaced the kept CA (devices that trust it would be locked out)"
+		ok "tls on reused the kept CA, byte for byte"
+	fi
 	if [ -n "$ufw_before" ]; then
 		$SUDO ufw status | grep -q "6514/tcp" || die "tls on didn't open 6514/tcp in ufw"
 		ok "tls on opened 6514/tcp in the active ufw"
