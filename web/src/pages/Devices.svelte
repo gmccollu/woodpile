@@ -7,6 +7,9 @@
   import Icon from '../components/Icon.svelte';
   import StatusDot from '../components/StatusDot.svelte';
   import { askBlock, blockUi, unblock } from '../lib/block.svelte';
+  import { router } from '../lib/router.svelte';
+  import { tlsHealth, tlsReason, tlsReasonShort } from '../lib/tls';
+  import type { DeviceTls } from '../lib/api';
 
   type Col = 'name' | 'ip' | 'group' | 'status' | 'first_seen' | 'last_heard' | 'msgs_per_min' | 'total_msgs' | 'bytes_on_disk';
 
@@ -32,6 +35,22 @@
 
   const groups = $derived(rows ? groupsSeen() : []);
   let q = $state('');
+  // A link such as #/devices?q=10.8.0.1 (from Settings → failed TLS handshakes) fills the filter.
+  $effect(() => {
+    const m = /(?:^|&)q=([^&]*)/.exec(router.query);
+    if (m) ui.filter = decodeURIComponent(m[1]);
+  });
+
+  /** Devices whose TLS details are shown under their row. */
+  let tlsOpen = $state<Record<string, boolean>>({});
+  function tlsSummary(t: DeviceTls): string {
+    const parts: string[] = [];
+    if (t.version) parts.push(`Last connection: ${t.version}, ${t.cipher}`);
+    parts.push(`${num(t.connections_24h)} connection${t.connections_24h === 1 ? '' : 's'} in 24 h`);
+    parts.push(`${num(t.failures_24h)} failed handshake${t.failures_24h === 1 ? '' : 's'} in 24 h`);
+    if (t.last_failure) parts.push(`last failure ${ago(t.last_failure.time, live.now)}: ${tlsReasonShort(t.last_failure.reason)}`);
+    return parts.join('. ');
+  }
   $effect(() => {
     const v = ui.filter.trim();
     const t = setTimeout(() => {
@@ -225,7 +244,21 @@
               {/if}
               {#if rowError[d.id]}<div class="mt-1 text-[12.5px] text-bad-fg" role="alert">{rowError[d.id]}</div>{/if}
             </td>
-            <td class="font-mono text-[13px]">{d.ip}</td>
+            <td class="whitespace-nowrap">
+              <span class="font-mono text-[13px]">{d.ip}</span>
+              {#if d.tls}
+                {@const h = tlsHealth(d.tls)}
+                <button
+                  class="tls {h}"
+                  aria-expanded={!!tlsOpen[d.id]}
+                  aria-label="TLS details for {d.name || d.ip}"
+                  title={tlsSummary(d.tls)}
+                  onclick={() => (tlsOpen = { ...tlsOpen, [d.id]: !tlsOpen[d.id] })}
+                >
+                  {h === 'failing' ? 'TLS failing' : h === 'some' ? `TLS · ${num(d.tls.failures_24h)} failed` : 'TLS'}
+                </button>
+              {/if}
+            </td>
             <td class="min-w-[120px]">
               {#if editing?.id === d.id && editing.field === 'group'}
                 <input
@@ -266,6 +299,36 @@
               {/if}
             </td>
           </tr>
+          {#if d.tls && tlsOpen[d.id]}
+            <tr class="tlsrow">
+              <td colspan="10">
+                <!-- width 0 + min-width 100%: the details never widen the table's columns. -->
+                <div class="tlsbox">
+                <dl class="tlsd">
+                  <div><dt>Last connection</dt><dd>{d.tls.version ? `${d.tls.version}, ${d.tls.cipher}` : 'none yet'}</dd></div>
+                  {#if d.tls.last_connected}
+                    <div><dt>Connected</dt><dd title={dateTime(d.tls.last_connected)}>{ago(d.tls.last_connected, live.now)}</dd></div>
+                  {/if}
+                  <div><dt>Connections, 24 h</dt><dd class="tabular-nums">{num(d.tls.connections_24h)}</dd></div>
+                  <div><dt>Failed handshakes, 24 h</dt><dd class="tabular-nums">{num(d.tls.failures_24h)}</dd></div>
+                  {#if d.tls.last_failure}
+                    <div class="wide">
+                      <dt>Last failure</dt>
+                      <dd>
+                        <span title={dateTime(d.tls.last_failure.time)}>{ago(d.tls.last_failure.time, live.now)}</span>:
+                        {tlsReason(d.tls.last_failure.reason)}
+                        {#if d.tls.last_failure.detail}<code>{d.tls.last_failure.detail}</code>{/if}
+                      </dd>
+                    </div>
+                  {/if}
+                </dl>
+                {#if d.tls.failures_24h}
+                  <a class="text-link text-[13px] underline" href="#/settings?section=tls-failures">Why handshakes fail, and what to check</a>
+                {/if}
+                </div>
+              </td>
+            </tr>
+          {/if}
         {/each}
       </tbody>
     </table>
@@ -349,6 +412,56 @@
     font: inherit;
     color: inherit;
     cursor: pointer;
+  }
+  .tls {
+    margin-left: 8px;
+    padding: 1px 8px;
+    border-radius: 999px;
+    border: 1px solid var(--input-border);
+    background: var(--chip);
+    color: var(--fg);
+    font: inherit;
+    font-size: 11.5px;
+    font-weight: 600;
+    cursor: pointer;
+    vertical-align: 1px;
+  }
+  .tls.some,
+  .tls.failing {
+    background: var(--warn-bg);
+    border-color: var(--warn-border);
+  }
+  .tls.failing {
+    background: var(--error-bg);
+    border-color: var(--error-border);
+  }
+  tr.tlsrow td {
+    padding-top: 2px;
+    padding-left: 20px;
+  }
+  .tlsbox {
+    width: 0;
+    min-width: 100%;
+  }
+  .tlsd {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 26px;
+    margin: 4px 0 6px;
+    font-size: 13px;
+  }
+  .tlsd dt {
+    color: var(--muted);
+    font-size: 12px;
+  }
+  .tlsd dd {
+    margin: 0;
+  }
+  .tlsd code {
+    margin-left: 4px;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--muted);
   }
   .editable {
     display: inline-flex;
