@@ -99,6 +99,7 @@ type Engine struct {
 	ringBytes int
 	passes    *passCache
 	readers   *readerCache
+	sums      *summaries
 	decodeSem chan struct{} // bounds parallel decompression
 
 	testHookOpen func(rel string) // called before each file open
@@ -135,6 +136,7 @@ func New(opts Options) *Engine {
 	e.passes = newPassCache(256 << 20)
 	e.decodeSem = make(chan struct{}, max(1, runtime.NumCPU()-1))
 	e.readers = newReaderCache(64, 2*time.Minute)
+	e.sums = newSummaries()
 	return e
 }
 
