@@ -22,6 +22,9 @@ prepare_log_dir
 chown root:wheel "$PLIST"
 chmod 0644 "$PLIST"
 
+# The update-check choice for silent installs, before the daemon (re)starts.
+apply_update_check
+
 # A previous `launchctl disable` would stop bootstrap from starting it.
 launchctl enable "system/$LABEL" 2>/dev/null || true
 if daemon_loaded; then

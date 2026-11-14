@@ -97,3 +97,19 @@ prepare_log_dir() {
 	chown -h "$SVC_USER:$SVC_GROUP" "$LOG_FILE"
 	chmod 0640 "$LOG_FILE"
 }
+
+# WOODSHED_UPDATE_CHECK=on|off|ask (SPEC §10.2), for silent installs:
+#   sudo WOODSHED_UPDATE_CHECK=off installer -pkg woodshed_X.Y.Z_macos_universal.pkg -target /
+# Applied on a first install and on an upgrade alike, before the daemon starts. Unset
+# leaves the config alone; an invalid value is ignored with a warning, never failing the
+# install. Whether installer passes the variable through to this script at all is checked
+# by the install smoke test (docs/install.md says what to do when it doesn't).
+apply_update_check() {
+	[ -n "${WOODSHED_UPDATE_CHECK:-}" ] || return 0
+	if out=$(/usr/local/bin/woodshed update-check "$WOODSHED_UPDATE_CHECK" --config "$DATA_DIR/woodshed.toml" --no-restart 2>&1); then
+		log "WOODSHED_UPDATE_CHECK=$WOODSHED_UPDATE_CHECK: $(printf '%s\n' "$out" | head -n 1)"
+	else
+		log "warning: ignored WOODSHED_UPDATE_CHECK=$WOODSHED_UPDATE_CHECK (use on, off or ask): $(printf '%s\n' "$out" | head -n 1)" >&2
+	fi
+	return 0
+}
