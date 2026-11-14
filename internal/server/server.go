@@ -32,6 +32,7 @@ import (
 	"github.com/gmccollu/woodshed/internal/peer"
 	"github.com/gmccollu/woodshed/internal/search"
 	"github.com/gmccollu/woodshed/internal/store"
+	"github.com/gmccollu/woodshed/internal/updatecheck"
 )
 
 // DefaultShutdownTimeout bounds the whole shutdown. It stays under the 20 s the
@@ -56,6 +57,10 @@ type Options struct {
 	// FindPeer looks for another running Woodshed (default peer.Find, which asks
 	// the OS service manager). Tests replace it.
 	FindPeer func(context.Context, peer.Options) (peer.Info, bool)
+
+	// updateTesting points the update check at a test server, on a fake clock
+	// (tests in this package only; nothing else can set it).
+	updateTesting *updatecheck.TestHooks
 }
 
 // Server is an opened Woodshed service. Call Run once.
@@ -189,6 +194,12 @@ func Open(cfgPath string, opts Options) (*Server, error) {
 		exports: s.exports,
 	})
 	s.be.peers.find = opts.FindPeer
+	// The update check: nothing touches the network unless updates.check is "on"
+	// in a release build (SPEC §10.2).
+	s.be.updates = updatecheck.New(updatecheck.Options{
+		Version: opts.Version, ReleasesURL: opts.ReleasesURL, DataDir: dataDir,
+		Check: cfg.Updates.Check, Logger: log, Testing: opts.updateTesting,
+	})
 	if sharedBanner != nil {
 		s.be.startupBanners = append(s.be.startupBanners, *sharedBanner)
 		s.be.serviceEvent(index.LevelError, index.KindError, sharedBanner.Text)
@@ -337,6 +348,13 @@ func (s *Server) Run(ctx context.Context) error {
 		s.be.watchRetention(stateStop)
 	}()
 
+	updCtx, updCancel := context.WithCancel(context.Background())
+	updDone := make(chan struct{})
+	go func() {
+		defer close(updDone)
+		s.be.updates.Run(updCtx)
+	}()
+
 	select {
 	case <-ctx.Done():
 	case err := <-apiDone:
@@ -345,9 +363,11 @@ func (s *Server) Run(ctx context.Context) error {
 		apiDone <- err
 	}
 	log.Info("shutting down")
+	updCancel() // a check in flight is cancelled
 	close(stateStop)
 	<-stateDone
 	<-retentionDone
+	<-updDone
 	return s.shutdown(ln, apiCancel, apiDone)
 }
 

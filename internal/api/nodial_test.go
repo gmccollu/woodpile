@@ -132,6 +132,8 @@ func TestNoHandlerDialsOut(t *testing.T) {
 		{"GET", "/api/storage/history", ""}, {"GET", "/api/search", ""}, {"GET", "/api/context", ""},
 		{"GET", "/api/exports", ""}, {"POST", "/api/exports", `{}`}, {"GET", "/api/exports/x/download", ""},
 		{"GET", "/api/session", ""}, {"POST", "/api/login", `{"password":"x"}`}, {"POST", "/api/logout", ""},
+		{"GET", "/api/updates", ""}, {"POST", "/api/updates/check", ""}, {"POST", "/api/updates/dismiss", `{"version":"1.2.0"}`},
+		{"PUT", "/api/updates", `{"check":"ask"}`},
 		{"PUT", "/api/password", `{"new":"password-123"}`},
 	} {
 		do(t, c, rq.method, srv.url(rq.path), rq.body)

@@ -24,10 +24,11 @@ Change this file first if the contract changes.
   "host_ips": ["10.1.0.50", "fd00::50"],
   "ui_cert_fingerprint": "",                  // LAN mode: SHA-256 of the UI's certificate, "AB:CD:…" (64 hex pairs); "" on localhost
   "banners": [{"kind": "listener_bind", "level": "error", "text": "TCP 514 is in use by syslogd (pid 312).",
-               "action": "retry_listeners"}]   // action: "" | "retry_listeners"; kinds: listener_bind, writes_paused, low_disk, ui_port_busy, udp_buffer_small
-                                               // from 1.1 (planned, see "1.1 (planned)"): kinds update_prompt, update_available, tls_legacy,
-                                               // tls_cert_expiring, tls_cert_names and tls_firewall; actions "update_choice", "update_dismiss"
-                                               // and "tls_renew"; an optional "url" on any banner; listeners[].proto "tls"
+               "action": "retry_listeners"}]   // action: "" | "retry_listeners" | "update_choice" | "update_dismiss";
+                                               // kinds: listener_bind, writes_paused, low_disk, ui_port_busy, udp_buffer_small,
+                                               // update_prompt, update_available (see "Update check"); an optional "url" on any banner
+                                               // from 1.1 (planned, see "1.1 (planned)"): kinds tls_legacy, tls_cert_expiring, tls_cert_names
+                                               // and tls_firewall; action "tls_renew"; listeners[].proto "tls"
 }
 ```
 A listener that failed to bind may also carry, when known, `holder_kind` (`"woodshed_service"`: the installed Woodshed
@@ -247,13 +248,71 @@ normalising (dedupe, sort). `listeners.allowlist` entries may be a bare IP or a 
   "storage": {"data_dir": "...", "retention_days": 30, "retention_bytes": 21474836480, "part_bytes": 104857600},
   "ui": {"lan_mode": false, "port": 8514, "cert_file": "", "key_file": "", "require_login_local": false,
          "extra_hostnames": [], "trusted_hosts": []},
-  "quiet": {"quiet_after_seconds": 300, "offline_after_seconds": 3600}
+  "quiet": {"quiet_after_seconds": 300, "offline_after_seconds": 3600},
+  "updates": {"check": "ask"}
 }
 ```
-
-1.1 (planned) adds `"updates": {"check": "ask"}` to this object: see "1.1 (planned)" at the end.
+`updates.check` must be `"ask"`, `"on"` or `"off"` (a `400` on `updates.check` otherwise); see "Update check". A PUT
+without `updates` (a 1.0 client or script) leaves it as it is.
 
 `GET /api/storage/history` → `[{"time", "file", "device_id", "bytes", "reason": "age|cap|low_disk"}]`
+
+## Update check
+
+The opt-in update check (SPEC §10.2): off until someone agrees, it asks once, and when it's on it fetches one public file
+a day. It never downloads or installs anything.
+
+`GET /api/updates`
+```json
+{"check": "on",                                 // "ask" | "on" | "off", from updates.check
+ "available": true,                             // false in a build that can't check (not a release version, or no releases_url)
+ "url": "https://gmccollu.github.io/woodshed/releases.json",
+ "current": "1.1.0",
+ "last_check": "2026-11-13T09:12:44Z",          // null until the first check
+ "last_result": "ok",                           // "" (never checked) | "ok" | "error"
+ "last_error": "", "last_error_kind": "",       // kinds: dns, connect, proxy, tls, timeout, http_status, redirect, too_large, bad_json, no_release
+ "next_check": "2026-11-14T08:40:02Z",          // null unless check is "on"
+ "latest": {"version": "1.2.0", "prerelease": false,
+            "url": "https://github.com/gmccollu/woodshed/releases/tag/v1.2.0"},   // null until a check succeeds, while it isn't "on", and after turning it off
+ "update_available": true,
+ "dismissed_version": ""}
+```
+- `latest` is the newest release this build would offer: the stable one, or for a prerelease build the newer of
+  stable and prerelease. `update_available` is true when it's newer than `current`. `latest.url` is
+  `releases_url + "/tag/" + <the tag name>` when the file's `html_url` is exactly that, and `releases_url` when
+  `html_url` is anything else on the releases page. An `html_url` outside the releases page makes the check fail
+  (`bad_json`), with no banner.
+- `last_error` is a short message Woodshed writes itself ("TLS certificate not trusted (a proxy that inspects
+  HTTPS?)"); nothing from the response is shown.
+
+`PUT /api/updates` body `{"check": "on"}` or `{"check": "off"}` → `200` with the object above. It writes
+`updates.check` to the config like a Settings save (the settings ETag changes too). The banner's **Turn on** and
+**No thanks** use it. `"ask"` isn't accepted here (`400`); Settings can set it. Turning it on checks within a
+minute; turning it off cancels the next check and clears `latest` and the banner.
+
+`POST /api/updates/check` → `202` (no body): check now. `409` unless `check` is `"on"` (and in a build that can't
+check); `429` with `Retry-After` within 60 s of the last one started this way.
+
+`POST /api/updates/dismiss` body `{"version": "1.2.0"}` → `204`: hide the `update_available` banner for that
+version, for everyone. A newer version shows it again. `400` if `version` isn't a version.
+
+**Banners** (in `/api/status`, after errors and warnings):
+- `update_prompt` (info, action `update_choice`): shown while `updates.check` is `"ask"`, in a build that can check.
+  The UI shows **Turn on** and **No thanks**, which send `PUT /api/updates`. Text: "Check for new Woodshed versions
+  once a day? It fetches one public file from gmccollu.github.io and sends nothing about this server."
+- `update_available` (info, action `update_dismiss`): "Woodshed 1.2.0 is available (this is 1.1.0)." It has a `url`
+  with the release page (`latest.url`). `url` is an optional field on every banner, omitted when empty.
+
+**In the TOML:**
+```toml
+[updates]
+check = "ask"   # "ask" (the default: ask once in the UI), "on" or "off"
+```
+A config without `[updates]` (a fresh install, an upgrade from 1.0, portable mode) means `"ask"`. Setting `"on"` or
+`"off"` before the first start skips the banner, and so does `woodshed update-check on|off` (an administrator
+command, like `lan-mode`) or installing with `WOODSHED_UPDATE_CHECK=on|off|ask` (the MSI property, or the environment
+variable for pkg, deb and rpm, which runs `woodshed update-check <value>`; see docs/install.md for which installers
+pass it through). The request itself, the schedule and the state file (`<data>/update-check.json`) are in SPEC §10.2.
 
 ## Auth
 
@@ -511,54 +570,6 @@ Limits and errors:
 - Validation errors are a `400` with dotted keys, as for settings:
   `{"errors": {"name": "…", "query.q": "Unclosed quote starting at character 12.", "query.range.last": "…"}}`.
 - They're stored in `index.db` (SPEC §10.1.4), which `woodshed reindex` keeps.
-
-### Update check: `GET /api/updates`
-
-```json
-{"check": "on",                                 // "ask" | "on" | "off", from updates.check
- "available": true,                             // false in a build that can't check (not a release version, or no releases_url)
- "url": "https://gmccollu.github.io/woodshed/releases.json",
- "current": "1.1.0",
- "last_check": "2026-11-13T09:12:44Z",          // null until the first check
- "last_result": "ok",                           // "" (never checked) | "ok" | "error"
- "last_error": "", "last_error_kind": "",       // kinds: dns, connect, proxy, tls, timeout, http_status, redirect, too_large, bad_json, no_release
- "next_check": "2026-11-14T08:40:02Z",          // null unless check is "on"
- "latest": {"version": "1.2.0", "prerelease": false,
-            "url": "https://github.com/gmccollu/woodshed/releases/tag/v1.2.0"},   // null until a check succeeds, and after turning it off
- "update_available": true,
- "dismissed_version": ""}
-```
-- `latest` is the newest release this build would offer: the stable one, or for a prerelease build the newer of
-  stable and prerelease. `update_available` is true when it's newer than `current`. `latest.url` is always
-  `releases_url + "/tag/" + <the tag name>`, whatever the file's `html_url` says.
-
-**Change:** `PUT /api/updates` body `{"check": "on"}` or `{"check": "off"}` → `200` with the object above. It writes
-`updates.check` to the config like a Settings save (the settings ETag changes too). The banner's **Turn on** and
-**No thanks** use it. `"ask"` isn't accepted here (`400`); Settings can set it.
-
-**Check now:** `POST /api/updates/check` → `202`: check now. `409` unless `check` is `"on"`; `429` with `Retry-After` within 60 s of
-the last one started this way.
-
-**Dismiss:** `POST /api/updates/dismiss` body `{"version": "1.2.0"}` → `204`: hide the `update_available` banner for that version,
-for everyone. A newer version shows it again.
-
-**Banners** (in `/api/status`, after errors and warnings):
-- `update_prompt` (info, action `update_choice`): shown while `updates.check` is `"ask"`, in a build that can check.
-  The UI shows **Turn on** and **No thanks**, which send `PUT /api/updates`. Text: "Check for new Woodshed versions
-  once a day? It fetches one public file from gmccollu.github.io and sends nothing about this server."
-- `update_available` (info, action `update_dismiss`): "Woodshed 1.2.0 is available (this is 1.1.0)." It has a `url`
-  with the release page. `url` is a new optional field on every banner, omitted when empty.
-
-**Settings:** `/api/settings` gains `"updates": {"check": "ask"}`. `updates.check` must be `"ask"`, `"on"` or `"off"`
-(a `400` on `updates.check` otherwise). In the TOML:
-```toml
-[updates]
-check = "ask"   # "ask" (the default: ask once in the UI), "on" or "off"
-```
-A config without `[updates]` (a fresh install, an upgrade from 1.0, portable mode) means `"ask"`. Setting `"on"` or
-`"off"` before the first start skips the banner, and so does installing with `WOODSHED_UPDATE_CHECK=on|off` (the MSI
-property, or the environment variable for pkg, deb and rpm), which runs `woodshed update-check <value>`. The request itself, the schedule and the state file
-(`<data>/update-check.json`) are in SPEC §10.2.
 
 ### TLS syslog listener
 

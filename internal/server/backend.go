@@ -24,6 +24,7 @@ import (
 	"github.com/gmccollu/woodshed/internal/model"
 	"github.com/gmccollu/woodshed/internal/search"
 	"github.com/gmccollu/woodshed/internal/store"
+	"github.com/gmccollu/woodshed/internal/updatecheck"
 )
 
 // backend implements api.Backend on top of the real packages.
@@ -82,6 +83,9 @@ type backend struct {
 	// live has each sender's last-heard time and rate since start, without the
 	// index's lag.
 	live *liveDevices
+
+	// updates is the opt-in update check (set by Open).
+	updates *updatecheck.Checker
 
 	// hostIPs is cached briefly: interface enumeration isn't free.
 	ipMu     sync.Mutex
@@ -269,6 +273,11 @@ func (b *backend) listenerState(ctx context.Context, cfg config.Config) (listen.
 		b.log.Warn("retention estimate failed", "err", err)
 	} else if ban != nil {
 		banners = append(banners, *ban)
+	}
+	if b.updates != nil {
+		for _, u := range b.updates.Banners() {
+			banners = append(banners, api.Banner{Kind: u.Kind, Level: u.Level, Text: u.Text, Action: u.Action, URL: u.URL})
+		}
 	}
 	// Another Woodshed on this machine (usually the installed service): name it
 	// as the holder and say what to do.
@@ -691,6 +700,9 @@ func (b *backend) SaveSettings(ctx context.Context, in api.Settings, ifMatch str
 	b.cfgMu.Lock()
 	b.cfg = next.Clone()
 	b.cfgMu.Unlock()
+	if cur.Updates != next.Updates && b.updates != nil {
+		b.updates.SetCheck(next.Updates.Check)
+	}
 
 	if ln := b.ln.Load(); ln != nil && !listenersEqual(cur.Listeners, next.Listeners) {
 		if err := ln.Reconfigure(next.Listeners); err != nil {
@@ -718,6 +730,75 @@ func listenersEqual(a, b config.Listeners) bool {
 		return false
 	}
 	return slices.Equal(a.Allowlist, b.Allowlist) && slices.Equal(a.Blocklist, b.Blocklist)
+}
+
+// ---- the update check (SPEC §10.2) ----
+
+func (b *backend) Updates(ctx context.Context) (api.UpdateInfo, error) {
+	in := b.updates.Info()
+	out := api.UpdateInfo{
+		Check: in.Check, Available: in.Available, URL: in.URL, Current: in.Current,
+		LastCheck: in.LastCheck, LastResult: in.LastResult, LastError: in.LastError, LastErrorKind: in.LastErrorKind,
+		NextCheck: in.NextCheck, UpdateAvailable: in.UpdateAvailable, DismissedVersion: in.DismissedVersion,
+	}
+	if l := in.Latest; l != nil {
+		out.Latest = &api.LatestRelease{Version: l.Version, Prerelease: l.Prerelease, URL: l.URL}
+	}
+	return out, nil
+}
+
+// SetUpdateCheck writes updates.check like a settings save (same lock, same
+// file), then tells the checker.
+func (b *backend) SetUpdateCheck(ctx context.Context, check string) (api.UpdateInfo, error) {
+	if err := b.setUpdateCheck(check); err != nil {
+		return api.UpdateInfo{}, err
+	}
+	return b.Updates(ctx)
+}
+
+func (b *backend) setUpdateCheck(check string) error {
+	b.saveMu.Lock()
+	defer b.saveMu.Unlock()
+	cur := b.config()
+	next := cur.Clone()
+	next.Updates.Check = check
+	if errs := next.Validate(&cur); len(errs) > 0 {
+		if msg, ok := errs["updates.check"]; ok {
+			return &api.RequestError{Msg: "check " + msg}
+		}
+		return fmt.Errorf("the config in effect is invalid: %w", errs)
+	}
+	if next.Updates == cur.Updates {
+		return nil
+	}
+	if err := config.Save(b.cfgPath, next); err != nil {
+		return fmt.Errorf("save the config: %w", err)
+	}
+	b.cfgMu.Lock()
+	b.cfg = next.Clone()
+	b.cfgMu.Unlock()
+	b.updates.SetCheck(check)
+	b.log.Info("settings saved", "path", b.cfgPath, "updates.check", check)
+	return nil
+}
+
+func (b *backend) CheckUpdatesNow(ctx context.Context) error {
+	err := b.updates.CheckNow()
+	var ts *updatecheck.TooSoonError
+	switch {
+	case errors.Is(err, updatecheck.ErrUnavailable), errors.Is(err, updatecheck.ErrNotOn):
+		return api.ErrUpdateCheckOff
+	case errors.As(err, &ts):
+		return &api.RetryAfterError{After: ts.RetryAfter, Msg: "A check ran less than a minute ago; try again shortly."}
+	}
+	return err
+}
+
+func (b *backend) DismissUpdate(ctx context.Context, version string) error {
+	if !b.updates.Dismiss(version) {
+		return &api.RequestError{Msg: "version must be a version, e.g. 1.2.0"}
+	}
+	return nil
 }
 
 func (b *backend) RetryListeners(ctx context.Context) error {
