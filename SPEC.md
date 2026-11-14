@@ -99,7 +99,7 @@ frontend install.
   slots are taken, the one idle longest (over 30 s) goes; at the per-address (or IPv6 /64) limit, a newcomer evicts
   its own source's connection idle longest (over 30 s, with no message in progress) instead of being refused, so a
   sender that rebooted without closing its connections isn't locked out. TCP keepalives are on (first probe after
-  15 s idle, 9 probes 15 s apart), so connections to a vanished sender close within minutes **(decided, 1.0.1)**.
+  15 s idle, 9 probes 15 s apart), so connections to a vanished sender close within minutes **(decided (coordinator, 2026-11-13, owner-delegated), 1.0.1)**.
 - UDP socket receive buffer: ask for 32 MiB. On Linux the kernel caps this at `net.core.rmem_max`, so the deb/rpm
   installs `/etc/sysctl.d/60-woodshed.conf` raising it to 32 MiB, and removes it on uninstall **(decided)**. On
   every OS, log the buffer size we actually got at startup and show it on the About page.
