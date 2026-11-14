@@ -69,6 +69,7 @@ die() {
 died=""
 last_err=""
 trap 'last_err="line $LINENO: $BASH_COMMAND (exit $?)"' ERR
+rc=0 # set again by the EXIT trap below (declared here for shellcheck SC2154)
 trap 'rc=$?; if [ "$rc" -ne 0 ] && [ -z "$died" ]; then printf "FAIL unexpected exit %s; last failing command: %s\n" "$rc" "${last_err:-unknown (inside a function)}" >&2; collect_logs; fi' EXIT
 collect_logs() {
 	set +e
