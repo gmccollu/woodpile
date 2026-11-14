@@ -1063,6 +1063,10 @@ Events v2, **decided (build, 2026-11-13)**: small calls made while building §10
     again makes it absolute.
 12. Export's README.txt names the new filters in plain words ("Facilities: …", "Program/tag left out: …",
     "Devices left out: …", "boolean terms").
+13. A summary keeps each compressed file's paused pass (its open reader) in its server-side state, at most 8 per
+    summary, so a long range over gzipped days decompresses each byte once across requests. They close with the
+    state (complete, evicted, expired after 10 min, or cancelled). Up to 4 streams (half the CPUs) decompress in
+    parallel within the request's budget.
 
 **Acceptance items for the 1.1 build** (the install smoke tests confirm each, or the design changes before release):
 - The WiX firewall extension in use can ship the TLS 6514 rule present but disabled, and an upgrade keeps its state.
