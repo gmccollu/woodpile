@@ -25,8 +25,9 @@ Change this file first if the contract changes.
   "ui_cert_fingerprint": "",                  // LAN mode: SHA-256 of the UI's certificate, "AB:CD:…" (64 hex pairs); "" on localhost
   "banners": [{"kind": "listener_bind", "level": "error", "text": "TCP 514 is in use by syslogd (pid 312).",
                "action": "retry_listeners"}]   // action: "" | "retry_listeners"; kinds: listener_bind, writes_paused, low_disk, ui_port_busy, udp_buffer_small
-                                               // from 1.1 (planned, see "1.1 (planned)"): kinds update_prompt and update_available, actions
-                                               // "update_choice" and "update_dismiss", and an optional "url" on any banner
+                                               // from 1.1 (planned, see "1.1 (planned)"): kinds update_prompt, update_available, tls_legacy,
+                                               // tls_cert_expiring, tls_cert_names and tls_firewall; actions "update_choice", "update_dismiss"
+                                               // and "tls_renew"; an optional "url" on any banner; listeners[].proto "tls"
 }
 ```
 A listener that failed to bind may also carry, when known, `holder_kind` (`"woodshed_service"`: the installed Woodshed
@@ -558,3 +559,84 @@ A config without `[updates]` (a fresh install, an upgrade from 1.0, portable mod
 `"off"` before the first start skips the banner, and so does installing with `WOODSHED_UPDATE_CHECK=on|off` (the MSI
 property, or the environment variable for pkg, deb and rpm), which runs `woodshed update-check <value>`. The request itself, the schedule and the state file
 (`<data>/update-check.json`) are in SPEC §10.2.
+
+### TLS syslog listener
+
+SPEC §10.3. Off by default.
+
+**Settings:** `/api/settings` gains `listeners.tls`:
+```json
+{"enabled": false, "addr": "0.0.0.0", "port": 6514, "allow_legacy_tls": false, "cert_file": "", "key_file": ""}
+```
+- `port` is 1–65535, and differs from the UDP and TCP ports when they share an address. Ports below 1024 need the
+  same privileges as 514.
+- `cert_file` / `key_file`: both empty (Woodshed's own CA and certificate) or both set, absolute paths to readable
+  files. A pair that doesn't match, a certificate without EKU serverAuth (when it has an EKU), or a key the allowed
+  suites can't use is a `400` on `listeners.tls.cert_file` and/or `listeners.tls.key_file`, saying what's wrong.
+- Turning `enabled` on for the first time without `cert_file` creates the CA and the certificate before the PUT
+  returns.
+- `/api/status.listeners` gains an entry with `"proto": "tls"` while it's enabled, with the same fields and the same
+  `listener_bind` banner and Retry as the others.
+
+### TLS state: `GET /api/tls`
+```json
+{"enabled": true, "port": 6514, "source": "woodshed",           // "woodshed": its own CA | "file": cert_file/key_file
+ "allow_legacy_tls": false,
+ "ca": {"subject": "CN=Woodshed CA logs-01 2026-11-13", "not_before": "2026-11-13T15:00:00Z", "not_after": "2046-11-13T15:00:00Z",
+        "sha256": "AB:CD:…", "sha1": "AB:CD:…"},                // null when source is "file"
+ "cert": {"subject": "CN=logs-01.example.net", "issuer": "CN=Woodshed CA logs-01 2026-11-13",
+          "not_before": "2026-11-13T15:00:00Z", "not_after": "2036-11-13T15:00:00Z", "sha256": "AB:CD:…",
+          "dns_names": ["localhost", "logs-01", "logs-01.example.net", "logs-01.local"], "ip_addresses": ["10.1.0.50", "127.0.0.1", "::1"],
+          "missing_names": []},                                // host DNS names the certificate doesn't cover (drives tls_cert_names)
+ "firewall": {"state": "disabled", "command": "woodshed tls on"}}   // state: "ok" | "missing" | "disabled" | "wrong_port" | "unknown"
+```
+- `sha256` and `sha1` are the fingerprints of the DER certificate, as upper-case hex pairs separated by colons (like
+  `ui_cert_fingerprint`). `sha1` is given for the CA only, for devices that show nothing else.
+- `firewall.state` is what Woodshed can see of the OS firewall for this port. It's always `"unknown"` on Linux and
+  macOS, where `command` is `""` and Settings shows the commands for the common firewalls instead (SPEC §10.3.6).
+
+**Renew:** `POST /api/tls/renew` body `{"new_ca": false}` → `200` with the object above.
+- `new_ca: false` makes a new leaf with a new key and the current host names, signed by the same CA, so devices need
+  no change.
+- `new_ca: true` also replaces the CA, and every device must import the new one. The UI asks for confirmation first.
+- With `source: "file"` it's a `409 {"error": "This server uses your own certificate; replace the files instead."}`.
+- Nothing renews on its own: this route, and `woodshed tls renew [--new-ca]`, are the only ways.
+
+**CA download, PEM:** `GET /api/tls/ca.pem` → the CA certificate as PEM (`application/x-pem-file`,
+`Content-Disposition: attachment; filename="woodshed-ca.pem"`).
+
+**CA download, DER:** `GET /api/tls/ca.der` → the same certificate as DER (`application/pkix-cert`,
+`filename="woodshed-ca.cer"`).
+
+Both are a `404` when TLS has never been turned on, or with `source: "file"`
+(`{"error": "This server uses your own certificate; get its CA from whoever issued it."}`). With a login, the UI
+fetches the file with the session header and saves the response, so no download ticket is needed.
+
+**Handshake failures:** `GET /api/tls/failures` → senders whose TLS handshakes failed in the last 24 h, most failures
+first, at most 200:
+```json
+[{"ip": "198.51.100.7", "count_24h": 144, "last_seen": "2026-11-13T15:10:00Z", "reason": "cert_rejected",
+  "detail": "remote error: tls: unknown certificate authority", "device_id": ""}]
+```
+- `reason` is the latest failure's: `cert_rejected`, `version`, `cipher`, `not_tls`, `timeout`, `closed`, `busy` or
+  `other` (SPEC §10.3.4). `detail` is the TLS error text or the alert, with nothing from the sender's data.
+- `device_id` is set when the sender is also a known device. At most 10,000 addresses are tracked, and the least
+  recently seen is evicted.
+
+**Devices:** each device in `/api/devices` gains `tls`, `null` until the device has tried TLS:
+```json
+{"connections_24h": 288, "version": "TLS 1.3", "cipher": "TLS_AES_128_GCM_SHA256", "last_connected": "2026-11-13T15:09:51Z",
+ "failures_24h": 2, "last_failure": {"time": "2026-11-13T09:00:12Z", "reason": "timeout", "detail": ""}}
+```
+`version` and `cipher` are the last successful connection's; `last_failure` is `null` when there was none.
+
+**Banners** (warn, action `tls_renew` unless noted):
+- `tls_cert_expiring`: from 60 days before the certificate or the CA expires; the text gives the date, and says
+  whether devices need the new CA.
+- `tls_cert_names`: the host has a DNS name the certificate doesn't cover (`cert.missing_names`).
+- `tls_legacy` (action `""`): `allow_legacy_tls` is on.
+- `tls_firewall` (action `""`): Windows only, while the listener is on and its firewall rule is disabled, missing or
+  on another port; the text gives the command to run as an administrator (`firewall.command`).
+
+**CLI** (not HTTP; as an administrator): `woodshed tls on|off|renew [--new-ca]|status`, described in SPEC §10.3.6.
+`woodshed status` also prints the TLS listener, both fingerprints and the expiry.

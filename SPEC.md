@@ -38,6 +38,7 @@ proposal and can change.
 | Device config helper | Not in v1 **(decided)** |
 | Telemetry / updates | None. No outbound connections; the version and a releases link are shown in the UI **(decided)**. From 1.1: still no telemetry, plus an opt-in update check that asks once, makes one plain HTTPS GET of the public releases file a day when on, and never downloads or installs anything (§10.2) **(decided, 2026-11-13)** |
 | Update check details (1.1) | `updates.check` = ask / on / off, `ask` on fresh installs, upgrades and portable; the URL is the existing Pages file `releases.json`; User-Agent `Woodshed` with no version; no query, cookies or conditional headers; proxy from the environment; no redirects; only `internal/updatecheck` may dial (§10.2) |
+| TLS syslog (1.1) | Off by default, one Settings switch, TCP 6514 by default (port configurable) **(decided, 2026-11-13)**. TLS 1.2 and 1.3 (1.0/1.1 only behind `allow_legacy_tls`); no SNI, ALPN or client certificate needed; Woodshed's own RSA-2048 CA (20 y) and leaf (10 y), changed only on an explicit renew; the same framing and limits as TCP; the MSI ships its firewall rule disabled, and `woodshed tls on` enables it (§10.3) |
 | Events v2 (1.1) | Field panel and histogram over the same files and index. Field counts are exact over a stated span (newest first), never sampled. The histogram comes from the stats and checkpoints when the query is unfiltered, from the same scan otherwise. Boolean terms only with `syntax=terms`, so 1.0 links keep their meaning. Saved searches live in `index.db`. Every endpoint takes `type` (only `syslog` in 1.1) (§10.1) |
 | First run | Zero-config: listens immediately, and the UI opens on a welcome page **(decided)** |
 | Port 514 in use | The listener fails with a clear error; the UI still starts and explains the clash **(decided)** |
@@ -295,9 +296,25 @@ Still unproven:
 network devices send, so it can be handed to whoever is helping. It isn't a monitoring system, a flow-analytics
 product or a SIEM. Each new data type has to fit that rule (decided 2026-11-11).
 
+### 1.0.1
+- **TCP idle timeout from 10 min to 24 h** (to build on main). Today `DefaultIdleTimeout = 10 * time.Minute`
+  (`internal/listen/listen.go:31`) closes a TCP connection that hasn't completed a message for 10 min. Some senders
+  send no keepalives and notice a closed connection only when a write fails. They lose that message, and some
+  firewalls block traffic at that moment, because a failed write to a TCP log host counts as "host down".
+  - Raise the default to 24 h, configurable as `listeners.tcp_idle_timeout` (file-only like the other TCP limits;
+    1 min to 7 d). The same value applies to the TLS listener (§10.3).
+  - Slots are still freed under pressure: when `MaxConns` are open, the existing eviction closes the connection idle
+    longest (idle over `EvictIdle`, 30 s).
+  - A longer timeout lets stale connections fill a sender's own per-source limit (32) when it reboots without closing
+    them. So at that limit, the newcomer evicts that sender's own connection idle longest (over `EvictIdle`) instead
+    of being refused. Server-side TCP keepalives (Go's default on accepted connections) stay on, so a half-open
+    connection to a rebooted sender still closes within minutes.
+  - Tests: a quiet connection survives 23 h on a fake clock; eviction still works when `MaxConns` are full; a source at
+    its limit with stale connections is let in.
+
 ### 1.1
-- Events v2 (field panel, histogram, boolean terms, saved searches) and the opt-in update check, designed in §10.
-- TLS syslog (RFC 5425, port 6514), designed separately, later.
+- Events v2 (field panel, histogram, boolean terms, saved searches), the opt-in update check, and TLS syslog
+  (RFC 5425, TCP 6514), designed in §10.
 
 ### 1.2
 - **Pluggable data types:** generalise the pipeline (listener → per-device store → index → search → export) so
@@ -352,8 +369,7 @@ product or a SIEM. Each new data type has to fit that rule (decided 2026-11-11).
 
 ## 10. 1.1 design (draft, 2026-11-13)
 
-Two features: Events v2 (§10.1) and the opt-in update check (§10.2). TLS syslog is also planned for 1.1 and is
-designed separately. As in the rest of this spec, only items marked **(decided)** came from the owner; everything else
+Three features: Events v2 (§10.1), the opt-in update check (§10.2) and the TLS syslog listener (§10.3). As in the rest of this spec, only items marked **(decided)** came from the owner; everything else
 is a proposal. The API contract is in `docs/api.md` → "1.1 (planned)".
 
 ### 10.1 Events v2
@@ -469,7 +485,7 @@ word   = a run of characters other than whitespace, '(' and ')', not starting wi
   an ordinary character, so `user="bob"` is one word.
 - `NOT x` on its own is allowed and matches every line without x. An empty `q` matches everything, as now.
 - `regex=true` together with `syntax=terms` is a 400. RE2 already has alternation, and a regex inside the term
-  grammar would need quoting rules of its own (regex terms like `/…/` are an open question, §10.3).
+  grammar would need quoting rules of its own (regex terms like `/…/` aren't in 1.1, §10.4).
 - Limits: 32 words and phrases, parentheses nested up to 8 deep, and 4 KiB of `q`.
 - Errors are 400s that give a 1-based character position. For `exclude`, the message starts with `exclude: `.
   - `Unclosed quote starting at character 12.`
@@ -699,7 +715,248 @@ Editing them on main now would make them wrong for 1.0 users, so the exact wordi
 - **CHANGELOG.md** (1.1.0): "Opt-in update check: asks once, off unless you turn it on, one GET of the public releases
   file a day, never installs anything." Earlier entries stay as they are.
 
-### 10.3 Questions settled for 1.1 (decided, 2026-11-13)
+### 10.3 TLS syslog listener
+
+**(decided, 2026-11-13: off by default; one switch in Settings; TCP 6514 by default, and the port can be changed.)**
+A third listener takes syslog over TLS (RFC 5425) for devices that offer it. Everything after the handshake is the
+TCP listener: the same framing, limits, parsing, storage and device identity (the source IP). It's off until someone
+turns it on, so a 1.0 upgrade changes nothing and creates no key files.
+
+This design follows a source-level study of one widely deployed firewall family's TLS syslog client (2026-11-13),
+written up generically here. Its findings shape the defaults:
+- They offer TLS 1.2 and 1.3 by default, but on unlicensed or evaluation systems they can offer only TLS 1.0.
+- They send no SNI, no ALPN and no client certificate, and never read anything back from the server.
+- They trust only a CA that an administrator imported by hand into the device's own trust store, not a public root
+  list.
+- They insist on EKU serverAuth in a CA-issued server certificate.
+- When a name check is configured, they match the certificate's SAN DNS names (CN only when there are none) and
+  never its IP SANs. Without one, they check only the chain.
+- Messages are LF-framed with no octet count, at most 4 KiB each, over up to 4 parallel connections per host. Order
+  across those connections isn't kept.
+- They set no keepalives, reconnect every 10 s while the server is unreachable, and drop (don't queue) messages in
+  the meantime.
+- A failed TLS handshake (a bad certificate, a version mismatch) counts as "log host down". By default that **blocks
+  new connections through the firewall** until it's fixed, unless a "permit when the log host is down" option is set.
+
+That last point is why this listener must be conservative: a certificate that changes or expires without warning
+doesn't just lose logs, it can stop a site's traffic.
+
+#### 10.3.1 Settings and config
+```toml
+[listeners.tls]
+enabled = false          # the one switch (Settings → Listeners → "Syslog over TLS")
+addr = "0.0.0.0"
+port = 6514              # any free port; some device docs use 1470 for TCP syslog
+allow_legacy_tls = false # also accept TLS 1.0 and 1.1, for older senders (warn banner while on)
+cert_file = ""           # your own certificate chain (PEM) and key; both empty means Woodshed's own CA
+key_file = ""
+```
+- Ports below 1024 need the same privileges as 514; 6514 needs none.
+- `cert_file` and `key_file` are both empty or both set, and must be absolute paths to readable files, validated
+  like `ui.cert_file`. A mismatched pair is a 400 on both keys.
+- The listener appears in `/api/status.listeners` as `proto: "tls"`. A bind failure gets the usual `listener_bind`
+  banner and Retry.
+
+#### 10.3.2 TLS parameters
+- **Versions:** TLS 1.2 and 1.3. `allow_legacy_tls` adds 1.0 and 1.1, and while it's on there's a warn banner
+  `tls_legacy`: "TLS 1.0 and 1.1 are allowed for older senders. Turn this off once they're updated."
+- **Ciphers:**
+  - TLS 1.2: ECDHE with AES-GCM or ChaCha20-Poly1305 only. With an RSA key that's `ECDHE-RSA-AES128-GCM-SHA256`,
+    `ECDHE-RSA-AES256-GCM-SHA384` and `ECDHE-RSA-CHACHA20-POLY1305`, and the ECDSA equivalents with a user's ECDSA key.
+  - TLS 1.3: the standard suites (Go's fixed set).
+  - With `allow_legacy_tls`, 1.0 and 1.1 can't use AEAD suites, so it adds `ECDHE-*-AES128-CBC-SHA` and
+    `ECDHE-*-AES256-CBC-SHA`.
+  - Never offered: static RSA key exchange, 3DES or RC4.
+  - Curves: X25519, P-256 and P-384, plus Go's default hybrid post-quantum group for 1.3.
+- **No SNI, ALPN or client certificate is required.** The certificate is the same whatever SNI says, offered ALPN
+  values are ignored, and no client certificate is requested.
+- **Session resumption:** off (no tickets). The senders studied never resume, and it keeps no ticket key to rotate.
+- **Client certificate verification** (an optional `client_ca`) is a "maybe later" for senders that support mutual
+  TLS. It isn't in 1.1.
+
+#### 10.3.3 Certificate: Woodshed's own small CA
+When TLS is first turned on and no `cert_file` is set, Woodshed creates a CA and a server ("leaf") certificate signed
+by it. Devices import the **CA**, so a renewed leaf needs no change on any device.
+- **Files** in the data folder, mode 0600 like the UI certificate:
+  - `tls-ca.pem` and `tls-ca-key.pem`;
+  - `tls-cert.pem` (the leaf, then the CA: the chain that's sent) and `tls-key.pem`.
+- **Key type: RSA-2048 for both, signed with SHA-256 (decided here).** The study couldn't confirm which server key
+  types older senders accept, while RSA-2048 with SHA-256 is accepted by every TLS 1.0–1.3 client in use, including
+  TLS 1.0-only stacks and those limited to 2048-bit keys. ECDSA P-256 would make handshakes cheaper, but a sender that
+  can't use it fails closed, and on some firewalls that blocks traffic.
+  - The handshake cost of RSA-2048 is about a millisecond per connection, which is nothing even for a reconnect every
+    10 s per sender.
+  - The trade-off is margin: guidance retires 2048-bit RSA around 2030, inside the CA's lifetime. Replacing the CA is
+    an explicit action (below), and a user's own certificate can be any type.
+- **The CA:** subject `CN=Woodshed CA <hostname> <yyyy-mm-dd>`; `basicConstraints CA:TRUE, pathlen:0`; KU
+  keyCertSign + cRLSign; valid for **20 years**.
+- **The leaf:**
+  - `basicConstraints CA:FALSE`;
+  - KU digitalSignature + keyEncipherment, and EKU serverAuth;
+  - SAN DNS names from the UI certificate's logic (`identityFrom`): the hostname, `<hostname>.local`, the hostname
+    in each DNS search domain, `localhost` and every `ui.extra_hostnames` name;
+  - IP SANs for every stable address and each `ui.extra_hostnames` IP. Some senders ignore IP SANs, which is why the
+    DNS names matter;
+  - CN set to the primary DNS name: the first search-domain name if there is one, otherwise the hostname;
+  - valid for **10 years**, and never past the CA's own expiry.
+- **Why 20 and 10 years:** these aren't browser certificates.
+  - The 398-day limits apply to publicly trusted certificates. A private CA that devices import by hand is under no
+    such rule, and the device stacks studied enforce no maximum.
+  - An expired certificate stops TLS logging on every device at once, and on some firewalls it blocks traffic. A
+    renewal often needs someone other than the Woodshed admin to touch every device.
+  - The risk of a long life is a stolen key. Devices rarely check revocation, so a stolen leaf key stays trusted until
+    the CA is replaced. The leaf key and the CA key sit in the same 0600 folder, so whoever can take one can take
+    both; the answer to a compromise is **Replace CA**, whatever the lifetimes.
+  - Known edge (§10.5): some old 32-bit device stacks can't read dates after 2038-01-19, and a 20-year CA ends in 2046.
+- **Never changed silently.** Unlike the UI certificate, which regenerates itself, the TLS certificate changes only
+  on an explicit action.
+  - **Renew certificate** (Settings, or `woodshed tls renew`) makes a new leaf with a new key and the current host
+    names, signed by the same CA. Devices keep working, and new connections get the new leaf; open connections keep
+    theirs.
+  - **Replace CA** (Settings, behind a confirmation that says every device must import the new CA, or
+    `woodshed tls renew --new-ca`) makes a new CA and leaf.
+  - Every renewal is recorded in the events log and the export's `woodshed-events.log`, with both fingerprints.
+- **Warn banners, with the action `tls_renew` that opens Settings; neither ever renews on its own:**
+  - `tls_cert_expiring`: from 60 days before the leaf or the CA expires: "The TLS syslog certificate expires on
+    2036-11-13. Renew it, then nothing changes on your devices." For the CA, it says devices must import the new one.
+  - `tls_cert_names`: when the host's DNS names (hostname, search domains, `ui.extra_hostnames`) include one the leaf
+    doesn't cover, for example after a rename: "The TLS certificate doesn't name edge-logs.example.net. Devices that
+    check the server name will refuse it. Renew it to add the name." Address changes don't raise it, because the
+    senders that check names check DNS names.
+- **A user's own certificate** (`cert_file`, `key_file`): sent as given (the leaf and any chain in the file), and
+  re-read on Retry and on every Settings save, so a replaced file takes effect without a restart. Woodshed shows its fingerprint,
+  subject, issuer and expiry, raises the same expiry banner, and offers no CA download (`404`: get the CA from
+  whoever issued the certificate). It's checked when loaded: it must have EKU serverAuth (or no EKU) and a key the
+  allowed suites can use, or Settings gets a 400 saying what's missing.
+
+#### 10.3.4 Downloads, fingerprints and status
+- **The CA certificate** is a download in Settings, and `GET /api/tls/ca.pem` and `GET /api/tls/ca.der`. The guide says
+  which to use: PEM for devices where you paste the certificate as text into a terminal or a web form, DER (`.cer`)
+  for devices that want an uploaded binary file, and for the Windows certificate store.
+- **Fingerprints:** the SHA-256 of the CA and of the leaf, plus the CA's SHA-1 for devices that show only that. They're
+  shown in Settings, in `GET /api/tls`, and in `woodshed status`. The guide says to compare the device's view of the
+  CA with Settings before trusting it.
+- **Per-sender TLS stats:** so "my device can't connect" can be diagnosed, the listener counts per sender address:
+  - TLS connections, and the version and cipher of the last one;
+  - failed handshakes in the last 24 h (hourly buckets, like refusals), with the reason and time of the last one.
+
+  Reasons:
+
+  | Reason | Meaning |
+  |---|---|
+  | `cert_rejected` | the sender sent an alert about the certificate (`unknown_ca`, `bad_certificate`, `certificate_unknown`, `certificate_expired`; the alert is shown). Usually the CA isn't imported, or a name check failed |
+  | `version` | no TLS version in common (often a TLS 1.0-only sender while `allow_legacy_tls` is off) |
+  | `cipher` | no cipher suite in common |
+  | `not_tls` | the first bytes weren't a TLS handshake, usually plain syslog sent to the TLS port |
+  | `timeout` | no complete handshake within 10 s |
+  | `closed` | the sender closed the connection during the handshake, without an alert |
+  | `other` | anything else (the error text is kept) |
+
+  Devices with logs carry this on `/api/devices` as `tls`. Senders that failed before they ever got a message through
+  are listed by `GET /api/tls/failures` (at most 10,000 addresses tracked, least recently seen evicted, like
+  `/api/rejected`). A sender that's only failing appears there and nowhere else, so Settings → TLS links to it.
+
+#### 10.3.5 Framing and connections
+- **Framing** is exactly the TCP listener's: octet counting or LF per message, auto-detected; CRLF and NUL tolerated,
+  and a missing final LF at close kept as a message; `max_message_bytes` and `tcp_frame_timeout` as for TCP.
+- **Connections** share the TCP listener's pool and limits: `MaxConns`, `tcp_max_conns_per_source` (default 32; at
+  least 4 parallel connections per sender are needed) and `tcp_max_conns_per_prefix` count TCP and TLS together, and
+  eviction works the same way. Order across a sender's connections isn't assumed.
+- **Handshakes don't take slots.** A connection joins the pool only once its handshake completes. Handshakes in
+  progress have their own limits: at most 256 at once and 8 per sender address. Past those, a new connection is closed
+  at once and counted (reason `busy`). Each handshake has 10 s, then it's closed (`timeout`). A sender that
+  reconnects every 10 s while misconfigured therefore costs one short handshake each time and can't crowd out working
+  senders.
+- After a TLS listener closes a connection, nothing is written back: these senders never read. A close without
+  `close_notify`, or a plain FIN or RST, is normal.
+- The idle timeout is the TCP listener's: 24 h from 1.0.1 (§9).
+
+#### 10.3.6 Firewalls and installers
+The service account can't change the host firewall, and shouldn't be able to. So:
+- **Windows:**
+  - The MSI ships a rule "Woodshed syslog (TLS 6514)", TCP 6514 for `woodshed.exe` on all profiles, present but
+    **disabled**. `woodshed install` creates the same rule, disabled. Upgrades keep its state.
+  - `woodshed tls on` (as an administrator) turns the listener on in the config and enables the rule, setting its port
+    to `listeners.tls.port`. `woodshed tls off` turns both off.
+  - The UI switch turns the listener on without touching the rule. While the rule exists but is disabled, or its port
+    differs, there's a warn banner `tls_firewall` with the exact command to run in an administrator prompt
+    (`woodshed tls on`). The rule's state is read through the OS, which doesn't need administrator rights. The check
+    lives outside `internal/api`, which may not run programs.
+  - Portable mode has no rule. Windows' first-run "allow" dialog covers the program on every port, so 6514 works if
+    Allow was chosen.
+- **macOS:** the application firewall allows or blocks the program, not ports. If Woodshed already receives on 514,
+  6514 works too. `tls on` and `off` change only the listener. There's no banner.
+- **Linux:** the deb and rpm add nothing, as for 514.
+  - `woodshed tls on` (as root) also opens the port where it finds an active, known firewall: `ufw allow 6514/tcp`
+    when ufw is active, or `firewall-cmd --permanent --add-port=6514/tcp` and a reload when firewalld is running (the
+    default zone). It records what it added in `<data>/tls-firewall.json`.
+  - `woodshed tls off` removes only what it added. With neither firewall active (plain nftables or iptables rules,
+    say), it changes nothing and prints the commands to run.
+  - The service user can't read ufw or firewalld state reliably, so Linux gets no banner. Settings → TLS shows the
+    commands under "If devices can't connect".
+- `woodshed tls on|off|renew [--new-ca]|status` follow `lan-mode`: they need administrator rights, edit the config,
+  and ask a running service to apply it (or say it isn't running). `status` prints the listener, the fingerprints,
+  the expiry and the last failures.
+
+#### 10.3.7 API (docs/api.md → "1.1 (planned)")
+`GET /api/tls` (state, fingerprints, expiry, the firewall hint), `POST /api/tls/renew` (`{"new_ca": false}`),
+`GET /api/tls/ca.pem` and `ca.der`, `GET /api/tls/failures`, a `tls` object on each device in `/api/devices`,
+`listeners.tls` in `/api/settings`, the listener in `/api/status`, and the banners `tls_legacy`,
+`tls_cert_expiring`, `tls_cert_names` and `tls_firewall`.
+
+#### 10.3.8 Tests
+- Handshakes with Go clients over every allowed version and suite. Refused: 1.0/1.1 with the flag off, static-RSA
+  suites, a client that offers only CBC with 1.2. With the flag on, 1.0 and 1.1 with the CBC suites.
+- A client with no SNI, with a wrong SNI and with ALPN connects. A client that verifies the chain against the
+  downloaded CA and checks a DNS name from the SANs connects, and one checking a name that isn't there fails with
+  `cert_rejected` counted.
+- Certificate profile: CA and leaf fields exactly as in §10.3.3. A Go `x509.Verify` with the CA as the only root, for
+  each SAN name. The chain sent is leaf + CA.
+- Never silent: a fake clock past the 60-day mark and a changed hostname raise the banners and leave the files
+  byte-identical. Renew keeps `tls-ca.pem` byte-identical.
+- Framing parity: the TCP listener's framing table run over TLS.
+- Handshake limits: 300 stalled handshakes from many addresses leave established senders working; one address
+  can't hold more than 8. A stalled handshake is closed at 10 s and doesn't count against `MaxConns`.
+- Failure reasons: plain syslog to the TLS port (`not_tls`), an unknown-CA alert (`cert_rejected`), a version
+  mismatch (`version`).
+- The install smoke tests: the MSI's rule exists and is disabled after install and after an upgrade, `woodshed tls on`
+  enables it and a TLS message arrives from another process, and `off` disables it. On Linux with ufw active, `tls on`
+  then `off` leaves the rules as they were.
+- The default config: the existing no-dial tests still pass, and no TLS key files exist until TLS is turned on.
+
+#### 10.3.9 Doc wording
+Apply this with the implementation, as for §10.2.
+- **docs/user-guide.md**, a new section after "Point a device at it":
+  > **Sending syslog over TLS.** Use this when a device should encrypt its logs on the way. It's off until you turn
+  > it on.
+  > 1. In **Settings → Listeners**, turn on **Syslog over TLS** (TCP port 6514). On Windows, also run
+  >    `woodshed tls on` once in an administrator prompt, so the firewall lets devices in; Settings shows the command
+  >    if it's needed.
+  > 2. Download Woodshed's **CA certificate** from the same section: **PEM** if the device wants the certificate as
+  >    text to paste, **DER (.cer)** if it wants a file to upload.
+  > 3. On the device, import it as a **trusted CA certificate** (often called a trust anchor or a CA
+  >    certificate). Compare the fingerprint the device shows with the one in Settings.
+  > 4. Point the device's syslog at this computer, **TCP port 6514 with TLS** (the setting may be called secure,
+  >    encrypted or TLS syslog).
+  > 5. If the device can check the server's name, give it one of the DNS names Settings lists for the certificate,
+  >    not an IP address: many devices check names only. Then check on the Dashboard that messages arrive.
+  >
+  > **Before you turn on TCP or TLS logging on a firewall:** some firewalls block traffic through them when a TCP or
+  > TLS syslog server can't be reached, or its certificate fails, unless a "permit traffic when the log host is down"
+  > option is set. Check that option first.
+  >
+  > If a device can't connect, **Settings → TLS** shows each sender's failed handshakes and why: the CA isn't trusted,
+  > there's no TLS version in common, or plain syslog was sent to the TLS port.
+- **docs/install.md**, a section "TLS syslog: firewall and certificate" with §10.3.6 per OS, `woodshed tls
+  on|off|renew|status`, the files in the data folder, renewing (the CA stays, so devices need nothing) and replacing
+  the CA (every device must import the new one).
+- **FAQ.md**, "Why port 514, and why UDP?" gains: "For encrypted syslog, turn on **Syslog over TLS** (TCP 6514); see
+  the user guide."
+- **README.md**: the "What it isn't" paragraph drops TLS syslog from "planned after 1.0", and Features gains "Optional
+  syslog over TLS (TCP 6514) with its own CA, so devices import one certificate that renewals don't change."
+- Device-specific commands stay out of the repo.
+
+### 10.4 Questions settled for 1.1 (decided, 2026-11-13)
 1. No regex terms inside `syntax=terms` in 1.1; mixing the two stays a 400.
 2. The live tail gets neither `syntax=terms` nor the new exclude filters in 1.1.
 3. No filter for "(none)" (lines with no hostname or program/tag) yet; the panel row stays unclickable.
@@ -710,6 +967,18 @@ Editing them on main now would make them wrong for 1.0 users, so the exact wordi
 7. The other 1.x roadmap items stay unordered.
 8. The 1.3 SNMP poller will be a second package that connects out on its own; §10.2's allowlist test and its "only
    `internal/updatecheck`" wording get amended then.
+
+### 10.5 Open questions (TLS)
+1. Cap the CA and leaf at 2038-01-19 for old 32-bit device stacks? That would make the CA about 11 years, not 20.
+2. Does any TLS 1.0-only sender need static-RSA suites (`AES128-SHA`)? The study couldn't confirm what the unlicensed
+   case offers. 1.1 leaves them out; adding them behind `allow_legacy_tls` is a one-line change if a real sender
+   needs it.
+3. To confirm in the install smoke tests: that the WiX firewall extension in use can ship a rule disabled, and that
+   the virtual service account can read the rule's state for the `tls_firewall` banner.
+4. A Linux firewall hint the service can trust (it can't read ufw or firewalld state as its own user), or is the
+   Settings text enough?
+5. An RSA-3072 (or ECDSA) CA option for sites that don't need the oldest senders.
+6. Optional client-certificate verification (`client_ca`), for senders that support mutual TLS: later, if asked for.
 
 ## 11. Open questions
 1. Where the repo lives. The answer given was the internal GHE, which conflicts with "open source on
