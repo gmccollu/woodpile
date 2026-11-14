@@ -6,7 +6,8 @@ import { SseParser, type SseEvent } from './sse';
 
 // ---------- Types (docs/api.md) ----------
 
-export type Proto = 'udp' | 'tcp';
+/** "tls" from 1.1: the TLS syslog listener (docs/api.md → 1.1 (planned) → TLS syslog listener). */
+export type Proto = 'udp' | 'tcp' | 'tls';
 
 export interface Listener {
   proto: Proto;
@@ -29,8 +30,18 @@ export interface Listener {
 
 export type BannerLevel = 'error' | 'warn' | 'info';
 
-export type BannerKind = 'listener_bind' | 'writes_paused' | 'low_disk' | 'ui_port_busy' | 'udp_buffer_small';
-export type BannerAction = '' | 'retry_listeners';
+export type BannerKind =
+  | 'listener_bind'
+  | 'writes_paused'
+  | 'low_disk'
+  | 'ui_port_busy'
+  | 'udp_buffer_small'
+  | 'tls_legacy'
+  | 'tls_cert_expiring'
+  | 'tls_cert_names'
+  | 'tls_firewall';
+/** tls_renew opens Settings → Syslog over TLS; it never renews by itself. */
+export type BannerAction = '' | 'retry_listeners' | 'tls_renew';
 
 export interface Banner {
   /** Unknown future kinds are shown like any other banner. */
@@ -114,6 +125,21 @@ export interface Device {
   blocked: boolean;
   /** On a PATCH that unblocked the device's own address: the broader blocklist entry that still covers it. */
   blocked_by?: string;
+  /** TLS syslog stats (1.1); null until the device has tried TLS. Older servers omit it. */
+  tls?: DeviceTls | null;
+}
+
+/** Why a TLS handshake failed (SPEC §10.3.4). Unknown future reasons are shown as given. */
+export type TlsFailureReason = 'cert_rejected' | 'version' | 'cipher' | 'not_tls' | 'timeout' | 'closed' | 'busy' | 'other';
+
+export interface DeviceTls {
+  connections_24h: number;
+  /** The last successful connection's, such as "TLS 1.3"; "" if none succeeded. */
+  version: string;
+  cipher: string;
+  last_connected: string | null;
+  failures_24h: number;
+  last_failure: { time: string; reason: TlsFailureReason | (string & {}); detail: string } | null;
 }
 
 export type DevicePatch = Partial<Pick<Device, 'name' | 'group' | 'hidden' | 'blocked'>>;
@@ -267,10 +293,20 @@ export interface ListenerSettings {
   port: number;
 }
 
+/** listeners.tls (1.1): cert_file and key_file both empty means Woodshed's own CA. */
+export interface TlsListenerSettings extends ListenerSettings {
+  /** Also accept TLS 1.0 and 1.1, for older senders. */
+  allow_legacy_tls: boolean;
+  cert_file: string;
+  key_file: string;
+}
+
 export interface Settings {
   listeners: {
     udp: ListenerSettings;
     tcp: ListenerSettings;
+    /** Older servers omit it. */
+    tls?: TlsListenerSettings;
     allowlist: string[];
     /** Senders refused at the listener (IPs or CIDRs); checked before the allowlist and wins. */
     blocklist: string[];
@@ -295,6 +331,56 @@ export interface Settings {
     trusted_hosts: string[];
   };
   quiet: { quiet_after_seconds: number; offline_after_seconds: number };
+}
+
+// ---------- TLS (docs/api.md → 1.1 (planned) → TLS state) ----------
+
+export interface TlsCa {
+  subject: string;
+  not_before: string;
+  not_after: string;
+  /** "AB:CD:…", upper-case hex pairs of the DER certificate. */
+  sha256: string;
+  sha1: string;
+}
+
+export interface TlsCert {
+  subject: string;
+  issuer: string;
+  not_before: string;
+  not_after: string;
+  sha256: string;
+  dns_names: string[];
+  ip_addresses: string[];
+  /** Host DNS names the certificate doesn't cover (drives the tls_cert_names banner). */
+  missing_names: string[];
+}
+
+export type TlsFirewallState = 'ok' | 'missing' | 'disabled' | 'wrong_port' | 'unknown';
+
+export interface TlsState {
+  enabled: boolean;
+  port: number;
+  /** "woodshed": its own CA; "file": cert_file and key_file. */
+  source: 'woodshed' | 'file';
+  allow_legacy_tls: boolean;
+  /** null with source "file", and until TLS is first turned on. */
+  ca: TlsCa | null;
+  /** null until a certificate exists. */
+  cert: TlsCert | null;
+  /** command is "" except on Windows, where it's the command to run as an administrator. */
+  firewall: { state: TlsFirewallState | (string & {}); command: string };
+}
+
+export interface TlsFailure {
+  ip: string;
+  count_24h: number;
+  last_seen: string;
+  reason: TlsFailureReason | (string & {});
+  /** The TLS error text or the alert. */
+  detail: string;
+  /** Set when the sender is also a known device. */
+  device_id: string;
 }
 
 export type DeletionReason = 'age' | 'cap' | 'low_disk';
@@ -613,6 +699,48 @@ export interface StorageEstimate {
 /** The retention estimate for a cap that hasn't been saved yet (docs/api.md). */
 export const getStorageEstimate = (retentionBytes: number, signal?: AbortSignal) =>
   request<StorageEstimate>('GET', `/api/storage/estimate${query({ retention_bytes: Math.round(retentionBytes) })}`, undefined, signal);
+
+export const getTls = () => request<TlsState>('GET', '/api/tls');
+/** new_ca: also replace the CA, so every device must import the new one. 409 with source "file". */
+export const renewTls = (newCa: boolean) => request<TlsState>('POST', '/api/tls/renew', { new_ca: newCa });
+export const getTlsFailures = () => request<TlsFailure[]>('GET', '/api/tls/failures');
+
+export type CaFormat = 'pem' | 'der';
+export const CA_FILE: Record<CaFormat, string> = { pem: 'woodshed-ca.pem', der: 'woodshed-ca.cer' };
+
+/**
+ * Downloads the CA certificate. It's fetched with the session header and saved from the
+ * response (docs/api.md), so no download ticket is needed. Throws ApiError (404: none yet,
+ * or the server uses your own certificate).
+ */
+export async function downloadCa(format: CaFormat): Promise<void> {
+  const path = `/api/tls/ca.${format}`;
+  let res: Response;
+  try {
+    res = await transport.fetch(path, { headers: { ...authHeaders() } });
+  } catch (e) {
+    throw new ApiError(0, `no connection: ${(e as Error).message}`);
+  }
+  if (!res.ok) {
+    let msg = `${res.status} ${res.statusText}`;
+    try {
+      msg = ((await res.json()) as { error?: string }).error || msg;
+    } catch {
+      /* not JSON */
+    }
+    if (res.status === 401) unauthorized();
+    throw new ApiError(res.status, msg);
+  }
+  const blob = await res.blob();
+  const name = /filename="([^"]+)"/.exec(res.headers.get('Content-Disposition') ?? '')?.[1] ?? CA_FILE[format];
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
 
 export interface LiveHandlers {
   onMessage(line: LogLine): void;
