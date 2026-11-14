@@ -2,6 +2,8 @@ package config
 
 import (
 	"encoding/json"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -309,5 +311,22 @@ func TestValidateCertPair(t *testing.T) {
 				t.Errorf("%s: %s = %q, want %q", tc.name, k, got[k], sub)
 			}
 		}
+	}
+}
+
+// Read never creates the file (it's used on another Woodshed's config).
+func TestReadDoesNotCreate(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sub", FileName)
+	if _, err := Read(path); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("missing file: %v", err)
+	}
+	if _, err := os.Stat(filepath.Dir(path)); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("Read created %s", filepath.Dir(path))
+	}
+	os.MkdirAll(filepath.Dir(path), 0o750)
+	os.WriteFile(path, []byte("[listeners.udp]\nport = 15514\n[ui]\nport = 18514\n"), 0o640)
+	c, err := Read(path)
+	if err != nil || c.Listeners.UDP.Port != 15514 || !c.Listeners.UDP.Enabled || c.Listeners.TCP.Port != DefaultSyslogPort || c.UI.Port != 18514 {
+		t.Errorf("read %+v %v", c.Listeners, err)
 	}
 }

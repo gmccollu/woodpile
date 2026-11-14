@@ -77,6 +77,13 @@ func TestFind(t *testing.T) {
 	if !ok || info.Kind != KindService || info.PID != 4210 || !info.UIKnown || info.UIListening || info.UIError == "" {
 		t.Errorf("service: %+v %v", info, ok)
 	}
+	// Its config and listeners come from the state file too.
+	listening := writeState(t, t.TempDir(), `{"pid": 4210, "config": "/etc/woodshed/woodshed.toml", "ui": {"listening": true, "url": "http://localhost:8514/"},
+		"listeners": [{"proto": "udp", "addr": "0.0.0.0", "port": 514, "ok": true}, {"proto": "tcp", "addr": "0.0.0.0", "port": 1514, "ok": false}]}`)
+	info, ok = Find(ctx, Options{StateFiles: []string{listening}, SelfPID: 1, query: query(true, 4210)})
+	if !ok || info.Config != "/etc/woodshed/woodshed.toml" || len(info.Listeners) != 2 || info.Listeners[0] != (Listener{"udp", 514}) || info.Listeners[1] != (Listener{"tcp", 1514}) {
+		t.Errorf("service listeners: %+v", info)
+	}
 	// The service, state file unreadable: kind and PID only.
 	info, ok = Find(ctx, Options{StateFiles: []string{"/nonexistent/woodshed.state.json"}, query: query(true, 4210)})
 	if !ok || info.Kind != KindService || info.PID != 4210 || info.UIKnown {

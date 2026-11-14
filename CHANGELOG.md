@@ -14,6 +14,9 @@ and versions follow [Semantic Versioning](https://semver.org/). Release notes on
   explicitly on every TCP connection, so connections to a vanished sender close within minutes.
 - The install guide and user guide now warn that some firewalls block traffic while their TCP syslog server is
   unreachable, unless a "permit traffic when the log host is down" option is set; UDP has no such risk.
+- A portable copy or `woodshed run` no longer warns that it "will compete for ports" with the installed service when
+  it uses other ports. It checks the service's actual ports (its run-state file or config, when readable, else its
+  defaults), names the ports that clash, and says "may" when it could only compare with the defaults.
 
 ## [1.0.0] - 2026-11-13
 

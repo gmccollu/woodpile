@@ -3,11 +3,13 @@ package server
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -27,6 +29,9 @@ type peerCache struct {
 	info peer.Info
 	ok   bool
 	find func(context.Context, peer.Options) (peer.Info, bool) // peer.Find; tests replace it
+	// readConfig reads the service's config without creating it (config.Read;
+	// tests replace it).
+	readConfig func(path string) (config.Config, error)
 }
 
 // peer returns another running Woodshed (the installed service, or a copy
@@ -121,11 +126,131 @@ func peerBanners(ls []api.Listener, p peer.Info, ok bool, uiPort int, uiListenin
 }
 
 // PeerWarning is the startup warning for `woodshed run` and portable mode when
-// another Woodshed is running ("" if none). It's logged too. The service itself
-// never warns about itself.
+// the installed service is running and this copy's ports overlap with its ports
+// ("" otherwise). It's logged too. The service itself never warns about itself.
+//
+// The service's ports come from its run-state file and its config, when this
+// user can read them (often not: they're the service's); otherwise they're the
+// defaults, and the warning says "may".
 func (s *Server) PeerWarning(ctx context.Context) string {
 	p, ok := s.be.peer(ctx)
 	if !ok || p.Kind != peer.KindService {
+		return ""
+	}
+	read := s.be.peers.readConfig
+	if read == nil {
+		read = config.Read
+	}
+	theirs, known := servicePorts(p, read)
+	mine := s.ownPorts()
+	msg := peerWarningText(p, mine.overlap(theirs), known)
+	if msg == "" {
+		which := "its ports"
+		if !known {
+			which = "its default ports (its config isn't readable)"
+		}
+		s.log.Info("the Woodshed service is running; this copy's ports differ from "+which,
+			"this_copy", mine.String(), "service", theirs.String())
+		return ""
+	}
+	s.log.Warn(msg)
+	return msg
+}
+
+// portSet is the syslog and UI ports a Woodshed uses (0: off, or a port the OS
+// picks).
+type portSet struct{ UDP, TCP, UI int }
+
+// overlap lists the ports in both p and q ("UDP 514").
+func (p portSet) overlap(q portSet) []string {
+	var out []string
+	for _, x := range []struct {
+		name string
+		a, b int
+	}{{"UDP", p.UDP, q.UDP}, {"TCP", p.TCP, q.TCP}, {"UI", p.UI, q.UI}} {
+		if x.a != 0 && x.a == x.b {
+			out = append(out, fmt.Sprintf("%s %d", x.name, x.a))
+		}
+	}
+	return out
+}
+
+func (p portSet) String() string {
+	return fmt.Sprintf("UDP %d, TCP %d, UI %d", p.UDP, p.TCP, p.UI)
+}
+
+func syslogPorts(l config.Listeners) (udp, tcp int) {
+	if l.UDP.Enabled {
+		udp = l.UDP.Port
+	}
+	if l.TCP.Enabled {
+		tcp = l.TCP.Port
+	}
+	return udp, tcp
+}
+
+// ownPorts is this copy's ports: the configured syslog ports, and the UI's
+// bound port once it listens (portable mode may have moved it), else the
+// configured one.
+func (s *Server) ownPorts() portSet {
+	cfg := s.be.config()
+	var p portSet
+	p.UDP, p.TCP = syslogPorts(cfg.Listeners)
+	p.UI = cfg.UI.Port
+	if st := s.api.State(); st.Listening {
+		if _, port, err := net.SplitHostPort(st.Addr); err == nil {
+			if n, err := strconv.Atoi(port); err == nil {
+				p.UI = n
+			}
+		}
+	}
+	return p
+}
+
+// servicePorts returns the service peer p's ports, and whether they're known
+// (from its run-state file or its config) rather than its defaults. Its config
+// is the one its run-state file names, else the default path; read must not
+// create it.
+func servicePorts(p peer.Info, read func(string) (config.Config, error)) (portSet, bool) {
+	def := config.Default()
+	var ps portSet
+	ps.UDP, ps.TCP = syslogPorts(def.Listeners)
+	ps.UI = def.UI.Port
+	known := false
+	path := p.Config
+	if path == "" {
+		path = config.DefaultConfigPath()
+	}
+	if c, err := read(path); err == nil {
+		ps.UDP, ps.TCP = syslogPorts(c.Listeners)
+		ps.UI = c.UI.Port
+		known = true
+	}
+	if len(p.Listeners) > 0 { // what it's actually running with
+		ps.UDP, ps.TCP = 0, 0
+		for _, l := range p.Listeners {
+			switch l.Proto {
+			case "udp":
+				ps.UDP = l.Port
+			case "tcp":
+				ps.TCP = l.Port
+			}
+		}
+		known = true
+	}
+	if u, err := url.Parse(p.UIURL); err == nil && u.Port() != "" {
+		if n, err := strconv.Atoi(u.Port()); err == nil {
+			ps.UI = n
+		}
+	}
+	return ps, known
+}
+
+// peerWarningText is PeerWarning's text for the ports both use ("" if none):
+// "will compete" when the service's ports are known, "may" when they're its
+// defaults.
+func peerWarningText(p peer.Info, overlap []string, known bool) string {
+	if len(overlap) == 0 {
 		return ""
 	}
 	msg := "The Woodshed service is installed and running"
@@ -135,7 +260,19 @@ func (s *Server) PeerWarning(ctx context.Context) string {
 	case p.PID != 0:
 		msg += fmt.Sprintf(" (PID %d)", p.PID)
 	}
-	msg += ". This copy will compete with it for ports; use the service, or pick other ports."
-	s.log.Warn(msg)
-	return msg
+	ports := joinAnd(overlap)
+	if known {
+		msg += ". This copy will compete with it for " + ports
+	} else {
+		msg += ". This copy may compete with it for " + ports + " (the service's default ports; its config isn't readable here)"
+	}
+	return msg + "; use the service, or pick other ports."
+}
+
+// joinAnd joins "a", "b", "c" as "a, b and c".
+func joinAnd(s []string) string {
+	if len(s) <= 1 {
+		return strings.Join(s, "")
+	}
+	return strings.Join(s[:len(s)-1], ", ") + " and " + s[len(s)-1]
 }

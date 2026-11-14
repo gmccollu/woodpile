@@ -39,6 +39,17 @@ type Info struct {
 	UIKnown     bool
 	UIListening bool
 	UIError     string
+	// Config is the config file the peer runs with, and Listeners its syslog
+	// listeners, from its run-state file ("" and nil when that wasn't readable,
+	// or before its listeners started).
+	Config    string
+	Listeners []Listener
+}
+
+// Listener is one of a peer's enabled syslog listeners.
+type Listener struct {
+	Proto string `json:"proto"` // "udp" or "tcp"
+	Port  int    `json:"port"`
 }
 
 // Options configures Find. Zero fields take the real thing.
@@ -77,6 +88,7 @@ func Find(ctx context.Context, o Options) (Info, bool) {
 			if pid == 0 || st.PID == pid {
 				info.PID, info.UIURL = st.PID, st.UI.URL
 				info.UIKnown, info.UIListening, info.UIError = true, st.UI.Listening, st.UI.Error
+				info.Config, info.Listeners = st.Config, st.Listeners
 				break
 			}
 		}
@@ -84,7 +96,8 @@ func Find(ctx context.Context, o Options) (Info, bool) {
 	}
 	for _, st := range states {
 		if st.PID > 0 && st.PID != o.SelfPID && o.alive(st.PID) {
-			return Info{Kind: KindCopy, PID: st.PID, UIURL: st.UI.URL, UIKnown: true, UIListening: st.UI.Listening, UIError: st.UI.Error}, true
+			return Info{Kind: KindCopy, PID: st.PID, UIURL: st.UI.URL, UIKnown: true, UIListening: st.UI.Listening, UIError: st.UI.Error,
+				Config: st.Config, Listeners: st.Listeners}, true
 		}
 	}
 	return Info{}, false
@@ -93,12 +106,14 @@ func Find(ctx context.Context, o Options) (Info, bool) {
 // runState is the part of server.RunState read here (the server package
 // imports this one).
 type runState struct {
-	PID int `json:"pid"`
-	UI  struct {
+	PID    int    `json:"pid"`
+	Config string `json:"config"`
+	UI     struct {
 		Listening bool   `json:"listening"`
 		URL       string `json:"url"`
 		Error     string `json:"error"`
 	} `json:"ui"`
+	Listeners []Listener `json:"listeners"`
 }
 
 func readStates(paths []string) []runState {

@@ -229,6 +229,17 @@ func Load(path string) (Config, error) {
 	return c, err
 }
 
+// Read reads the config at path like Load, but never creates it: a missing or
+// unreadable file is an error (errors.Is fs.ErrNotExist or fs.ErrPermission).
+// For looking at another Woodshed's config.
+func Read(path string) (Config, error) {
+	b, err := atomicfile.ReadFile(path)
+	if err != nil {
+		return Config{}, fmt.Errorf("config: %w", err)
+	}
+	return decode(path, b, Default())
+}
+
 // LoadOrCreate is Load with explicit defaults, and reports whether it created the file.
 func LoadOrCreate(path string, def Config) (Config, bool, error) {
 	b, err := atomicfile.ReadFile(path)
@@ -243,6 +254,12 @@ func LoadOrCreate(path string, def Config) (Config, bool, error) {
 	if err != nil {
 		return Config{}, false, fmt.Errorf("config: %w", err)
 	}
+	c, err := decode(path, b, def)
+	return c, false, err
+}
+
+// decode parses a config file's content over def.
+func decode(path string, b []byte, def Config) (Config, error) {
 	c := def.Clone()
 	c.Listeners.Allowlist = nil // a file without the key gets [] from Normalize
 	c.Listeners.Blocklist = nil
@@ -250,12 +267,12 @@ func LoadOrCreate(path string, def Config) (Config, bool, error) {
 		var de *toml.DecodeError
 		if errors.As(err, &de) {
 			row, col := de.Position()
-			return Config{}, false, fmt.Errorf("config: %s:%d:%d: %s", path, row, col, de.Error())
+			return Config{}, fmt.Errorf("config: %s:%d:%d: %s", path, row, col, de.Error())
 		}
-		return Config{}, false, fmt.Errorf("config: %s: %w", path, err)
+		return Config{}, fmt.Errorf("config: %s: %w", path, err)
 	}
 	c.Normalize()
-	return c, false, nil
+	return c, nil
 }
 
 const header = `# Woodshed configuration. The service reads it at start; the web UI's Settings page
