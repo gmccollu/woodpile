@@ -446,3 +446,30 @@ func parseIfInet6(sc *bufio.Scanner) map[netip.Addr]uint32 {
 	}
 	return out
 }
+
+// HostIdentity is what the TLS syslog certificate names (SPEC §10.3.3): the UI
+// certificate's identity (identityFrom) with ui.extra_hostnames, plus the primary
+// DNS name for its CN: the hostname qualified with the first DNS search domain if
+// there is one, otherwise the hostname ("" when the hostname is unknown). It makes
+// no network calls.
+func HostIdentity(extras []string) (host, primary string, names []string, ips []netip.Addr, err error) {
+	id, err := localIdentity()
+	if err != nil {
+		return "", "", nil, nil, err
+	}
+	id = id.withExtras(extras)
+	return id.Host, primaryName(id.Host, searchDomains()), id.Names, id.IPs, nil
+}
+
+// primaryName is the first search-domain name, else the hostname.
+func primaryName(host string, domains []string) string {
+	if host == "" || strings.Contains(host, ".") {
+		return host
+	}
+	for _, d := range domains {
+		if n := host + "." + d; config.ValidDNSName(n) {
+			return n
+		}
+	}
+	return host
+}

@@ -55,6 +55,9 @@ type backend struct {
 	// ln is set once the listeners start (nil before Run).
 	ln atomic.Pointer[listen.Server]
 
+	// tlsc is the TLS listener's certificate and firewall state (tls.go).
+	tlsc *tlsSide
+
 	cfgMu sync.RWMutex
 	cfg   config.Config
 
@@ -261,6 +264,7 @@ func (b *backend) listenerState(ctx context.Context, cfg config.Config) (listen.
 	}
 	u := b.store.Usage()
 	banners := append(buildBanners(ls.Listeners, u, cfg.Storage.DataDir), b.startupBanners...)
+	banners = append(banners, b.tlsBanners(cfg, b.now())...)
 	if ban := udpBufferBanner(runtime.GOOS, ls.UDPRcvbufBytes, ls.UDPRcvbufRequestedBytes); ban != nil {
 		banners = append(banners, *ban)
 	}
@@ -299,6 +303,7 @@ func (b *backend) fillRunState(rs *RunState) {
 	}
 	rs.Banners = append([]api.Banner{}, banners...)
 	api.SortBanners(rs.Banners)
+	rs.TLS = b.runStateTLS(cfg)
 }
 
 // udpBufferMin is the UDP receive buffer below which a burst is likely to
@@ -547,6 +552,7 @@ func (b *backend) Devices(ctx context.Context) ([]api.Device, error) {
 		out[i] = withLive(d, live, rates, now, q)
 	}
 	b.blocker().mark(out)
+	b.markTLS(out)
 	return out, nil
 }
 
@@ -634,6 +640,7 @@ func (b *backend) UpdateDevice(ctx context.Context, id string, p api.DevicePatch
 	rs := rates{from: from, counts: map[string]index.Counts{d.ID: c}}
 	out := []api.Device{withLive(d, b.live.subset([]string{d.ID}, now), rs, now, b.config().Quiet)}
 	b.blocker().mark(out)
+	b.markTLS(out)
 	out[0].BlockedBy = blockedBy
 	return out[0], nil
 }
@@ -685,6 +692,12 @@ func (b *backend) SaveSettings(ctx context.Context, in api.Settings, ifMatch str
 	if errs := next.Validate(&cur); len(errs) > 0 {
 		return api.Settings{}, &api.ValidationError{Fields: errs}
 	}
+	// The TLS certificate: made the first time TLS is turned on (before the
+	// response), a user's files re-read on every save.
+	if err := b.prepareTLS(next.Listeners.TLS); err != nil {
+		_ = b.prepareTLS(cur.Listeners.TLS)
+		return api.Settings{}, fmt.Errorf("prepare the TLS certificate: %w", err)
+	}
 	if err := config.Save(b.cfgPath, next); err != nil {
 		return api.Settings{}, fmt.Errorf("save the config: %w", err)
 	}
@@ -714,13 +727,15 @@ func (b *backend) SaveSettings(ctx context.Context, in api.Settings, ifMatch str
 }
 
 func listenersEqual(a, b config.Listeners) bool {
-	if a.UDP != b.UDP || a.TCP != b.TCP || a.UDPRcvbufBytes != b.UDPRcvbufBytes || a.MaxMessageBytes != b.MaxMessageBytes {
+	if a.UDP != b.UDP || a.TCP != b.TCP || a.TLS != b.TLS || a.UDPRcvbufBytes != b.UDPRcvbufBytes || a.MaxMessageBytes != b.MaxMessageBytes {
 		return false
 	}
 	return slices.Equal(a.Allowlist, b.Allowlist) && slices.Equal(a.Blocklist, b.Blocklist)
 }
 
 func (b *backend) RetryListeners(ctx context.Context) error {
+	// A user's certificate files are re-read, so a replaced pair takes effect.
+	_ = b.prepareTLS(b.config().Listeners.TLS)
 	if ln := b.ln.Load(); ln != nil {
 		ln.Retry()
 	}

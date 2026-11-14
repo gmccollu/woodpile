@@ -141,6 +141,14 @@ func New(o Options) *Manager {
 	return &Manager{dir: o.DataDir, now: o.Now, identity: o.Identity, userCert: o.CertFile, userKey: o.KeyFile}
 }
 
+// Recheck makes the next Status read the host's names again (after a Settings
+// save changed ui.extra_hostnames, say).
+func (m *Manager) Recheck() {
+	m.mu.Lock()
+	m.idChecked = time.Time{}
+	m.mu.Unlock()
+}
+
 // SetFiles switches between a user's own pair and Woodshed's CA (a Settings
 // save); call Load after.
 func (m *Manager) SetFiles(certFile, keyFile string) {

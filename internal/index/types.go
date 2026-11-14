@@ -142,6 +142,9 @@ const (
 	// KindRetentionCap: at the current rate the size cap keeps fewer days than
 	// retention_days (at most once a day).
 	KindRetentionCap Kind = "retention_cap"
+	// KindTLS: the TLS syslog certificate was created, renewed or its CA
+	// replaced (with the fingerprints).
+	KindTLS Kind = "tls"
 )
 
 // Source says what an event is about, for readers that act on events (export
@@ -154,16 +157,19 @@ const (
 	SourceService     Source = "service"
 	SourceListenerUDP Source = "listener/udp"
 	SourceListenerTCP Source = "listener/tcp"
+	SourceListenerTLS Source = "listener/tls"
 )
 
-// ListenerSource is the source of a listener's events, for proto "udp" or "tcp"
-// ("" for anything else).
+// ListenerSource is the source of a listener's events, for proto "udp", "tcp" or
+// "tls" ("" for anything else).
 func ListenerSource(proto string) Source {
 	switch proto {
 	case "udp":
 		return SourceListenerUDP
 	case "tcp":
 		return SourceListenerTCP
+	case "tls":
+		return SourceListenerTLS
 	}
 	return ""
 }

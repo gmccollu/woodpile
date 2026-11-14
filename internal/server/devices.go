@@ -22,6 +22,7 @@ func (b *backend) QueryDevices(ctx context.Context, q api.DeviceQuery) (api.Devi
 	if (q.Sort == "" || q.Sort == "rate") && q.Q == "" {
 		page, err := b.devicesByLiveRate(ctx, q, now, k)
 		k.mark(page.Devices)
+		b.markTLS(page.Devices)
 		return page, err
 	}
 	iq := index.DeviceQuery{
@@ -61,6 +62,7 @@ func (b *backend) QueryDevices(ctx context.Context, q api.DeviceQuery) (api.Devi
 		out.Devices = append(out.Devices, withLive(d, live, rates, now, quiet))
 	}
 	k.mark(out.Devices)
+	b.markTLS(out.Devices)
 	return out, nil
 }
 

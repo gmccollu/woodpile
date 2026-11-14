@@ -189,6 +189,10 @@ func Open(cfgPath string, opts Options) (*Server, error) {
 		exports: s.exports,
 	})
 	s.be.peers.find = opts.FindPeer
+	s.be.tlsc = newTLSSide(dataDir, cfg.Listeners.TLS, time.Now, func() []string { return s.be.config().UI.ExtraHostnames })
+	// Turned on in the config (by `woodshed tls on`, or by hand) while stopped:
+	// the CA and the certificate are made now. A failure shows on the listener.
+	_ = s.be.prepareTLS(cfg.Listeners.TLS)
 	if sharedBanner != nil {
 		s.be.startupBanners = append(s.be.startupBanners, *sharedBanner)
 		s.be.serviceEvent(index.LevelError, index.KindError, sharedBanner.Text)
@@ -295,9 +299,10 @@ func (s *Server) Run(ctx context.Context) error {
 		fmt.Sprintf("Woodshed %s (%s) started on %s/%s; data folder %s.", s.opts.Version, s.opts.Commit, runtime.GOOS, runtime.GOARCH, cfg.Storage.DataDir))
 
 	ln, err := listen.Start(cfg.Listeners, listen.Options{
-		Sink:    s.be.sink,
-		OnEvent: s.be.listenEvent,
-		Logger:  log,
+		Sink:           s.be.sink,
+		OnEvent:        s.be.listenEvent,
+		Logger:         log,
+		TLSCertificate: s.be.tlsc.certs.Certificate,
 	})
 	if err != nil {
 		// Only an invalid allowlist gets here, and Validate already checked it.

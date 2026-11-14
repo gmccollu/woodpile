@@ -60,6 +60,8 @@ func ClassifyEvent(e index.Event) (EventClass, string) {
 		proto = "udp"
 	case index.SourceListenerTCP:
 		proto = "tcp"
+	case index.SourceListenerTLS:
+		proto = "tls"
 	case index.SourceService:
 		switch e.Kind {
 		case index.KindStart:

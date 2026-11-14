@@ -202,7 +202,7 @@ func sameShape(t *testing.T, where string, doc, got any, optional map[string]boo
 
 func TestRoutesMatchDocExamples(t *testing.T) {
 	examples := docExamples(t)
-	for _, route := range []string{"/api/status", "/api/stats", "/api/devices", "/api/groups", "/api/settings", "/api/rejected", "/api/storage/history", "/api/storage/estimate"} {
+	for _, route := range []string{"/api/status", "/api/stats", "/api/devices", "/api/groups", "/api/settings", "/api/rejected", "/api/storage/history", "/api/storage/estimate", "/api/tls", "/api/tls/failures"} {
 		if _, ok := examples[route]; !ok {
 			t.Fatalf("no example for %s in docs/api.md", route)
 		}

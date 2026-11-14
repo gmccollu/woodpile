@@ -121,6 +121,9 @@ type Backend interface {
 	// mode changes, password changes, certificate generation and login
 	// lockouts. Errors are logged and otherwise ignored.
 	RecordEvent(ctx context.Context, e Event) error
+
+	// The TLS syslog listener (tls.go).
+	TLSBackend
 }
 
 // ErrNotFound is returned (possibly wrapped) by UpdateDevice, Context and the
@@ -177,7 +180,7 @@ type Status struct {
 
 // Listener is one syslog listener's state.
 type Listener struct {
-	Proto  string `json:"proto"` // "udp" or "tcp"
+	Proto  string `json:"proto"` // "udp", "tcp" or "tls"
 	Addr   string `json:"addr"`
 	Port   int    `json:"port"`
 	OK     bool   `json:"ok"`
@@ -270,6 +273,8 @@ type Device struct {
 	MsgsPerMin  int64  `json:"msgs_per_min"`
 	TotalMsgs   int64  `json:"total_msgs"`
 	BytesOnDisk int64  `json:"bytes_on_disk"`
+	// TLS is the device's TLS counts, nil until it has tried TLS (since start).
+	TLS *DeviceTLS `json:"tls"`
 }
 
 // DevicePatch is the body of PATCH /api/devices/{id}; nil fields are left alone.
@@ -292,10 +297,11 @@ type Settings struct {
 
 // ListenersSettings holds the syslog listener settings.
 type ListenersSettings struct {
-	UDP       ListenerSettings `json:"udp"`
-	TCP       ListenerSettings `json:"tcp"`
-	Allowlist []string         `json:"allowlist"`
-	Blocklist []string         `json:"blocklist"`
+	UDP       ListenerSettings    `json:"udp"`
+	TCP       ListenerSettings    `json:"tcp"`
+	TLS       TLSListenerSettings `json:"tls"`
+	Allowlist []string            `json:"allowlist"`
+	Blocklist []string            `json:"blocklist"`
 	// New-sender limits (the device_limit banner).
 	MaxDevices          int `json:"max_devices"`
 	NewDeviceBurst      int `json:"new_device_burst"`
@@ -307,6 +313,16 @@ type ListenerSettings struct {
 	Enabled bool   `json:"enabled"`
 	Addr    string `json:"addr"`
 	Port    int    `json:"port"`
+}
+
+// TLSListenerSettings is the TLS syslog listener's settings (SPEC §10.3.1).
+type TLSListenerSettings struct {
+	Enabled        bool   `json:"enabled"`
+	Addr           string `json:"addr"`
+	Port           int    `json:"port"`
+	AllowLegacyTLS bool   `json:"allow_legacy_tls"`
+	CertFile       string `json:"cert_file"` // empty: Woodshed's own CA and certificate
+	KeyFile        string `json:"key_file"`
 }
 
 // StorageSettings holds the storage settings. DataDir is read-only in v1.
@@ -402,6 +418,15 @@ func (s *Stats) normalize() { s.Sparkline = nonNil(s.Sparkline) }
 func (d *Device) normalize() {
 	d.FirstSeen = d.FirstSeen.UTC()
 	d.LastHeard = d.LastHeard.UTC()
+	if t := d.TLS; t != nil {
+		if t.LastConnected != nil {
+			lc := t.LastConnected.UTC()
+			t.LastConnected = &lc
+		}
+		if t.LastFailure != nil {
+			t.LastFailure.Time = t.LastFailure.Time.UTC()
+		}
+	}
 }
 
 func (s *Settings) normalize() {

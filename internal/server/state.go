@@ -34,6 +34,9 @@ type RunState struct {
 	UDPRcvbufBytes          int64          `json:"udp_rcvbuf_bytes"`
 	UDPRcvbufRequestedBytes int64          `json:"udp_rcvbuf_requested_bytes"`
 	Banners                 []api.Banner   `json:"banners"`
+	// TLS is the TLS syslog listener: its certificate fingerprints and expiry,
+	// and the senders failing most (omitted while it was never turned on).
+	TLS *RunStateTLS `json:"tls,omitempty"`
 }
 
 // RunStateUI is the UI server's state.

@@ -216,6 +216,9 @@ func (s *Server) apiRoutes() *http.ServeMux {
 	mux.Handle("/api/logout", methods{http.MethodPost: s.logout})
 	mux.Handle("/api/password", methods{http.MethodPut: s.putPassword})
 
+	// The TLS syslog listener.
+	s.tlsRoutes(mux)
+
 	// Anything else under /api/.
 	notFound := func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "No such API route: "+r.URL.Path)
